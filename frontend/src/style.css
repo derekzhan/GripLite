@@ -1,0 +1,220 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Theme tokens
+ *
+ * Single source of truth for every surface colour in GripLite.  The naming is
+ * SEMANTIC — components ask for `bg-panel` (a panel surface) rather than a
+ * specific hex, so the same JSX automatically renders correctly under either
+ * theme.  The Tailwind config maps each token to a custom utility, e.g.
+ * `bg-panel` → `background-color: var(--bg-panel)`.
+ *
+ * Layering convention (from background-most to foreground-most):
+ *   bg-app       — outer window background
+ *   bg-sunken    — recessed surfaces (sidebar, status bar bottom)
+ *   bg-panel     — main panel surfaces (data area, modals)
+ *   bg-elevated  — surfaces a level above panel (titlebar, tab bar)
+ *   bg-hover     — generic hover wash
+ *   bg-active    — selected/active row wash (subtle)
+ *   bg-selected  — strong selection (e.g. selected tab/row), uses accent
+ *
+ * Foreground:
+ *   fg-primary    — main reading text
+ *   fg-secondary  — labels, secondary content
+ *   fg-muted      — placeholder, disabled, captions
+ *   fg-on-accent  — text drawn on top of accent fill
+ *
+ * Borders:
+ *   border        — visible separator
+ *   border-subtle — quiet hairline (table cell borders, list dividers)
+ *
+ * Accent / status:
+ *   accent / accent-hover / accent-subtle / accent-text
+ *   success / warn / danger
+ *
+ * Syntax / semantic colours used in the explorer & data grid:
+ *   syntax-keyword (table headers, sql keywords)
+ *   syntax-type    (data types, primary keys)
+ *   syntax-string  (string literals, link colour)
+ *   syntax-user    (user / role tokens)
+ * ────────────────────────────────────────────────────────────────────────── */
+:root {
+  /* ── Light theme (default when .dark class is absent) ──────────────── */
+  --bg-app:        #f5f6f8;
+  --bg-sunken:     #eef0f3;
+  --bg-panel:      #ffffff;
+  --bg-elevated:   #fafbfc;
+  --bg-titlebar:   #f2f3f5;
+  --bg-statusbar:  #0969da;
+  --bg-hover:      #eef0f3;
+  --bg-active:     #dde6f3;
+  --bg-selected:   #0969da;
+  --bg-overlay:    rgba(31, 35, 40, 0.45);
+
+  --fg-primary:    #1f2328;
+  --fg-secondary:  #57606a;
+  --fg-muted:      #8c959f;
+  --fg-faint:      #afb8c1;
+  --fg-on-accent:  #ffffff;
+
+  --border:         #d0d7de;
+  --border-subtle:  #e4e7eb;
+
+  --accent:         #0969da;
+  --accent-hover:   #0a5fc7;
+  --accent-subtle:  rgba(9, 105, 218, 0.10);
+  --accent-text:    #0550ae;
+
+  --success:        #1a7f37;
+  --warn:           #9a6700;
+  --warn-bg:        #fff8c5;
+  --danger:         #cf222e;
+  --danger-bg:      #ffeef0;
+
+  --syntax-keyword: #cf222e;  /* table-headers in light mode pop nicely red */
+  --syntax-type:    #8250df;
+  --syntax-string:  #0a3069;
+  --syntax-user:    #8250df;
+  --syntax-pk:      #9a6700;
+
+  /* Glide DataGrid accents that need explicit values in JS  */
+  --grid-bg:           #ffffff;
+  --grid-bg-alt:       #fafbfc;
+  --grid-bg-header:    #f6f8fa;
+  --grid-bg-header-h:  #eef0f3;
+  --grid-border:       #d0d7de;
+  --grid-border-h:     #e4e7eb;
+
+  --card-bg:        #ffffff;
+  --card-shadow:    0 10px 40px -8px rgba(15, 23, 42, 0.20);
+
+  /* Back-compat aliases — older components still reference these names. */
+  --bg-elev-1:     var(--bg-elevated);
+  --bg-elev-2:     var(--bg-titlebar);
+  --bg-menubar:    var(--bg-titlebar);
+  --border-strong: var(--border);
+
+  color-scheme: light;
+}
+
+:root.dark {
+  /* ── Dark theme — VS Code-style palette (largely untouched) ───────── */
+  --bg-app:        #1e1e1e;
+  --bg-sunken:     #1a1a1a;
+  --bg-panel:      #252526;
+  --bg-elevated:   #2d2d2d;
+  --bg-titlebar:   #252526;
+  --bg-statusbar:  #007acc;
+  --bg-hover:      #2a2d2e;
+  --bg-active:     #094771;
+  --bg-selected:   #094771;
+  --bg-overlay:    rgba(0, 0, 0, 0.55);
+
+  --fg-primary:    #d4d4d4;
+  --fg-secondary:  #cccccc;
+  --fg-muted:      #858585;
+  --fg-faint:      #555555;
+  --fg-on-accent:  #ffffff;
+
+  --border:         #3c3c3c;
+  --border-subtle:  #2d2d2d;
+
+  --accent:         #007acc;
+  --accent-hover:   #1177bb;
+  --accent-subtle:  rgba(0, 122, 204, 0.18);
+  --accent-text:    #9cdcfe;
+
+  --success:        #4ec9b0;
+  --warn:           #f0a500;
+  --warn-bg:        #3a3a1a;
+  --danger:         #f48771;
+  --danger-bg:      #2d1010;
+
+  --syntax-keyword: #9cdcfe;
+  --syntax-type:    #dcdcaa;
+  --syntax-string:  #ce9178;
+  --syntax-user:    #c586c0;
+  --syntax-pk:      #dcdcaa;
+
+  --grid-bg:           #1e1e1e;
+  --grid-bg-alt:       #1e1e1e;
+  --grid-bg-header:    #252526;
+  --grid-bg-header-h:  #2a2d2e;
+  --grid-border:       #3c3c3c;
+  --grid-border-h:     #2d2d2d;
+
+  --card-bg:        #252526;
+  --card-shadow:    0 20px 60px -10px rgba(0, 0, 0, 0.65);
+
+  --bg-elev-1:     var(--bg-elevated);
+  --bg-elev-2:     var(--bg-titlebar);
+  --bg-menubar:    var(--bg-titlebar);
+  --border-strong: var(--border);
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--bg-app);
+  color: var(--fg-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto",
+    "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans",
+    "Helvetica Neue", sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Scrollbars — token-driven so they stay sane in light mode.
+ * ────────────────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: var(--bg-sunken); }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+  border: 2px solid var(--bg-sunken); /* hairline gap so the thumb floats */
+}
+::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+::-webkit-scrollbar-corner      { background: var(--bg-sunken); }
+
+/* SplitPane resize handle */
+.split-pane-resizer {
+  background: var(--border-subtle);
+  transition: background 0.15s ease;
+  cursor: col-resize;
+  flex-shrink: 0;
+}
+.split-pane-resizer:hover,
+.split-pane-resizer.active {
+  background: var(--accent);
+}
+.split-pane-resizer-vertical {
+  cursor: row-resize;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Modal fade / scale animation
+ * ────────────────────────────────────────────────────────────────────────── */
+@keyframes modalFadeIn {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+.modal-enter { animation: modalFadeIn 0.18s ease-out both; }
+
+@keyframes overlayFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.overlay-enter { animation: overlayFadeIn 0.15s ease-out both; }

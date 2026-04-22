@@ -1,0 +1,10 @@
+build/bin/
+node_modules/
+frontend/dist/
+frontend/tmp-*.mjs
+frontend/node_modules/
+.DS_Store
+*.log
+amp
+dist/
+*.dmg

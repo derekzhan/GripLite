@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -412,6 +413,60 @@ func (a *App) ListConnections() []ConnectionInfo {
 //	// "/Users/zhanwei/Library/Application Support/GripLite/griplite.db"
 func (a *App) GetDBPath() string {
 	return a.dbPath
+}
+
+// GetDataFilterHistory returns persisted Data-tab WHERE-clause history for
+// a table, newest first (same order as the in-app dropdown), max 20 items.
+// Empty when none has been stored yet. Used after restart so DBeaver-style
+// filter memory survives sessions.
+func (a *App) GetDataFilterHistory(connectionID, dbName, tableName string) ([]string, error) {
+	if a.sharedDB == nil {
+		return nil, fmt.Errorf("local database not initialised")
+	}
+	var raw string
+	err := a.sharedDB.QueryRow(
+		`SELECT entries_json FROM data_filter_history
+		 WHERE conn_id = ? AND db_name = ? AND table_name = ?`,
+		connectionID, dbName, tableName,
+	).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return []string{}, nil
+	}
+	return out, nil
+}
+
+// SetDataFilterHistory replaces the persisted history for a table. Pass an
+// empty slice after "Clear history" in the UI. Capped to 20 entries.
+func (a *App) SetDataFilterHistory(connectionID, dbName, tableName string, entries []string) error {
+	if a.sharedDB == nil {
+		return fmt.Errorf("local database not initialised")
+	}
+	if len(entries) > 20 {
+		entries = entries[:20]
+	}
+	b, err := json.Marshal(entries)
+	if err != nil {
+		return err
+	}
+	_, err = a.sharedDB.Exec(
+		`INSERT INTO data_filter_history (conn_id, db_name, table_name, entries_json, updated_at)
+		 VALUES (?, ?, ?, ?, datetime('now'))
+		 ON CONFLICT(conn_id, db_name, table_name) DO UPDATE SET
+		   entries_json = excluded.entries_json,
+		   updated_at   = excluded.updated_at`,
+		connectionID, dbName, tableName, string(b),
+	)
+	return err
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

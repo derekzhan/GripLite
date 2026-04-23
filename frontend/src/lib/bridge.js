@@ -70,6 +70,58 @@ export async function runQuery(connectionID, sql) {
   return mockQueryResult(sql)
 }
 
+// ─── Data tab WHERE filter history (persisted in griplite.db) ─────────────
+const FILTER_HISTORY_LS = 'griplite_data_filter_history_v1'
+
+function filterHistoryKey(connId, dbName, tableName) {
+  return `${String(connId)}\0${String(dbName)}\0${String(tableName)}`
+}
+
+function readMockFilterHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(FILTER_HISTORY_LS) || '{}') || {}
+  } catch { return {} }
+}
+
+function writeMockFilterHistory(m) {
+  try { localStorage.setItem(FILTER_HISTORY_LS, JSON.stringify(m)) } catch { /* ignore */ }
+}
+
+/**
+ * @param {string} connectionID
+ * @param {string} dbName
+ * @param {string} tableName
+ * @returns {Promise<string[]>} newest-first WHERE clause snippets
+ */
+export async function getDataFilterHistory(connectionID, dbName, tableName) {
+  if (isWails()) {
+    const { GetDataFilterHistory } = await import('../../wailsjs/go/main/App.js')
+    return GetDataFilterHistory(connectionID, dbName, tableName)
+  }
+  await delay(0)
+  const m = readMockFilterHistory()
+  return m[filterHistoryKey(connectionID, dbName, tableName)] ?? []
+}
+
+/**
+ * @param {string} connectionID
+ * @param {string} dbName
+ * @param {string} tableName
+ * @param {string[]} entries max 20, newest first
+ */
+export async function setDataFilterHistory(connectionID, dbName, tableName, entries) {
+  if (isWails()) {
+    const { SetDataFilterHistory } = await import('../../wailsjs/go/main/App.js')
+    return SetDataFilterHistory(connectionID, dbName, tableName, entries)
+  }
+  await delay(0)
+  const m = readMockFilterHistory()
+  const k = filterHistoryKey(connectionID, dbName, tableName)
+  if (!entries || entries.length === 0) delete m[k]
+  else m[k] = entries
+  writeMockFilterHistory(m)
+}
+
 /**
  * AddConnection — open and register a new database connection.
  *

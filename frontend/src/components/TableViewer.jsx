@@ -23,7 +23,10 @@
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Editor from '@monaco-editor/react'
-import { ArrowUp, ArrowDown, ArrowUpDown, Plus, Minus, Save, XCircle } from 'lucide-react'
+import {
+  ArrowUp, ArrowDown, ArrowUpDown, Plus, Minus, Save, XCircle,
+  ChevronDown, Play, Code2, Maximize2, X,
+} from 'lucide-react'
 import DataViewer, { exportCsv } from './DataViewer'
 import ActionFooter from './ActionFooter'
 import ReviewSqlModal from './ReviewSqlModal'
@@ -31,6 +34,7 @@ import { useTheme } from '../theme/ThemeProvider'
 import {
   runQuery, getTableSchema, getTableAdvancedProperties,
   previewTableAlter, executeTableAlter, applyChanges,
+  getDataFilterHistory, setDataFilterHistory,
 } from '../lib/bridge'
 import { useEditState } from '../hooks/useEditState'
 import { normalizeError } from '../lib/errors'
@@ -1360,8 +1364,25 @@ function PropertiesView({ schema, connId, dbName, tableName, onSchemaChanged }) 
 const quoteIdent = (s) => `\`${String(s).replace(/`/g, '``')}\``
 
 /**
+ * normaliseWhere — trims the user's filter input and strips a leading
+ * `WHERE ` (case-insensitive) if present, so a user who types either
+ *   `id > 10`           — correct / preferred
+ *   `WHERE id > 10`     — tolerated (common muscle memory)
+ * produces the same SQL.  Returns '' for empty / whitespace-only input.
+ *
+ * Intentionally does NOT validate or escape the expression: DBeaver, Navicat
+ * and TablePlus all let the DB parse it and surface the error.  Our executor
+ * already surfaces MySQL errors cleanly via the result banner.
+ */
+function normaliseWhere(input) {
+  const s = String(input ?? '').trim()
+  if (!s) return ''
+  return s.replace(/^where\s+/i, '').trim()
+}
+
+/**
  * buildSelectSql — constructs a paginated "SELECT * FROM `db`.`tbl`
- * LIMIT <pageSize> OFFSET <(page-1)*pageSize>" statement.
+ * [WHERE <clause>] LIMIT <pageSize> OFFSET <(page-1)*pageSize>" statement.
  *
  * `dbName` is optional: when absent (empty string / undefined, e.g. during
  * unit tests) we fall back to the unqualified form so old call-sites keep
@@ -1372,29 +1393,44 @@ const quoteIdent = (s) => `\`${String(s).replace(/`/g, '``')}\``
  * When `pageSize === 'all'` we still emit an explicit LIMIT so the backend
  * executor doesn't inject its own default (DefaultLimit=1000) and truncate
  * silently; the caller is expected to clamp 'all' to backendHardCap first.
+ *
+ * `whereClause` is the DBeaver-style filter string (e.g. `id > 10`). Empty
+ * / whitespace-only input yields an unfiltered SELECT.  We insert it
+ * verbatim — invalid SQL is surfaced via the executor's error path, matching
+ * DBeaver behaviour.
  */
-function buildSelectSql(dbName, tableName, pageSize, currentPage = 1) {
+function buildSelectSql(dbName, tableName, pageSize, currentPage = 1, whereClause = '') {
   const target = dbName
     ? `${quoteIdent(dbName)}.${quoteIdent(tableName)}`
     : quoteIdent(tableName)
   const page   = Math.max(1, currentPage | 0)
   const limit  = pageSize === 'all' ? BACKEND_HARD_CAP : Math.max(1, pageSize | 0)
   const offset = pageSize === 'all' ? 0 : (page - 1) * limit
+  const where  = normaliseWhere(whereClause)
+  const head   = where
+    ? `SELECT * FROM ${target} WHERE ${where}`
+    : `SELECT * FROM ${target}`
   return offset > 0
-    ? `SELECT * FROM ${target} LIMIT ${limit} OFFSET ${offset}`
-    : `SELECT * FROM ${target} LIMIT ${limit}`
+    ? `${head} LIMIT ${limit} OFFSET ${offset}`
+    : `${head} LIMIT ${limit}`
 }
 
 /**
  * buildCountSql — exact row count.  Fast for small/medium tables; for very
  * large tables it is O(n) on InnoDB and we fall back to an estimate via
  * buildApproxCountSql if it times out.
+ *
+ * When `whereClause` is provided the count reflects the filtered result set,
+ * which is what powers the "N rows total" footer after a filter is applied.
  */
-function buildCountSql(dbName, tableName) {
+function buildCountSql(dbName, tableName, whereClause = '') {
   const target = dbName
     ? `${quoteIdent(dbName)}.${quoteIdent(tableName)}`
     : quoteIdent(tableName)
-  return `SELECT COUNT(*) AS n FROM ${target}`
+  const where  = normaliseWhere(whereClause)
+  return where
+    ? `SELECT COUNT(*) AS n FROM ${target} WHERE ${where}`
+    : `SELECT COUNT(*) AS n FROM ${target}`
 }
 
 /**
@@ -1467,6 +1503,214 @@ function isAutoFilledColumn(extra, columnDefault) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FilterBar (Phase 24) — DBeaver-style WHERE filter input + history dropdown
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * FilterBar — the thin toolbar above the Data grid.
+ *
+ *   [SQL] [⛶]  [input: WHERE clause ................] [▶] [▼]   [N rows total]
+ *
+ *   • `SQL` toggles visibility of the read-only full-SQL strip below.
+ *   • `⛶`  is a visual affordance matching DBeaver; currently a no-op
+ *          placeholder (future: popout the query into the SQL Console).
+ *   • Input accepts any valid WHERE expression, e.g. `id > 10 AND status='a'`.
+ *     An accidental leading `WHERE ` is tolerated and stripped on commit.
+ *   • ▶ commits the draft; Enter inside the input does the same.  Shift-Enter
+ *     is unnecessary because the input is single-line by design (matches
+ *     DBeaver; avoid encouraging multi-line filters that belong in the
+ *     full SQL Console).
+ *   • ▼ opens the history dropdown.  Items are prepended newest-first, deduped
+ *     and capped at 20.  Clicking an item fills the input but does NOT
+ *     auto-execute — users often want to tweak a past filter first.
+ *   • `Clear` button appears when there's any history.
+ *   • Run button + every history row expose `title` with the *full* SQL
+ *     that will execute (page-1 LIMIT slice), matching the strip below
+ *     when the SQL bar is shown.
+ *   • History is loaded/saved by the parent (griplite.db via IPC).
+ *
+ * Kept deliberately single-component (and single-file) so the surface
+ * matches the rest of TableViewer's internal structure.
+ */
+function FilterBar({
+  draft, onDraftChange, onCommit, onKeyDown,
+  isRunning, hasFilter, onClearFilter,
+  history, historyOpen, onToggleHistory, onPickHistory, onClearHistory,
+  showSql, onToggleShowSql,
+  totalRows, isCounting, countError,
+  runButtonTitle,
+  sqlForWhereClause,
+  persistHint,
+}) {
+  const inputRef    = useRef(null)
+  const dropdownRef = useRef(null)
+
+  // Click-outside closes the history dropdown.  Attached only while the
+  // dropdown is open to avoid a global listener on every table view.
+  useEffect(() => {
+    if (!historyOpen) return
+    const onDoc = (e) => {
+      if (dropdownRef.current?.contains(e.target)) return
+      onToggleHistory(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [historyOpen, onToggleHistory])
+
+  return (
+    <div className="flex items-center gap-1.5 px-2 py-1 bg-titlebar border-b border-line-subtle
+                    flex-shrink-0 select-none">
+
+      {/* Show-SQL toggle */}
+      <button
+        onClick={onToggleShowSql}
+        title={showSql ? 'Hide full SQL' : 'Show full SQL'}
+        className={[
+          'flex items-center gap-1 px-2 py-0.5 text-[11px] rounded transition-colors',
+          showSql
+            ? 'text-accent bg-hover'
+            : 'text-fg-secondary hover:text-fg-primary hover:bg-hover',
+        ].join(' ')}
+      >
+        <Code2 size={12} strokeWidth={1.8} />
+        <span>SQL</span>
+      </button>
+
+      {/* Maximize placeholder — visual parity with DBeaver; disabled for now. */}
+      <button
+        disabled
+        title="Expand (coming soon)"
+        className="flex items-center px-1 py-0.5 text-fg-faint opacity-50 cursor-not-allowed"
+      >
+        <Maximize2 size={12} strokeWidth={1.8} />
+      </button>
+
+      <div className="h-4 w-px bg-line-subtle mx-0.5" />
+
+      {/* Filter input ───────────────────────────────────────────────── */}
+      <div className="flex-1 min-w-0 relative" ref={dropdownRef}>
+        <div className="flex items-center gap-1 rounded border border-line focus-within:border-accent
+                        focus-within:ring-1 focus-within:ring-accent/40 bg-panel px-2 py-0.5
+                        transition-colors">
+          <span className="text-fg-muted text-[10px] uppercase tracking-wider font-mono
+                           select-none pointer-events-none">
+            WHERE
+          </span>
+          <input
+            ref={inputRef}
+            type="text"
+            value={draft}
+            onChange={(e) => onDraftChange(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="id > 10 AND status = 'active'"
+            autoCapitalize="off"
+            autoCorrect="off"
+            autoComplete="off"
+            spellCheck={false}
+            className="flex-1 min-w-0 bg-transparent text-[12px] font-mono text-fg-primary
+                       placeholder:text-fg-muted outline-none py-0.5"
+          />
+          {hasFilter && (
+            <button
+              onClick={onClearFilter}
+              title="Clear filter (revert to SELECT * FROM table)"
+              className="text-fg-muted hover:text-danger transition-colors"
+            >
+              <X size={12} strokeWidth={2} />
+            </button>
+          )}
+        </div>
+
+        {/* History dropdown ─────────────────────────────────────────── */}
+        {historyOpen && (
+          <div
+            className="absolute top-full left-0 right-0 mt-1 z-30 rounded border border-line
+                       bg-elevated shadow-lg overflow-hidden text-[12px]"
+            role="listbox"
+          >
+            {history.length === 0 ? (
+              <div className="px-3 py-2 text-fg-muted italic space-y-1">
+                <div>No filter history yet — run a filter to populate.</div>
+                {persistHint && <div className="text-[10px] not-italic">{persistHint}</div>}
+              </div>
+            ) : (
+              <>
+                <div className="max-h-64 overflow-y-auto">
+                  {history.map((entry, i) => (
+                    <button
+                      key={`${entry}-${i}`}
+                      onClick={() => onPickHistory(entry)}
+                      title={sqlForWhereClause ? sqlForWhereClause(entry) : entry}
+                      className="w-full flex items-start gap-2 px-3 py-1.5 text-left font-mono
+                                 text-fg-primary hover:bg-hover transition-colors"
+                    >
+                      <span className="text-fg-muted text-[10px] tabular-nums w-5 flex-shrink-0">
+                        {i + 1}
+                      </span>
+                      <span className="flex-1 break-all">{entry}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="flex items-center justify-between px-3 py-1 border-t border-line-subtle
+                                bg-titlebar text-[10px] text-fg-muted">
+                  <span>{history.length} entr{history.length === 1 ? 'y' : 'ies'}</span>
+                  <button
+                    onClick={onClearHistory}
+                    className="text-fg-secondary hover:text-danger transition-colors"
+                  >
+                    Clear history
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Execute ─────────────────────────────────────────────────────── */}
+      <button
+        onClick={onCommit}
+        disabled={isRunning}
+        title={runButtonTitle ?? 'Apply filter (Enter)'}
+        className="flex items-center gap-1 px-2.5 py-0.5 text-[11px] rounded
+                   border border-line bg-accent text-fg-on-accent
+                   hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed
+                   transition-colors font-medium"
+      >
+        <Play size={11} strokeWidth={2.2} fill="currentColor" />
+        <span>Run</span>
+      </button>
+
+      {/* History toggle ─────────────────────────────────────────────── */}
+      <button
+        onClick={() => onToggleHistory(!historyOpen)}
+        title="Filter history (saved in local griplite database)"
+        className={[
+          'flex items-center px-1.5 py-1 rounded transition-colors',
+          historyOpen
+            ? 'text-accent bg-hover'
+            : 'text-fg-secondary hover:text-fg-primary hover:bg-hover',
+        ].join(' ')}
+      >
+        <ChevronDown size={13} strokeWidth={2} />
+      </button>
+
+      {/* Right-side status ─────────────────────────────────────────── */}
+      <div className="h-4 w-px bg-line-subtle mx-1" />
+      <span className="text-[11px] text-fg-muted tabular-nums whitespace-nowrap">
+        {isCounting ? (
+          <span className="italic">counting…</span>
+        ) : countError ? (
+          <span className="text-danger" title={countError}>count failed</span>
+        ) : totalRows !== null && totalRows !== undefined ? (
+          <>{totalRows.toLocaleString()} rows total</>
+        ) : null}
+      </span>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Data view — auto-loads on mount via runQuery IPC / mock
 // ─────────────────────────────────────────────────────────────────────────────
 function DataView({ tableName, dbName, connId, schema }) {
@@ -1485,6 +1729,23 @@ function DataView({ tableName, dbName, connId, schema }) {
   const [fetchStats,   setFetchStats]   = useState(null)
   const [saveError,    setSaveError]    = useState('')
   const [isSaving,     setIsSaving]     = useState(false)
+
+  // ── DBeaver-style filter bar (Phase 24) ────────────────────────────────
+  //   whereClause  — the committed filter that drives the current query.
+  //   whereDraft   — the input box's live value; decoupled from whereClause
+  //                  so typing never triggers a re-query.  Only ▶ or Enter
+  //                  commits the draft → whereClause.
+  //   history      — per-(connId,dbName,tableName) list of recent non-empty
+  //                  WHERE snippets, newest first, dedup, max 20.  Loaded
+  //                  from `data_filter_history` in griplite.db on tab open
+  //                  and written back on every successful Run + Clear.
+  //   historyOpen  — dropdown visibility; toggled by the ▼ button.
+  //   showSqlBar   — collapsible info strip showing the full SQL being sent.
+  const [whereClause, setWhereClause] = useState('')
+  const [whereDraft,  setWhereDraft]  = useState('')
+  const [history,     setHistory]     = useState([])
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [showSqlBar,  setShowSqlBar]  = useState(true)
   // Names of columns the database fills for us — informs Duplicate Row
   // behaviour.  Empty until the metadata query resolves; if the query
   // fails (no privileges on INFORMATION_SCHEMA, etc.) we degrade to
@@ -1499,8 +1760,9 @@ function DataView({ tableName, dbName, connId, schema }) {
   }, [schema])
 
   // SQL surfaced to the thin info bar: always reflects the next planned
-  // fetch so operators can see exactly which LIMIT/OFFSET is in flight.
-  const selectSql = buildSelectSql(dbName, tableName, pageSize, currentPage)
+  // fetch so operators can see exactly which WHERE / LIMIT / OFFSET is in
+  // flight.  Uses the COMMITTED whereClause, not the unsaved draft.
+  const selectSql = buildSelectSql(dbName, tableName, pageSize, currentPage, whereClause)
 
   // ── Count(*) — runs once per (connId, dbName, tableName) + on Refresh.
   // The count is the authoritative pagination total; we keep it separate
@@ -1511,7 +1773,7 @@ function DataView({ tableName, dbName, connId, schema }) {
     setIsCounting(true)
     setCountError('')
 
-    runQuery(connId, buildCountSql(dbName, tableName))
+    runQuery(connId, buildCountSql(dbName, tableName, whereClause))
       .then((result) => {
         if (cancelled) return
         if (result.error) {
@@ -1533,7 +1795,7 @@ function DataView({ tableName, dbName, connId, schema }) {
       })
 
     return () => { cancelled = true }
-  }, [connId, dbName, tableName])
+  }, [connId, dbName, tableName, whereClause])
 
   // ── Column metadata — fetched once per (connId, dbName, tableName).
   // Powers the Duplicate-Row "skip auto-filled columns" behaviour.  A
@@ -1568,7 +1830,7 @@ function DataView({ tableName, dbName, connId, schema }) {
     setLoadError('')
     setDataResult(null)
 
-    const sql = buildSelectSql(dbName, tableName, size, page)
+    const sql = buildSelectSql(dbName, tableName, size, page, whereClause)
     const fetchStart = performance.now()
 
     runQuery(connId, sql)
@@ -1596,17 +1858,43 @@ function DataView({ tableName, dbName, connId, schema }) {
       })
 
     return () => { cancelled = true }
-  }, [connId, tableName, dbName])
+  }, [connId, tableName, dbName, whereClause])
 
-  // Tab identity change (new table / db / conn) — reset page, reload count,
-  // and refresh the auto-filled-column set used by Duplicate Row.
+  // Tab identity change (new table / db / conn) — reset page, wipe the live
+  // filter draft, and refresh the auto-filled-column set.  Per-table
+  // history is re-loaded asynchronously from `data_filter_history` so it
+  // survives app restarts.  (Each TableViewer tab in App.jsx stays mounted
+  // when hidden, so switching back to the same table in the same tab keeps
+  // in-memory `whereClause` as well, until a full identity change.)
+  //
+  // NB: we depend on the raw identity tuple, NOT on the `loadCount` /
+  // `loadColumnMeta` callbacks — those also depend on `whereClause` and
+  // would re-trigger spuriously if listed here.
   useEffect(() => {
     setCurrentPage(1)
-    loadCount()
+    setWhereClause('')
+    setWhereDraft('')
+    setHistory([])
+    setHistoryOpen(false)
     loadColumnMeta()
-  }, [loadCount, loadColumnMeta])
+    let cancelled = false
+    getDataFilterHistory(connId, dbName, tableName)
+      .then((h) => {
+        if (cancelled) return
+        setHistory(Array.isArray(h) && h.length ? h.slice(0, 20) : [])
+      })
+      .catch(() => { if (!cancelled) setHistory([]) })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connId, dbName, tableName])
 
-  // Fetch the current page slice whenever identity, page or size changes.
+  // Count + page fetch whenever identity, page, size OR the committed
+  // whereClause changes.  `load` / `loadCount` are memoised with those same
+  // inputs so referential identity follows semantics.
+  useEffect(() => {
+    loadCount()
+  }, [loadCount])
+
   useEffect(() => {
     load(pageSize, currentPage)
   }, [load, pageSize, currentPage])
@@ -1616,6 +1904,67 @@ function DataView({ tableName, dbName, connId, schema }) {
     loadCount()
     load(pageSize, currentPage)
   }, [load, loadCount, pageSize, currentPage])
+
+  // ── Filter commit (▶ button / Enter) ───────────────────────────────────
+  // Pushes the draft into the live whereClause, resets to page 1, and
+  // prepends the non-empty clause onto the history ring.  If the draft is
+  // identical to the current clause we still kick off a reload — users
+  // often click ▶ to re-fetch after external changes.
+  const commitFilter = useCallback(() => {
+    const next = normaliseWhere(whereDraft)
+    if (editStateRef.current?.isDirty) {
+      const ok = typeof window !== 'undefined' && window.confirm
+        ? window.confirm(
+            'Applying a filter will reload the grid and discard your ' +
+            'unsaved changes.\n\nContinue?',
+          )
+        : true
+      if (!ok) return
+      editStateRef.current.cancel()
+    }
+    setHistoryOpen(false)
+    setWhereDraft(next) // canonicalise the input box
+    // History: prepend non-empty, dedup, cap at 20, persist to griplite.db.
+    let nextHistory = history
+    if (next) {
+      nextHistory = [next, ...history.filter((h) => h !== next)].slice(0, 20)
+      setHistory(nextHistory)
+      void setDataFilterHistory(connId, dbName, tableName, nextHistory).catch(() => {})
+    }
+    setCurrentPage(1)
+    if (next === whereClause) {
+      // Committing the same clause — force a refetch since neither the
+      // load effect nor loadCount will fire (their deps didn't change).
+      loadCount()
+      load(pageSize, 1)
+    } else {
+      setWhereClause(next) // triggers load effect + loadCount via deps
+    }
+  }, [whereDraft, whereClause, load, loadCount, pageSize, history, connId, dbName, tableName])
+
+  const handleFilterKeyDown = useCallback((e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      commitFilter()
+    } else if (e.key === 'Escape') {
+      setWhereDraft(whereClause) // revert unsaved edits
+      setHistoryOpen(false)
+    } else if (e.key === 'ArrowDown' && !historyOpen && history.length) {
+      e.preventDefault()
+      setHistoryOpen(true)
+    }
+  }, [commitFilter, whereClause, historyOpen, history.length])
+
+  const applyHistoryEntry = useCallback((entry) => {
+    setWhereDraft(entry)
+    setHistoryOpen(false)
+  }, [])
+
+  const clearHistory = useCallback(() => {
+    setHistory([])
+    setHistoryOpen(false)
+    void setDataFilterHistory(connId, dbName, tableName, []).catch(() => {})
+  }, [connId, dbName, tableName])
 
   // ── pageSize change (footer dropdown / manual input). ──────────────────
   // 'all' clamps to the backend's hard cap so we don't silently truncate.
@@ -1725,6 +2074,27 @@ function DataView({ tableName, dbName, connId, schema }) {
     editState.cancel()
   }, [editState])
 
+  // Footer total + filter tooltips — MUST stay above loading/error early returns
+  // so hook order is identical every render (Rules of Hooks).
+  const effectiveTotal = totalRows ?? rows.length
+
+  const sqlForWhere = useCallback(
+    (clause) => buildSelectSql(dbName, tableName, pageSize, 1, clause),
+    [dbName, tableName, pageSize],
+  )
+  const runButtonTitle = useMemo(
+    () => `Run (Enter) — ${sqlForWhere(normaliseWhere(whereDraft))}`,
+    [sqlForWhere, whereDraft],
+  )
+
+  const clearFilter = useCallback(() => {
+    setWhereDraft('')
+    if (whereClause !== '') {
+      setCurrentPage(1)
+      setWhereClause('')
+    }
+  }, [whereClause])
+
   // ── Loading state ──────────────────────────────────────────────────────
   if (isLoading) {
     return (
@@ -1762,33 +2132,40 @@ function DataView({ tableName, dbName, connId, schema }) {
     )
   }
 
-  // ── Total rows for the footer ──────────────────────────────────────────
-  // Prefer the authoritative COUNT(*) from the server.  Fall back to the
-  // fetched page size when the count failed so pagination still works in a
-  // best-effort degraded mode (user sees "100 rows" instead of nothing).
-  // During an active edit session the "+N new · -M deleted" delta is shown
-  // via footer's dirty styling; we don't inflate the total here because
-  // that would confuse pagination arithmetic.
-  const effectiveTotal = totalRows ?? rows.length
-
-  // ── Data view ──────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Thin query info bar — shows the SQL being executed + live total. */}
-      <div className="flex items-center gap-3 px-3 py-1 bg-elevated border-b border-line-subtle
-                      flex-shrink-0 text-[11px] text-fg-muted">
-        <code className="text-syntax-string truncate">{selectSql}</code>
-        <div className="flex-1" />
-        {isCounting ? (
-          <span className="text-fg-muted italic">counting…</span>
-        ) : countError ? (
-          <span className="text-danger" title={countError}>count failed</span>
-        ) : totalRows !== null ? (
-          <span className="text-fg-muted tabular-nums">
-            {totalRows.toLocaleString()} rows total
-          </span>
-        ) : null}
-      </div>
+      {/* DBeaver-style filter toolbar (Phase 24) */}
+      <FilterBar
+        draft={whereDraft}
+        onDraftChange={setWhereDraft}
+        onCommit={commitFilter}
+        onKeyDown={handleFilterKeyDown}
+        isRunning={isLoading || isSaving}
+        hasFilter={whereClause.length > 0}
+        onClearFilter={clearFilter}
+        history={history}
+        historyOpen={historyOpen}
+        onToggleHistory={setHistoryOpen}
+        onPickHistory={applyHistoryEntry}
+        onClearHistory={clearHistory}
+        showSql={showSqlBar}
+        onToggleShowSql={() => setShowSqlBar((v) => !v)}
+        totalRows={totalRows}
+        isCounting={isCounting}
+        countError={countError}
+        runButtonTitle={runButtonTitle}
+        sqlForWhereClause={sqlForWhere}
+        persistHint="Filter history is saved in your local griplite database and survives restarts."
+      />
+
+      {/* Collapsible full-SQL strip — keeps the "what is being executed"
+          readout from the old info bar, toggled via FilterBar's SQL button. */}
+      {showSqlBar && (
+        <div className="flex items-center gap-3 px-3 py-1 bg-elevated border-b border-line-subtle
+                        flex-shrink-0 text-[11px] text-fg-muted">
+          <code className="text-syntax-string truncate flex-1">{selectSql}</code>
+        </div>
+      )}
 
       {/* DataViewer: grid / text / record mode switching + inline editing */}
       <div className="flex-1 overflow-hidden min-h-0">

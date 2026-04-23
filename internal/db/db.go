@@ -182,6 +182,18 @@ var extendedDDL = []string{
 		status       TEXT    NOT NULL DEFAULT 'idle',
 		error_msg    TEXT    NOT NULL DEFAULT ''
 	)`,
+
+	// Per-(connection, database, table) list of Data-tab WHERE filter strings,
+	// JSON array, newest first, max 20.  Survives app restarts (DBeaver-style).
+	`CREATE TABLE IF NOT EXISTS data_filter_history (
+		conn_id      TEXT    NOT NULL,
+		db_name      TEXT    NOT NULL,
+		table_name   TEXT    NOT NULL,
+		entries_json TEXT    NOT NULL DEFAULT '[]',
+		updated_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (conn_id, db_name, table_name)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_dfh_updated ON data_filter_history(updated_at)`,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

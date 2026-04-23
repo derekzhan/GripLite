@@ -54,6 +54,10 @@ export function GetDBPath() {
   return window['go']['main']['App']['GetDBPath']();
 }
 
+export function GetDataFilterHistory(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetDataFilterHistory'](arg1, arg2, arg3);
+}
+
 export function GetDatabasesFromCache(arg1) {
   return window['go']['main']['App']['GetDatabasesFromCache'](arg1);
 }
@@ -116,6 +120,10 @@ export function SaveConnection(arg1) {
 
 export function SearchCompletions(arg1, arg2) {
   return window['go']['main']['App']['SearchCompletions'](arg1, arg2);
+}
+
+export function SetDataFilterHistory(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SetDataFilterHistory'](arg1, arg2, arg3, arg4);
 }
 
 export function SyncMetadata(arg1) {

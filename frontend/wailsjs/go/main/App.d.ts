@@ -32,6 +32,8 @@ export function GetBuildInfo():Promise<main.BuildInfo>;
 
 export function GetDBPath():Promise<string>;
 
+export function GetDataFilterHistory(arg1:string,arg2:string,arg3:string):Promise<Array<string>>;
+
 export function GetDatabasesFromCache(arg1:string):Promise<Array<string>>;
 
 export function GetSavedConnection(arg1:string):Promise<store.SavedConnection>;
@@ -63,6 +65,8 @@ export function RunQuery(arg1:string,arg2:string):Promise<main.QueryResult>;
 export function SaveConnection(arg1:store.SavedConnection):Promise<void>;
 
 export function SearchCompletions(arg1:string,arg2:string):Promise<Array<cache.CompletionItem>>;
+
+export function SetDataFilterHistory(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
 
 export function SyncMetadata(arg1:string):Promise<void>;
 

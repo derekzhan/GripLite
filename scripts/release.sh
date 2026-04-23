@@ -73,7 +73,16 @@ build_one windows/amd64 keep
 ( cd build/bin && zip -q "${ROOT}/dist/GripLite-${VERSION}-windows-amd64.zip" GripLite.exe )
 
 # --- linux/amd64 ------------------------------------------------------------
-build_one linux/amd64 keep
+# Wails cannot cross-compile Linux from macOS; use Docker (Bookworm +
+# libwebkit2gtk-4.0-dev + fresh npm ci for linux/amd64 esbuild).
+if [[ "$(uname -s)" == Darwin ]]; then
+  echo ""
+  echo "---- linux/amd64 via Docker (required on macOS) ----"
+  chmod +x "${ROOT}/scripts/build-linux-amd64-docker.sh"
+  "${ROOT}/scripts/build-linux-amd64-docker.sh" "${VERSION}" "${LDFLAGS}"
+else
+  build_one linux/amd64 keep
+fi
 ( cd build/bin && tar -czf "${ROOT}/dist/GripLite-${VERSION}-linux-amd64.tar.gz" GripLite )
 
 echo ""

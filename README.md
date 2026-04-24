@@ -18,7 +18,7 @@
 - **Database selector** — Per-console dropdown to switch databases; every query automatically carries the correct database context
 - **Keyboard shortcuts** — Full keyboard navigation in all context menus; see **Help → Keyboard Shortcuts** for the complete reference
 - **Theme** — Light and dark mode with live switching
-- **Cross-platform** — macOS (Apple Silicon & Intel), Windows, Linux
+- **Cross-platform** — macOS (Apple Silicon & Intel), Windows
 
 ---
 
@@ -31,7 +31,6 @@ Download the latest build for your platform from the [Releases](https://github.c
 | macOS (Apple Silicon) | `GripLite-vX.Y.Z-darwin-arm64.dmg` |
 | macOS (Intel) | `GripLite-vX.Y.Z-darwin-amd64.dmg` |
 | Windows x64 | `GripLite-vX.Y.Z-windows-amd64.zip` |
-| Linux x64 | `GripLite-vX.Y.Z-linux-amd64.tar.gz` |
 
 ### macOS — Gatekeeper
 
@@ -44,13 +43,6 @@ xattr -dr com.apple.quarantine /Applications/GripLite.app
 ### Windows
 
 Extract the ZIP and run `GripLite.exe` directly — no installer required.
-
-### Linux
-
-```bash
-tar -xzf GripLite-vX.Y.Z-linux-amd64.tar.gz
-./GripLite
-```
 
 ---
 

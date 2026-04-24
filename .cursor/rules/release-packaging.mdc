@@ -14,26 +14,8 @@ Whenever the user asks to "release", "打包发布", "发 release", "cut a versi
 | macOS | arm64 (Apple Silicon) | `GripLite-<version>-darwin-arm64.dmg` | `wails build -platform darwin/arm64` on macOS |
 | macOS | amd64 (Intel) | `GripLite-<version>-darwin-amd64.dmg` | Cross-compile from macOS — works with Wails 2.12 |
 | Windows | amd64 | `GripLite-<version>-windows-amd64.zip` (contains `GripLite.exe`) | Cross-compile from macOS — works with Wails 2.12 |
-| Linux | amd64 | `GripLite-<version>-linux-amd64.tar.gz` | **⚠️ Wails 2.12 does NOT support cross-compiling to Linux from macOS.** Build via Docker (`wailsapp/wails:*-linux` image) or a Linux host / CI. See "Linux build" section below. |
 
-> If any platform build fails, **do not silently skip it** — surface the error to the user and ask whether to proceed without that platform. For Linux specifically, warn the user up front that it needs a Linux machine / Docker and ask whether to proceed without Linux or pause the release.
-
-## Linux build
-
-Wails 2.12 explicitly warns `Crosscompiling to Linux not currently supported.` when invoked from macOS. Options, in order of preference:
-
-1. **Docker on macOS** — requires Docker Desktop running:
-   ```bash
-   docker run --rm -v "$PWD":/app -w /app golang:1.24-bookworm bash -c '
-     apt-get update && apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev nodejs npm &&
-     go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0 &&
-     ~/go/bin/wails build -platform linux/amd64 -ldflags "-X main.buildVersion=<version> -X main.buildDate=<date>"
-   '
-   ```
-2. **GitHub Actions** — `ubuntu-latest` runner with the same `wails build` command.
-3. **A dedicated Linux host** — SSH in, run `wails build -platform linux/amd64`.
-
-If none of the above is feasible right now, **state this explicitly in the release notes** ("Linux build unavailable for this release — coming in <next version>") rather than pretending it's shipped.
+> If any platform build fails, **do not silently skip it** — surface the error to the user and ask whether to proceed without that platform.
 
 ## Build commands
 
@@ -50,28 +32,24 @@ Use these exact targets:
 ~/go/bin/wails build -clean -platform darwin/arm64   -ldflags "$LDFLAGS"
 ~/go/bin/wails build        -platform darwin/amd64   -ldflags "$LDFLAGS"
 ~/go/bin/wails build        -platform windows/amd64  -ldflags "$LDFLAGS"
-# linux/amd64: see "Linux build" section — run via Docker or CI, NOT wails build on macOS.
 ```
 
-> Only the first call uses `-clean` so the frontend isn't rebuilt four times.
+> Only the first call uses `-clean` so the frontend isn't rebuilt three times.
 
 ## Packaging
 
 - **macOS** — wrap `build/bin/GripLite.app` in a DMG via `hdiutil create -volname "GripLite <version>" -srcfolder <staging> -ov -format UDZO <file>.dmg`. Include an `Applications` symlink in the staging dir.
 - **Windows** — zip `build/bin/GripLite.exe`.
-- **Linux** — tar.gz the binary (`tar -czf <file>.tar.gz -C build/bin GripLite`).
 
 Put all artifacts under `dist/` (which is gitignored).
 
 ## Release workflow
 
-1. Verify `go test ./...` and `npm run test:e2e` are green.
-2. Commit any outstanding changes and push `main`.
-3. Tag the release (`git tag -a <version> -m "..."` + `git push origin <version>`).
-4. Build all four platforms using the commands above. Cross-compiling from macOS is supported by Wails; `wails doctor` can confirm.
-5. Run `./scripts/release.sh <version>` — this is the canonical path; it performs steps 4–6. Only fall back to manual commands if the script is missing.
-6. Create the GitHub release with `gh release create <version> --title "GripLite <version>" --notes "..." dist/*.dmg dist/*.zip dist/*.tar.gz`.
-7. Verify with `gh release view <version> --json assets` that **all four files** are listed.
+1. Commit any outstanding changes and push `main`.
+2. Tag the release (`git tag -a <version> -m "..."` + `git push origin <version>`).
+3. Run `./scripts/release.sh <version>` — this is the canonical path; it performs steps 3–5. Only fall back to manual commands if the script is missing.
+4. Create the GitHub release with `gh release create <version> --title "GripLite <version>" --notes "..." dist/*.dmg dist/*.zip`.
+5. Verify with `gh release view <version> --json assets` that **all three files** are listed.
 
 ## Authentication
 
@@ -88,7 +66,6 @@ Every release's notes must include:
 - **Highlights** — what's new / fixed
 - **Download table** with one row per artifact + platform
 - **macOS note** about unsigned Gatekeeper bypass (`xattr -dr com.apple.quarantine`)
-- **Known limitations**
 
 Example:
 
@@ -99,5 +76,4 @@ Example:
 | macOS (Apple Silicon) | `GripLite-v0.1.2-darwin-arm64.dmg` |
 | macOS (Intel) | `GripLite-v0.1.2-darwin-amd64.dmg` |
 | Windows x64 | `GripLite-v0.1.2-windows-amd64.zip` |
-| Linux x64 | `GripLite-v0.1.2-linux-amd64.tar.gz` |
 ```

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # GripLite release builder.
 #
-# Builds darwin/arm64 + darwin/amd64 + windows/amd64 + linux/amd64 and drops
-# matching installers / archives under ./dist. Does NOT push or create the
-# GitHub release — call `gh release create` afterwards with dist/*.
+# Builds darwin/arm64 + darwin/amd64 + windows/amd64 and drops matching
+# installers / archives under ./dist. Does NOT push or create the GitHub
+# release — call `gh release create` afterwards with dist/*.
 #
 # Usage:
 #   scripts/release.sh v0.1.2
@@ -33,7 +33,7 @@ if [[ ! -x "$WAILS" ]]; then
 fi
 
 mkdir -p dist
-rm -f dist/GripLite-"${VERSION}"-*.dmg dist/GripLite-"${VERSION}"-*.zip dist/GripLite-"${VERSION}"-*.tar.gz
+rm -f dist/GripLite-"${VERSION}"-*.dmg dist/GripLite-"${VERSION}"-*.zip
 
 echo "==> GripLite release ${VERSION}   date=${BUILD_DATE}"
 echo "==> wails = ${WAILS}"
@@ -72,22 +72,13 @@ rm -rf "$STAGING"
 build_one windows/amd64 keep
 ( cd build/bin && zip -q "${ROOT}/dist/GripLite-${VERSION}-windows-amd64.zip" GripLite.exe )
 
-# --- linux/amd64 ------------------------------------------------------------
-# Wails cannot cross-compile Linux from macOS; use Docker (Bookworm +
-# libwebkit2gtk-4.0-dev + fresh npm ci for linux/amd64 esbuild).
-if [[ "$(uname -s)" == Darwin ]]; then
-  echo ""
-  echo "---- linux/amd64 via Docker (required on macOS) ----"
-  chmod +x "${ROOT}/scripts/build-linux-amd64-docker.sh"
-  "${ROOT}/scripts/build-linux-amd64-docker.sh" "${VERSION}" "${LDFLAGS}"
-else
-  build_one linux/amd64 keep
-fi
-( cd build/bin && tar -czf "${ROOT}/dist/GripLite-${VERSION}-linux-amd64.tar.gz" GripLite )
-
 echo ""
 echo "==> artifacts:"
 ls -lh dist/GripLite-"${VERSION}"-*
+
+# Restore macOS-native node_modules after cross-compiling for Windows
+# (wails build -platform windows reuses the existing node_modules, so esbuild
+# stays darwin-arm64; nothing extra to do here).
 
 cat <<EOF
 
@@ -97,6 +88,5 @@ cat <<EOF
       --notes-file RELEASE_NOTES.md \\
       dist/GripLite-${VERSION}-darwin-arm64.dmg \\
       dist/GripLite-${VERSION}-darwin-amd64.dmg \\
-      dist/GripLite-${VERSION}-windows-amd64.zip \\
-      dist/GripLite-${VERSION}-linux-amd64.tar.gz
+      dist/GripLite-${VERSION}-windows-amd64.zip
 EOF

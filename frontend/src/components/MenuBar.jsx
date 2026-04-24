@@ -17,7 +17,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 
-export default function MenuBar({ onAbout }) {
+export default function MenuBar({ onAbout, onDocs }) {
   const [openMenu, setOpenMenu] = useState(null) // 'help' | null
   const containerRef = useRef(null)
 
@@ -40,7 +40,8 @@ export default function MenuBar({ onAbout }) {
       id: 'help',
       label: 'Help',
       items: [
-        { label: 'About GripLite', action: () => { onAbout?.(); setOpenMenu(null) } },
+        { label: 'Keyboard Shortcuts', shortcut: '?', action: () => { onDocs?.(); setOpenMenu(null) } },
+        { label: 'About GripLite',     action: () => { onAbout?.(); setOpenMenu(null) } },
       ],
     },
   ]

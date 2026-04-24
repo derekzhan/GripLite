@@ -795,22 +795,25 @@ func (c *MetadataCache) GetTableSchema(
 //
 // keyword may be a partial identifier (e.g. "use", "ord").
 // The search is case-insensitive.
-func (c *MetadataCache) SearchColumns(ctx context.Context, connID, keyword string) ([]CompletionItem, error) {
+// SearchColumns returns autocomplete candidates for the given keyword,
+// optionally restricted to a single database schema (dbName).
+// Pass an empty dbName to search across all schemas for this connection.
+func (c *MetadataCache) SearchColumns(ctx context.Context, connID, dbName, keyword string) ([]CompletionItem, error) {
 	if keyword == "" {
 		return nil, nil
 	}
 
-	items, err := c.ftsSearch(ctx, connID, keyword)
+	items, err := c.ftsSearch(ctx, connID, dbName, keyword)
 	if err != nil || len(items) == 0 {
 		// Fall back to LIKE for robustness (FTS may still be building).
-		return c.likeSearch(ctx, connID, keyword)
+		return c.likeSearch(ctx, connID, dbName, keyword)
 	}
 	return items, nil
 }
 
 // ftsSearch uses the FTS5 virtual table for prefix matching.
 // The FTS5 MATCH syntax 'keyword*' matches any token starting with keyword.
-func (c *MetadataCache) ftsSearch(ctx context.Context, connID, keyword string) ([]CompletionItem, error) {
+func (c *MetadataCache) ftsSearch(ctx context.Context, connID, dbName, keyword string) ([]CompletionItem, error) {
 	// FTS5 requires the match token to not start with punctuation; guard against
 	// empty or special inputs that would produce a syntax error.
 	token := strings.TrimSpace(keyword)
@@ -823,7 +826,14 @@ func (c *MetadataCache) ftsSearch(ctx context.Context, connID, keyword string) (
 
 	// SQLite disallows LIMIT on a bare compound arm; each SELECT that needs
 	// its own LIMIT must be wrapped in a sub-SELECT.
-	const q = `
+	// When dbName is provided we add an extra AND db_name = ? clause so that
+	// only the currently-selected schema is returned.
+	dbFilter := ""
+	if dbName != "" {
+		dbFilter = " AND db_name = ?"
+	}
+
+	q := fmt.Sprintf(`
 		SELECT * FROM (
 		    SELECT
 		        'column'    AS kind,
@@ -833,7 +843,7 @@ func (c *MetadataCache) ftsSearch(ctx context.Context, connID, keyword string) (
 		        table_name,
 		        CAST(is_pk AS INTEGER) AS is_pk
 		    FROM metadata_fts
-		    WHERE conn_id = ? AND metadata_fts MATCH ?
+		    WHERE conn_id = ? AND metadata_fts MATCH ?%s
 		    LIMIT 40
 		)
 		UNION ALL
@@ -846,11 +856,21 @@ func (c *MetadataCache) ftsSearch(ctx context.Context, connID, keyword string) (
 		        ''          AS table_name,
 		        0           AS is_pk
 		    FROM metadata_fts
-		    WHERE conn_id = ? AND table_name MATCH ?
+		    WHERE conn_id = ? AND table_name MATCH ?%s
 		    LIMIT 20
-		)`
+		)`, dbFilter, dbFilter)
 
-	rows, err := c.db.QueryContext(ctx, q, connID, ftsQuery, connID, ftsQuery)
+	var args []any
+	args = append(args, connID, ftsQuery)
+	if dbName != "" {
+		args = append(args, dbName)
+	}
+	args = append(args, connID, ftsQuery)
+	if dbName != "" {
+		args = append(args, dbName)
+	}
+
+	rows, err := c.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -859,10 +879,15 @@ func (c *MetadataCache) ftsSearch(ctx context.Context, connID, keyword string) (
 }
 
 // likeSearch is the fallback path using LIKE with COLLATE NOCASE indexes.
-func (c *MetadataCache) likeSearch(ctx context.Context, connID, keyword string) ([]CompletionItem, error) {
+func (c *MetadataCache) likeSearch(ctx context.Context, connID, dbName, keyword string) ([]CompletionItem, error) {
 	pattern := keyword + "%"
 
-	const q = `
+	dbFilter := ""
+	if dbName != "" {
+		dbFilter = " AND db_name = ?"
+	}
+
+	q := fmt.Sprintf(`
 		SELECT * FROM (
 		    SELECT
 		        'column'    AS kind,
@@ -874,7 +899,7 @@ func (c *MetadataCache) likeSearch(ctx context.Context, connID, keyword string) 
 		    FROM metadata_columns
 		    WHERE conn_id = ?
 		      AND (column_name LIKE ? COLLATE NOCASE
-		        OR table_name  LIKE ? COLLATE NOCASE)
+		        OR table_name  LIKE ? COLLATE NOCASE)%s
 		    LIMIT 40
 		)
 		UNION ALL
@@ -888,13 +913,21 @@ func (c *MetadataCache) likeSearch(ctx context.Context, connID, keyword string) 
 		        0           AS is_pk
 		    FROM metadata_columns
 		    WHERE conn_id = ?
-		      AND table_name LIKE ? COLLATE NOCASE
+		      AND table_name LIKE ? COLLATE NOCASE%s
 		    LIMIT 20
-		)`
+		)`, dbFilter, dbFilter)
 
-	rows, err := c.db.QueryContext(ctx, q,
-		connID, pattern, pattern,
-		connID, pattern)
+	var args []any
+	args = append(args, connID, pattern, pattern)
+	if dbName != "" {
+		args = append(args, dbName)
+	}
+	args = append(args, connID, pattern)
+	if dbName != "" {
+		args = append(args, dbName)
+	}
+
+	rows, err := c.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -31,7 +31,8 @@ import QueryTabView       from './components/QueryTabView'
 import ConnectionDialog   from './components/ConnectionDialog'
 import MenuBar            from './components/MenuBar'
 import ThemeToggle        from './components/ThemeToggle'
-import AboutModal         from './components/AboutModal'
+import AboutModal              from './components/AboutModal'
+import KeyboardShortcutsModal from './components/KeyboardShortcutsModal'
 import ErrorBoundary      from './components/ErrorBoundary'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
@@ -174,7 +175,7 @@ export default function App() {
       const rid = nextResultId()
       let queryResult
       try {
-        queryResult = await runQuery(connIdRef.current, sql)
+        queryResult = await runQuery(connIdRef.current, opts.dbName ?? '', sql)
       } catch (err) {
         // Two separate hardening steps here:
         //   1. normalizeError() guarantees a string → React cannot crash
@@ -297,6 +298,7 @@ export default function App() {
     const tab = makeConsoleTab()
     if (opts?.initialSql) tab.initialSql = opts.initialSql
     if (opts?.label)      tab.label      = opts.label
+    if (opts?.defaultDb)  tab.defaultDb  = opts.defaultDb
     setTabs((prev) => [...prev, tab])
     // NOTE: this seed MUST match the shape expected by the ResultPanel
     // render path (see `activeResult` derivation below).  The old shape
@@ -337,6 +339,12 @@ export default function App() {
 
   // ── Phase 18: About modal ──────────────────────────────────────────────────
   const [aboutOpen, setAboutOpen] = useState(false)
+  const [docsOpen,  setDocsOpen]  = useState(false)
+
+  const handleNewConnectionOpen = useCallback(() => {
+    setConnDialogInitId(null)
+    setConnDialogOpen(true)
+  }, [])
 
   const handlePropertiesOpen = useCallback((connId) => {
     setConnDialogInitId(connId ?? null)
@@ -371,12 +379,8 @@ export default function App() {
           the user can still move the frameless window by grabbing the bar.
       */}
       <header
-        className="flex items-center h-9 px-3 gap-3 flex-shrink-0"
-        style={{
-          WebkitAppRegion: 'drag',
-          background: 'var(--bg-titlebar)',
-          borderBottom: '1px solid var(--border-subtle)',
-        }}
+        className="flex items-center h-9 px-3 gap-3 flex-shrink-0 bg-titlebar border-b border-line-subtle"
+        style={{ WebkitAppRegion: 'drag' }}
       >
         <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' }}>
           <span className="text-[13px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
@@ -389,7 +393,7 @@ export default function App() {
 
         {/* Menu bar (Help → About, extensible) */}
         <div className="h-full ml-1">
-          <MenuBar onAbout={() => setAboutOpen(true)} />
+          <MenuBar onAbout={() => setAboutOpen(true)} onDocs={() => setDocsOpen(true)} />
         </div>
 
         {/* Draggable filler — lets the user move the window */}
@@ -419,6 +423,7 @@ export default function App() {
               reloadKey={connectionsReloadKey}
               selectedConnId={activeConnId}
               onSelectConn={setActiveConnId}
+              onNewConnection={handleNewConnectionOpen}
               onTableOpen={handleTableOpen}
               onDatabaseOpen={handleDatabaseOpen}
               onQueryOpen={handleQueryOpen}
@@ -449,7 +454,7 @@ export default function App() {
                 <WelcomePane
                   hasConnections={connections.length > 0}
                   onNewConsole={handleNewConsole}
-                  onNewConnection={() => handlePropertiesOpen(null)}
+                  onNewConnection={handleNewConnectionOpen}
                 />
               )}
 
@@ -485,6 +490,10 @@ export default function App() {
                           isRunning={data.isRunning}
                           connectionId={connIdRef.current}
                           initialSql={tab.initialSql}
+                          defaultDb={tab.defaultDb ?? connInfo?.database ?? ''}
+                          connectionLabel={connInfo
+                            ? (connInfo.name || `${connInfo.host}:${connInfo.port}`)
+                            : ''}
                         />
                         <ResultPanel
                           queryResult={activeResult?.queryResult ?? null}
@@ -599,6 +608,9 @@ export default function App() {
 
       {/* ── About modal (Phase 18) ──────────────────────────────────── */}
       <AboutModal isOpen={aboutOpen} onClose={() => setAboutOpen(false)} />
+
+      {/* ── Keyboard Shortcuts modal ─────────────────────────────────── */}
+      <KeyboardShortcutsModal isOpen={docsOpen} onClose={() => setDocsOpen(false)} />
 
       {/* ── Global toast stack (Phase 21) ────────────────────────────
           Mounted once at the root so any component can dispatch via

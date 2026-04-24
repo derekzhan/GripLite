@@ -83,8 +83,8 @@ export function useEditState(columnsArg, rowsArg, resetKey, opts = {}) {
   )
 
   const isAdded = useCallback(
-    (row) => row >= rows.length,
-    [rows.length],
+    (row) => row >= rows.length && row < rows.length + addedRows.length,
+    [rows.length, addedRows.length],
   )
 
   const isEdited = useCallback(

@@ -60,11 +60,11 @@ export function PreviewTableAlter(arg1:string,arg2:driver.SchemaChangeRequest):P
 
 export function RemoveConnection(arg1:string):Promise<void>;
 
-export function RunQuery(arg1:string,arg2:string):Promise<main.QueryResult>;
+export function RunQuery(arg1:string,arg2:string,arg3:string):Promise<main.QueryResult>;
 
 export function SaveConnection(arg1:store.SavedConnection):Promise<void>;
 
-export function SearchCompletions(arg1:string,arg2:string):Promise<Array<cache.CompletionItem>>;
+export function SearchCompletions(arg1:string,arg2:string,arg3:string):Promise<Array<cache.CompletionItem>>;
 
 export function SetDataFilterHistory(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
 

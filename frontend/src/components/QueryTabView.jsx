@@ -30,7 +30,7 @@ export default function QueryTabView({ sql, connId, label }) {
     if (!sql || !connId) return
     let cancelled = false
     setIsRunning(true)
-    runQuery(connId, sql)
+    runQuery(connId, '', sql)
       .then((result) => {
         if (cancelled) return
         setQueryResult(result)

@@ -81,7 +81,7 @@
 
   /* Glide DataGrid accents that need explicit values in JS  */
   --grid-bg:           #ffffff;
-  --grid-bg-alt:       #fafbfc;
+  --grid-bg-alt:       #ffffff;
   --grid-bg-header:    #f6f8fa;
   --grid-bg-header-h:  #eef0f3;
   --grid-border:       #d0d7de;

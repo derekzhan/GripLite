@@ -57,13 +57,15 @@ function mockQueryResult(sql) {
  * RunQuery — execute SQL on a named connection.
  *
  * @param {string} connectionID
+ * @param {string} dbName  active schema; backend runs USE `db` first on the
+ *   same dedicated connection so the database context is always consistent,
+ *   even with a connection pool.  Pass '' to skip.
  * @param {string} sql
- * @returns {Promise<import('../wailsjs/go/main/App').RunQuery extends (...args: any[]) => Promise<infer R> ? R : never>}
  */
-export async function runQuery(connectionID, sql) {
+export async function runQuery(connectionID, dbName, sql) {
   if (isWails()) {
     const { RunQuery } = await import('../../wailsjs/go/main/App.js')
-    return RunQuery(connectionID, sql)
+    return RunQuery(connectionID, dbName ?? '', sql)
   }
   // Browser dev mock
   await delay(150 + Math.random() * 200)
@@ -505,14 +507,15 @@ function buildMockAlterPreview(req) {
  * Sub-millisecond in Wails runtime; returns mock data in browser dev mode.
  *
  * @param {string} connectionID
+ * @param {string} dbName  active schema to restrict results; '' = all schemas
  * @param {string} keyword  partial identifier typed by the user
  * @returns {Promise<Array<{kind,label,detail,dbName,tableName,isPrimaryKey}>>}
  */
-export async function searchCompletions(connectionID, keyword) {
+export async function searchCompletions(connectionID, dbName, keyword) {
   if (!keyword) return []
   if (isWails()) {
     const { SearchCompletions } = await import('../../wailsjs/go/main/App.js')
-    return SearchCompletions(connectionID, keyword) ?? []
+    return SearchCompletions(connectionID, dbName ?? '', keyword) ?? []
   }
   const kw = keyword.toLowerCase()
   return MOCK_SCHEMA.filter(

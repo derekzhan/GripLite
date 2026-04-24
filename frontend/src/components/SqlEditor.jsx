@@ -1,32 +1,45 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
 import Editor from '@monaco-editor/react'
-import { searchCompletions, runQuery } from '../lib/bridge'
+import { format as formatSql } from 'sql-formatter'
+import { searchCompletions, runQuery, fetchDatabases } from '../lib/bridge'
 import { splitSql, findStatementAt } from '../lib/sqlSplit'
 import { useTheme } from '../theme/ThemeProvider'
 
 const INITIAL_SQL = `-- GripLite SQL Console
--- Tip: Ctrl+Enter to run the selected query
+-- Tip: ⌘+Enter / Ctrl+Enter to run the selected query
 
-SELECT
-    u.id,
-    u.name,
-    u.email,
-    COUNT(o.id) AS order_count,
-    SUM(o.total) AS total_spent
-FROM users u
-LEFT JOIN orders o ON o.user_id = u.id
-WHERE u.created_at >= '2024-01-01'
-GROUP BY u.id, u.name, u.email
-ORDER BY total_spent DESC
-LIMIT 100;
 `
 
 const TABS_INIT = [
   { id: 1, label: 'Console 1', content: INITIAL_SQL },
-  { id: 2, label: 'Console 2', content: '-- New query\nSELECT * FROM products LIMIT 50;\n' },
 ]
 
-let nextTabId = 3
+let nextTabId = 2
+
+/**
+ * resolveTableAlias — scan a SQL string for FROM / JOIN clauses and return
+ * the real table name for a given alias token.
+ *
+ * Handles both plain and backtick-quoted identifiers, and optional AS keyword:
+ *   FROM de_approval t      → alias "t" → "de_approval"
+ *   FROM de_approval AS t   → alias "t" → "de_approval"
+ *   JOIN `orders` o         → alias "o" → "orders"
+ *
+ * Returns null when no mapping is found (caller treats the token as a direct
+ * table name, e.g. `de_approval.id`).
+ */
+function resolveTableAlias(sql, alias) {
+  const pat = new RegExp(
+    `\\b(?:FROM|JOIN)\\s+\`?(\\w+)\`?\\s+(?:AS\\s+)?\`?${alias}\`?\\b`,
+    'gi',
+  )
+  let m
+  // eslint-disable-next-line no-cond-assign
+  while ((m = pat.exec(sql)) !== null) {
+    return m[1]
+  }
+  return null
+}
 
 /**
  * @param {object} props
@@ -36,17 +49,21 @@ let nextTabId = 3
  *   console opens already populated with the chosen template.  If the seed
  *   is empty/undefined, the editor falls back to the default sample SQL.
  */
-export default function SqlEditor({ onRunQuery, isRunning = false, connectionId = 'mock-conn', initialSql }) {
+export default function SqlEditor({
+  onRunQuery,
+  isRunning = false,
+  connectionId = 'mock-conn',
+  initialSql,
+  defaultDb = '',
+  connectionLabel = '',
+}) {
   const { resolvedTheme } = useTheme()
   // initialSql is captured ONCE at mount; subsequent prop changes are
   // ignored because the editor's tab list is owned internally and re-seeding
   // it would overwrite anything the user has typed.
   const [tabs, setTabs] = useState(() => {
     if (initialSql && initialSql.trim()) {
-      return [
-        { id: 1, label: 'Console 1', content: initialSql },
-        TABS_INIT[1],
-      ]
+      return [{ id: 1, label: 'Console 1', content: initialSql }]
     }
     return TABS_INIT
   })
@@ -60,6 +77,57 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
   const runMenuRef = useRef(null)
 
   const activeContent = tabs.find((t) => t.id === activeTab)?.content ?? ''
+
+  // ── Database selector state ─────────────────────────────────────────────
+  const [databases,     setDatabases]     = useState([])
+  const [dbsLoading,    setDbsLoading]    = useState(false)
+  const [selectedDb,    setSelectedDb]    = useState(defaultDb)
+  const [dbDropdownOpen, setDbDropdownOpen] = useState(false)
+  const dbDropdownRef  = useRef(null)
+  // Stable ref so the Monaco completion provider (created once) always reads
+  // the latest selected database without being recreated on every change.
+  const selectedDbRef  = useRef(defaultDb)
+
+  // Keep selectedDbRef in sync so the Monaco provider always has the latest value.
+  useEffect(() => { selectedDbRef.current = selectedDb }, [selectedDb])
+
+  // Fetch databases whenever the active connection changes.
+  useEffect(() => {
+    setSelectedDb(defaultDb)
+    if (!connectionId) return
+    let cancelled = false
+    setDbsLoading(true)
+    fetchDatabases(connectionId)
+      .then((dbs) => { if (!cancelled) setDatabases(dbs ?? []) })
+      .catch(() => { if (!cancelled) setDatabases([]) })
+      .finally(() => { if (!cancelled) setDbsLoading(false) })
+    return () => { cancelled = true }
+  }, [connectionId, defaultDb])
+
+  // Close db dropdown on outside click / Escape.
+  useEffect(() => {
+    if (!dbDropdownOpen) return
+    const close = (e) => {
+      if (dbDropdownRef.current && !dbDropdownRef.current.contains(e.target)) {
+        setDbDropdownOpen(false)
+      }
+    }
+    const closeEsc = (e) => { if (e.key === 'Escape') setDbDropdownOpen(false) }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown',   closeEsc)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown',   closeEsc)
+    }
+  }, [dbDropdownOpen])
+
+  // Switch active database: update UI state only.
+  // The selected db is forwarded with every query via meta.dbName, so the
+  // backend runs USE `db` on the same dedicated connection before executing.
+  const handleDbSelect = useCallback((db) => {
+    setSelectedDb(db)
+    setDbDropdownOpen(false)
+  }, [])
 
   const handleEditorMount = (editor, monaco) => {
     editorRef.current = editor
@@ -79,6 +147,56 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
       () => runAll(),
     )
 
+    // ── Format SQL — context menu item + Shift+Alt+F shortcut ─────────────
+    editor.addAction({
+      id:    'griplite.formatSql',
+      label: 'Format SQL',
+      // Shift+Alt+F matches VS Code / DBeaver convention
+      // eslint-disable-next-line no-bitwise
+      keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
+      contextMenuGroupId: '1_modification',
+      contextMenuOrder:   1.5,
+      run(ed) {
+        const model    = ed.getModel()
+        const sel      = ed.getSelection()
+        const hasRange = sel && !sel.isEmpty()
+
+        // Format only the selection when text is selected; otherwise the whole buffer.
+        const input = hasRange
+          ? model.getValueInRange(sel)
+          : model.getValue()
+
+        let formatted
+        try {
+          formatted = formatSql(input, {
+            language:            'mysql',
+            tabWidth:            2,
+            keywordCase:         'upper',
+            linesBetweenQueries: 1,
+          })
+        } catch {
+          // Silently ignore — malformed SQL that the formatter can't parse.
+          return
+        }
+
+        if (hasRange) {
+          ed.executeEdits('format-sql', [{
+            range: sel,
+            text:  formatted,
+          }])
+        } else {
+          // Replace entire buffer, preserve cursor/scroll position best-effort.
+          const pos = ed.getPosition()
+          ed.executeEdits('format-sql', [{
+            range: model.getFullModelRange(),
+            text:  formatted,
+          }])
+          ed.setPosition(pos)
+        }
+        ed.focus()
+      },
+    })
+
     // ── Register SQL autocomplete provider ─────────────────────────────────
     // Dispose any previous provider registration to avoid duplicates when the
     // component re-mounts (e.g. Strict Mode double-invoke in development).
@@ -87,11 +205,75 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
     }
 
     completionProviderRef.current = monaco.languages.registerCompletionItemProvider('sql', {
-      // Trigger autocomplete on letters, digits, and the dot/underscore separators.
       triggerCharacters: ['.', '_'],
 
       provideCompletionItems: async (model, position) => {
-        // Extract the word the cursor is currently inside.
+        // Guard: Monaco broadcasts this call to every registered provider
+        // (one per mounted SqlEditor tab).  Return nothing for editors that
+        // are not the owner of the model being completed, otherwise the user
+        // sees N duplicates for N open console tabs.
+        if (model !== editorRef.current?.getModel()) {
+          return { suggestions: [] }
+        }
+
+        // Full text from start of document up to the current cursor position.
+        const textUntilCursor = model.getValueInRange({
+          startLineNumber: 1, startColumn: 1,
+          endLineNumber: position.lineNumber, endColumn: position.column,
+        })
+
+        // ── Dot-completion: "alias." or "table." or "alias.partial" ──────
+        // Detect when the cursor sits immediately after a dot (with an
+        // optional partial column name already typed).
+        const dotMatch = textUntilCursor.match(/(\w+)\.(\w*)$/)
+        if (dotMatch) {
+          const qualifier = dotMatch[1]
+          const fullSql   = model.getValue()
+
+          // Resolve alias → real table name; fall back to the token itself
+          // for bare table-name qualifiers like `de_approval.id`.
+          const tableName = resolveTableAlias(fullSql, qualifier) ?? qualifier
+
+          let items = []
+          try {
+            // Search by table name — the cache's LIKE filter returns every
+            // column whose table_name starts with `tableName`.
+            items = await searchCompletions(connectionId, selectedDbRef.current, tableName)
+          } catch {
+            return { suggestions: [] }
+          }
+
+          // Keep only columns that belong to this exact table.
+          const colItems = items.filter(
+            (it) => it.kind === 'column' && it.tableName === tableName,
+          )
+
+          // The range replaces any partial word already typed after the dot.
+          const wordInfo = model.getWordUntilPosition(position)
+          const range = {
+            startLineNumber: position.lineNumber,
+            endLineNumber:   position.lineNumber,
+            startColumn:     wordInfo.startColumn,
+            endColumn:       wordInfo.endColumn,
+          }
+
+          return {
+            suggestions: colItems.map((item) => ({
+              label: {
+                label:       item.label,
+                description: item.detail,
+              },
+              kind:       monaco.languages.CompletionItemKind.Field,
+              insertText: item.label,
+              detail:     item.isPrimaryKey ? `🔑 PK · ${item.detail}` : item.detail,
+              documentation: item.isPrimaryKey ? '🔑 Primary Key' : undefined,
+              sortText: item.isPrimaryKey ? '0' + item.label : '1' + item.label,
+              range,
+            })),
+          }
+        }
+
+        // ── Regular keyword completion (table names + columns) ────────────
         const wordInfo = model.getWordUntilPosition(position)
         const keyword  = wordInfo.word
 
@@ -99,7 +281,9 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
 
         let items = []
         try {
-          items = await searchCompletions(connectionId, keyword)
+          // Pass selectedDb so the cache only returns tables/columns from the
+          // currently active schema, preventing cross-DB noise in suggestions.
+          items = await searchCompletions(connectionId, selectedDbRef.current, keyword)
         } catch {
           return { suggestions: [] }
         }
@@ -117,8 +301,6 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
             description: item.tableName ? `${item.tableName}.${item.label}` : item.label,
             detail:      ` ${item.detail}`,
           },
-          // Monaco completion kind constants:
-          // Field=5 (column), Class=7 (table)
           kind: item.kind === 'table'
             ? monaco.languages.CompletionItemKind.Class
             : monaco.languages.CompletionItemKind.Field,
@@ -158,7 +340,11 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
    */
   const validateSql = useCallback((sql, model, monaco) => {
     clearTimeout(validateTimerRef.current)
-    if (!sql?.trim()) {
+    const trimmed = sql?.trim() ?? ''
+    // Skip validation when there is no content, or when the user has only
+    // typed a single token (no whitespace) — a bare word like "t" or "select"
+    // is not a valid statement and EXPLAIN would always return a syntax error.
+    if (!trimmed || !trimmed.includes(' ')) {
       setSqlValid(null)
       if (model && !model.isDisposed()) {
         monaco.editor.setModelMarkers(model, 'sql-lint', [])
@@ -170,7 +356,7 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
       if (!model || model.isDisposed()) return
 
       try {
-        const result = await runQuery(connectionId, `EXPLAIN ${sql}`)
+        const result = await runQuery(connectionId, selectedDbRef.current, `EXPLAIN ${sql}`)
         if (!result || model.isDisposed()) return
 
         if (!result.error) {
@@ -285,7 +471,7 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
 
   const addTab = () => {
     const id = nextTabId++
-    setTabs((prev) => [...prev, { id, label: `Console ${id}`, content: '-- New query\n' }])
+    setTabs((prev) => [...prev, { id, label: `Console ${id}`, content: '' }])
     setActiveTab(id)
   }
 
@@ -317,15 +503,16 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
     const sel = editor.getSelection()
     const model = editor.getModel()
     const selected = sel && model ? model.getValueInRange(sel) : ''
+    const db = selectedDbRef.current
     if (selected && selected.trim()) {
-      onRunQuery?.(selected.trim())
+      onRunQuery?.(selected.trim(), { dbName: db })
       return
     }
     const full = editor.getValue() ?? ''
     if (!full.trim()) return
     const caret = model?.getOffsetAt(editor.getPosition()) ?? 0
     const stmt  = findStatementAt(full, caret)
-    onRunQuery?.(stmt ? stmt.sql : full.trim())
+    onRunQuery?.(stmt ? stmt.sql : full.trim(), { dbName: db })
   }, [onRunQuery])
 
   const runAll = useCallback(() => {
@@ -334,11 +521,12 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
     const full = editor.getValue() ?? ''
     const stmts = splitSql(full)
     if (stmts.length === 0) return
+    const db = selectedDbRef.current
     if (stmts.length === 1) {
-      onRunQuery?.(stmts[0].sql)
+      onRunQuery?.(stmts[0].sql, { dbName: db })
       return
     }
-    onRunQuery?.(stmts.map((s) => s.sql), { multi: true })
+    onRunQuery?.(stmts.map((s) => s.sql), { multi: true, dbName: db })
   }, [onRunQuery])
 
   return (
@@ -431,7 +619,75 @@ export default function SqlEditor({ onRunQuery, isRunning = false, connectionId 
           )}
         </div>
         <div className="h-4 w-px bg-line" />
-        <span className="text-[11px] text-fg-muted">db1 @ localhost</span>
+
+        {/* Connection label */}
+        {connectionLabel && (
+          <span className="text-[11px] text-fg-muted select-none">{connectionLabel}</span>
+        )}
+
+        {/* Database selector ─────────────────────────────────────────────
+            Shows the active database for this console.  Clicking it opens
+            a dropdown with every database on the connected server; selecting
+            one runs USE `db`; to switch the session context. */}
+        <div ref={dbDropdownRef} className="relative">
+          <button
+            onClick={() => setDbDropdownOpen((o) => !o)}
+            title="Switch active database"
+            className={[
+              'flex items-center gap-1 px-2 py-0.5 rounded border transition-colors text-[11px]',
+              'bg-sunken hover:bg-hover border-line text-fg-secondary',
+              dbDropdownOpen ? 'border-accent' : '',
+            ].join(' ')}
+            style={{ maxWidth: 180 }}
+          >
+            {dbsLoading ? (
+              <span className="text-fg-muted">…</span>
+            ) : (
+              <>
+                {/* tiny database icon — inline SVG so no extra import needed */}
+                <svg width="10" height="10" viewBox="0 0 12 12" fill="none" className="flex-shrink-0 opacity-60">
+                  <ellipse cx="6" cy="2.5" rx="5" ry="1.8" stroke="currentColor" strokeWidth="1.3"/>
+                  <path d="M1 2.5v3c0 1 2.24 1.8 5 1.8s5-.8 5-1.8v-3" stroke="currentColor" strokeWidth="1.3"/>
+                  <path d="M1 5.5v3c0 1 2.24 1.8 5 1.8s5-.8 5-1.8v-3" stroke="currentColor" strokeWidth="1.3"/>
+                </svg>
+                <span className="truncate" style={{ maxWidth: 120 }}>
+                  {selectedDb || 'No database'}
+                </span>
+                <span className="text-fg-muted flex-shrink-0 text-[9px]">▾</span>
+              </>
+            )}
+          </button>
+
+          {dbDropdownOpen && (
+            <div
+              className="absolute top-full left-0 mt-1 bg-panel border border-line rounded shadow-xl py-1
+                         text-[12px] z-50 overflow-y-auto"
+              style={{ minWidth: 180, maxHeight: 280 }}
+            >
+              {databases.length === 0 ? (
+                <div className="px-3 py-2 text-fg-muted text-[11px] italic">No databases found</div>
+              ) : (
+                databases.map((db) => (
+                  <button
+                    key={db}
+                    onClick={() => handleDbSelect(db)}
+                    className={[
+                      'w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors',
+                      db === selectedDb
+                        ? 'text-accent bg-selected'
+                        : 'text-fg-secondary hover:bg-hover',
+                    ].join(' ')}
+                  >
+                    {db === selectedDb
+                      ? <span className="text-[8px] flex-shrink-0">●</span>
+                      : <span className="w-2 flex-shrink-0" />}
+                    <span className="truncate">{db}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
 
         {/* SQL validation badge — updates 800 ms after typing stops */}
         {sqlValid === true && (

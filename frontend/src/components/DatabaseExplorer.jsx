@@ -43,7 +43,7 @@ import {
 } from 'lucide-react'
 import {
   listConnections, fetchDatabases, fetchTables, getTableSchema,
-  runQuery, syncMetadata, connect, disconnect,
+  runQuery, syncMetadata, connect, connectSaved, disconnect,
 } from '../lib/bridge'
 import { normalizeError } from '../lib/errors'
 import { toast } from '../lib/toast'
@@ -254,6 +254,7 @@ export default function DatabaseExplorer({
   reloadKey = 0,
   selectedConnId,
   onSelectConn,
+  onNewConnection,
   onTableOpen,
   onDatabaseOpen,
   onQueryOpen,
@@ -268,6 +269,11 @@ export default function DatabaseExplorer({
   const [nodeCache,    setNodeCache]    = useState(new Map()) // nodeId → CacheEntry
   const [searchQuery,  setSearchQuery]  = useState('')
   const [selected,     setSelected]     = useState(null)     // nodeId | null
+
+  // Stable ref so fetchChildren (empty dep-array) can call the latest
+  // onConnectionsChanged without being recreated on every render.
+  const onConnectionsChangedRef = useRef(onConnectionsChanged)
+  useEffect(() => { onConnectionsChangedRef.current = onConnectionsChanged }, [onConnectionsChanged])
 
   // When the parent supplies `connections`, use that as the source of truth;
   // otherwise fall back to the component's own fetched list (legacy mode,
@@ -290,13 +296,59 @@ export default function DatabaseExplorer({
   //   { kind: 'connection',    x, y, connId, connName }
   //   { kind: 'tables-folder', x, y, connId, dbName, nodeRef }
   // (One menu at a time, so a single state slot is enough.)
-  const [contextMenu, setContextMenu]  = useState(null)
-  const contextMenuRef = useRef(null)
+  const [contextMenu,     setContextMenu]     = useState(null)
+  const [focusedMenuIdx,  setFocusedMenuIdx]  = useState(-1)
+  const contextMenuRef    = useRef(null)
+  const focusedMenuIdxRef = useRef(-1)
+
+  // Keep the ref in sync so the keydown handler (closure) always reads the
+  // latest index without requiring it to be in the effect's dep array.
+  useEffect(() => { focusedMenuIdxRef.current = focusedMenuIdx }, [focusedMenuIdx])
+
+  // Reset focus whenever a new menu opens.
+  useEffect(() => { setFocusedMenuIdx(-1) }, [contextMenu])
 
   // Stable ref to nodeCache so callbacks always read the latest version
   // without re-creating themselves (avoids stale-closure bugs).
   const nodeCacheRef = useRef(nodeCache)
   useEffect(() => { nodeCacheRef.current = nodeCache }, [nodeCache])
+
+  // ── Auto-collapse disconnected connections ────────────────────────────────
+  //
+  // When a connection transitions from connected→disconnected (detected by
+  // comparing with the previous render's list), we wipe its subtree from
+  // nodeCache and remove it from `expanded`.  This prevents stale database /
+  // table nodes from lingering in the tree after the TCP pool is closed,
+  // which avoids the UX confusion of a tree that looks live but isn't.
+  const prevConnectionsRef = useRef([])
+  useEffect(() => {
+    const prevById = Object.fromEntries(
+      prevConnectionsRef.current.map((c) => [c.id, c]),
+    )
+    const newlyDisconnected = connections.filter(
+      (c) => !c.connected && prevById[c.id]?.connected === true,
+    )
+
+    if (newlyDisconnected.length > 0) {
+      setNodeCache((prev) => {
+        const next = new Map(prev)
+        const drop = (id) => {
+          const entry = next.get(id)
+          next.delete(id)
+          if (entry?.children) entry.children.forEach((ch) => drop(ch.id))
+        }
+        newlyDisconnected.forEach((conn) => drop(connNodeId(conn.id)))
+        return next
+      })
+      setExpanded((prev) => {
+        const next = new Set(prev)
+        newlyDisconnected.forEach((conn) => next.delete(connNodeId(conn.id)))
+        return next
+      })
+    }
+
+    prevConnectionsRef.current = connections
+  }, [connections])
 
   // ── Auto-expansion for search (Phase 17 / Task 3) ────────────────────────
   //
@@ -339,21 +391,67 @@ export default function DatabaseExplorer({
     [expanded, autoExpanded],
   )
 
-  // Close context menu on outside click or Escape
+  // Close context menu on outside click; full keyboard navigation when open.
   useEffect(() => {
     if (!contextMenu) return
+
     const close = (e) => {
       if (contextMenuRef.current && !contextMenuRef.current.contains(e.target)) {
         setContextMenu(null)
       }
     }
-    const closeOnEsc = (e) => { if (e.key === 'Escape') setContextMenu(null) }
+
+    const handleKey = (e) => {
+      // Build items fresh each keystroke so actions are always current.
+      const allItems  = buildMenuItems(contextMenu)
+      const items     = allItems.filter((it) => !it.divider)
+      const len       = items.length
+
+      if (e.key === 'Escape') {
+        setContextMenu(null)
+        return
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setFocusedMenuIdx((prev) => (prev + 1) % len)
+        return
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setFocusedMenuIdx((prev) => (prev - 1 + len) % len)
+        return
+      }
+
+      if (e.key === 'Enter') {
+        const idx = focusedMenuIdxRef.current
+        if (idx >= 0 && idx < len) {
+          e.preventDefault()
+          items[idx].action()
+          setContextMenu(null)
+        }
+        return
+      }
+
+      // Shortcut key (letter mnemonic or function key)
+      const matched = items.find(
+        (it) => it.key && it.key.toLowerCase() === e.key.toLowerCase()
+      )
+      if (matched) {
+        e.preventDefault()
+        matched.action()
+        setContextMenu(null)
+      }
+    }
+
     document.addEventListener('mousedown', close)
-    document.addEventListener('keydown', closeOnEsc)
+    document.addEventListener('keydown',   handleKey)
     return () => {
       document.removeEventListener('mousedown', close)
-      document.removeEventListener('keydown', closeOnEsc)
+      document.removeEventListener('keydown',   handleKey)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contextMenu])
 
   // ── Load connections on mount / on reloadKey bump ────────────────────────
@@ -435,6 +533,9 @@ export default function DatabaseExplorer({
         // visible schemas (or a transient permission glitch).
         const dbs = (await fetchDatabases(connId)) ?? []
         if (cancelled) return
+        // A successful fetchDatabases proves the connection is alive — refresh
+        // the connection list so the status dot updates immediately.
+        onConnectionsChangedRef.current?.()
         children = dbs.map((db) => ({
           id: dbNodeId(connId, db), type: 'database', label: db,
           connId, dbName: db, hasChildren: true,
@@ -445,7 +546,7 @@ export default function DatabaseExplorer({
         // we render so the tree stays snappy on busy servers.
         const sql =
           'SELECT user, host FROM mysql.user ORDER BY user, host'
-        const result = await runQuery(connId, sql)
+        const result = await runQuery(connId, '', sql)
         if (cancelled) return
         if (result?.error) throw new Error(result.error)
         children = (result.rows ?? []).map((row) => {
@@ -683,17 +784,17 @@ export default function DatabaseExplorer({
       toggleExpand(node)
     }
 
-    // Phase 22b: right-click on the "Tables" folder pops a DBeaver-style
-    // context menu (Create New Table / View Tables / Browse from here /
-    // Refresh).  Other folder kinds and node types fall through to the
-    // browser default — we can extend later.
+    // Right-click on a database node pops a DBeaver-style context menu
+    // (Create New Table / View Tables / Browse from here / Refresh).
+    // Right-click on the Tables folder is intentionally left unhandled so
+    // actions are discoverable in one consistent place: the database row.
     const handleContextMenu = (e) => {
-      if (isFolder && node.folderKind === 'tables') {
+      if (node.type === 'database') {
         e.preventDefault()
         e.stopPropagation()
         setSelected(node.id)
         setContextMenu({
-          kind:    'tables-folder',
+          kind:    'database',
           x:       e.clientX,
           y:       e.clientY,
           connId:  node.connId,
@@ -1012,7 +1113,7 @@ export default function DatabaseExplorer({
         {/* New connection button */}
         <button
           title="New connection…"
-          onClick={() => onPropertiesOpen?.(null)}
+          onClick={() => onNewConnection?.()}
           className="flex items-center justify-center w-5 h-5 text-fg-muted hover:text-success
                      hover:bg-hover rounded transition-colors"
         >
@@ -1045,8 +1146,8 @@ export default function DatabaseExplorer({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Escape') setSearchQuery('') }}
-            placeholder="在已连接的数据源中搜索表名…"
-            title="只搜索已建立连接的数据源；已保存但尚未连线的项不会出现"
+            placeholder="Search tables in connected sources…"
+            title="Only searches under live (connected) sources; saved but disconnected entries are excluded"
             className="w-full bg-panel text-fg-primary text-[12px] pl-7 pr-7 py-1
                        rounded border border-line outline-none
                        placeholder:text-fg-muted focus:border-accent transition-colors"
@@ -1109,9 +1210,9 @@ export default function DatabaseExplorer({
           && connectedConnections.length === 0 && (
           <div className="px-4 py-6 text-[12px] text-fg-muted text-center select-none">
             <Unplug size={20} className="mx-auto mb-2 opacity-50" />
-            <div>当前没有已连接的数据源</div>
+            <div>No connected data sources</div>
             <div className="text-[11px] mt-1 text-fg-faint">
-              请先点连接，再使用左侧搜表
+              Connect a source first, then search for its tables here
             </div>
           </div>
         )}
@@ -1125,42 +1226,60 @@ export default function DatabaseExplorer({
           ) && (
             <div className="px-4 py-6 text-[12px] text-fg-muted text-center select-none">
               <div className="text-[20px] mb-1">🔍</div>
-              <div>没有与「{searchQuery}」匹配的结果</div>
+              <div>No results for &quot;{searchQuery}&quot;</div>
               <div className="text-[11px] mt-1 text-fg-faint">
-                搜索范围仅限已连接的来源；可展开该连接以加载其表
+                Search is limited to connected sources; expand a connection to load its tables
               </div>
             </div>
           )}
       </div>
 
-      {/* ── Context menu (right-click on connection / tables-folder) ──── */}
+      {/* ── Context menu (right-click on connection / database / table) ── */}
       {contextMenu && (() => {
-        const items = buildMenuItems(contextMenu)
-        if (!items || items.length === 0) return null
+        const allItems = buildMenuItems(contextMenu)
+        if (!allItems || allItems.length === 0) return null
+        // Build a flat index of non-divider items so focusedMenuIdx aligns
+        // with the same position the keyboard handler uses.
+        let nonDividerIdx = -1
         return (
           <div
             ref={contextMenuRef}
             style={{ position: 'fixed', top: contextMenu.y, left: contextMenu.x, zIndex: 9999 }}
-            className="bg-panel border border-line rounded shadow-xl py-1 min-w-[200px] text-[12px]"
+            className="bg-panel border border-line rounded shadow-xl py-1 min-w-[210px] text-[12px]"
           >
-            {items.map((item, i) =>
-              item.divider ? (
-                <div key={i} className="border-t border-line-subtle my-1" />
-              ) : (
+            {allItems.map((item, i) => {
+              if (item.divider) {
+                return <div key={i} className="border-t border-line-subtle my-1" />
+              }
+              nonDividerIdx++
+              const isFocused = nonDividerIdx === focusedMenuIdx
+              const idx = nonDividerIdx
+              return (
                 <button
                   key={i}
                   onClick={() => { item.action(); setContextMenu(null) }}
-                  className="w-full text-left px-3 py-1.5 text-fg-primary hover:bg-selected hover:text-fg-on-accent transition-colors flex items-center justify-between gap-3"
+                  onMouseEnter={() => setFocusedMenuIdx(idx)}
+                  className={[
+                    'w-full text-left px-3 py-1.5 flex items-center justify-between gap-3 transition-colors',
+                    isFocused
+                      ? 'bg-selected text-fg-on-accent'
+                      : 'text-fg-primary hover:bg-selected hover:text-fg-on-accent',
+                  ].join(' ')}
                 >
                   <span className="flex-1 truncate">{item.label}</span>
                   {item.shortcut && (
-                    <span className="text-[10px] text-fg-muted tabular-nums flex-shrink-0">
+                    <kbd className={[
+                      'text-[10px] tabular-nums flex-shrink-0 px-1 py-0.5 rounded border font-mono',
+                      isFocused
+                        ? 'border-white/30 text-white/80 bg-white/10'
+                        : 'border-line text-fg-muted bg-panel',
+                    ].join(' ')}>
                       {item.shortcut}
-                    </span>
+                    </kbd>
                   )}
                 </button>
               )
-            )}
+            })}
           </div>
         )
       })()}
@@ -1179,18 +1298,16 @@ export default function DatabaseExplorer({
       return [
         {
           label:    <MenuLabel icon={ListChecks} text="View Table" />,
-          shortcut: 'F4',
+          shortcut: 'F4', key: 'F4',
           action:   () => openTable(nodeRef, null, 'properties'),
         },
       ]
     }
 
-    if (ctx.kind === 'tables-folder') {
+    if (ctx.kind === 'database') {
       const { connId, dbName, nodeRef } = ctx
-      const qDb  = quoteIdent(dbName)
       const newTableTemplate =
 `-- Create a new table in ${dbName}
-USE ${qDb};
 
 CREATE TABLE \`new_table\` (
   \`id\`         INT(11)      NOT NULL AUTO_INCREMENT,
@@ -1199,32 +1316,30 @@ CREATE TABLE \`new_table\` (
   PRIMARY KEY (\`id\`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 `
-      const browseTemplate =
-`-- Browse ${dbName}
-USE ${qDb};
-
-`
+      const browseTemplate = `-- Browse ${dbName}\n\n`
       return [
         {
-          label:    <MenuLabel icon={Plus}       text="Create New Table…" />,
-          action:   () => onConsoleOpen?.({ initialSql: newTableTemplate, label: `New table — ${dbName}` }),
+          label:    <MenuLabel icon={Play}       text="Browse from here" />,
+          shortcut: 'B', key: 'b',
+          action:   () => onConsoleOpen?.({ initialSql: browseTemplate, label: `Browse — ${dbName}`, defaultDb: dbName }),
         },
         {
           label:    <MenuLabel icon={ListChecks} text="View Tables" />,
-          shortcut: 'F4',
+          shortcut: 'F4', key: 'F4',
           action:   () => openDatabase({ dbName, connId }, null),
         },
         {
-          label:    <MenuLabel icon={Play}       text="Browse from here" />,
-          action:   () => onConsoleOpen?.({ initialSql: browseTemplate, label: `Browse — ${dbName}` }),
+          label:    <MenuLabel icon={Plus}       text="Create New Table…" />,
+          shortcut: 'N', key: 'n',
+          action:   () => onConsoleOpen?.({ initialSql: newTableTemplate, label: `New table — ${dbName}`, defaultDb: dbName }),
         },
         { divider: true },
         {
           label:    <MenuLabel icon={RotateCw}   text="Refresh" />,
-          shortcut: 'F5',
+          shortcut: 'F5', key: 'F5',
           action:   () => refreshNode(nodeRef ?? {
-            id: `folder::tables::${connId}::${dbName}`,
-            type: 'folder', folderKind: 'tables',
+            id: `db::${connId}::${dbName}`,
+            type: 'database',
             connId, dbName, hasChildren: true,
           }, null),
         },
@@ -1238,15 +1353,11 @@ USE ${qDb};
       const handleConnect = async () => {
         if (!conn) return
         try {
-          await connect({
-            id:       conn.id,
-            kind:     conn.kind,
-            host:     conn.host,
-            port:     conn.port,
-            username: conn.username,
-            password: conn.password ?? '',
-            database: conn.database ?? '',
-          })
+          // Use connectSaved so the backend reads credentials from the secure
+          // local store — ConnectionInfo intentionally omits username/password,
+          // so constructing the config object here would always send empty
+          // credentials and silently fail in the driver layer.
+          await connectSaved(conn.id)
           toast.success(`Connected to ${conn.name || conn.id}`)
         } catch (e) {
           // Never let a rejected Promise fall back into React state as a
@@ -1272,12 +1383,12 @@ USE ${qDb};
         onConnectionsChanged?.()
       }
       return [
-        { label: <MenuLabel icon={Link2}     text="Connect" />,     action: handleConnect },
-        { label: <MenuLabel icon={Unplug}    text="Disconnect" />,  action: handleDisconnect },
+        { label: <MenuLabel icon={Link2}     text="Connect" />,     shortcut: 'C', key: 'c', action: handleConnect },
+        { label: <MenuLabel icon={Unplug}    text="Disconnect" />,  shortcut: 'D', key: 'd', action: handleDisconnect },
         { divider: true },
-        { label: <MenuLabel icon={RotateCw}  text="Refresh" />,     action: () => refreshConnection(ctx.connId) },
+        { label: <MenuLabel icon={RotateCw}  text="Refresh" />,     shortcut: 'F5', key: 'F5', action: () => refreshConnection(ctx.connId) },
         { divider: true },
-        { label: <MenuLabel icon={Settings2} text="Properties…" />, action: () => onPropertiesOpen?.(ctx.connId) },
+        { label: <MenuLabel icon={Settings2} text="Properties…" />, shortcut: 'P', key: 'p', action: () => onPropertiesOpen?.(ctx.connId) },
       ]
     }
 

@@ -21,7 +21,7 @@
  * object each time the active theme flips.  All callers re-render then
  * because the returned object has a new identity.
  */
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo, forwardRef } from 'react'
 import { DataEditor, GridCellKind } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { useTheme } from '../theme/ThemeProvider'
@@ -53,7 +53,7 @@ const LIGHT_PALETTE = {
   syntaxKeyword: '#cf222e',
   success:       '#1a7f37',
   gridBg:        '#ffffff',
-  gridBgAlt:     '#fafbfc',
+  gridBgAlt:     '#ffffff',
   gridBgHeader:  '#f6f8fa',
   gridBgHeaderH: '#eef0f3',
   gridBorder:    '#d0d7de',
@@ -175,7 +175,14 @@ export function useRowOverrides() {
  *   numRows         – total visible row count
  *   rowMarkers      – "number" | "none" (default "number")
  */
-export function AutoSizedGrid({
+/**
+ * AutoSizedGrid — ResizeObserver wrapper around Glide DataEditor.
+ *
+ * The ref forwarded from callers points at the inner DataEditor, exposing
+ * Glide's imperative API (e.g. `updateCells`, `scrollTo`) so that features
+ * like client-side sort can force a canvas repaint without remounting.
+ */
+export const AutoSizedGrid = forwardRef(function AutoSizedGrid({
   columns,
   getCellContentFn,
   numRows,
@@ -186,7 +193,7 @@ export function AutoSizedGrid({
   // Any additional Glide DataEditor props (e.g. getRowThemeOverride, onCellClicked)
   // are forwarded via rest so callers never need to fork this component.
   ...rest
-}) {
+}, ref) {
   const containerRef = useRef(null)
   const [dims, setDims] = useState({ width: 0, height: 0 })
   const theme = useGlideTheme()
@@ -206,6 +213,7 @@ export function AutoSizedGrid({
     <div ref={containerRef} style={{ width: '100%', height: '100%', overflow: 'hidden' }}>
       {dims.width > 0 && dims.height > 0 && (
         <DataEditor
+          ref={ref}
           {...rest}
           getCellContent={getCellContentFn}
           columns={columns}
@@ -221,7 +229,7 @@ export function AutoSizedGrid({
       )}
     </div>
   )
-}
+})
 
 // ─────────────────────────────────────────────────────────────────────────────
 // deriveColumns

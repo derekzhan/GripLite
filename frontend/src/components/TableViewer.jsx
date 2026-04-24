@@ -1399,7 +1399,7 @@ function normaliseWhere(input) {
  * verbatim — invalid SQL is surfaced via the executor's error path, matching
  * DBeaver behaviour.
  */
-function buildSelectSql(dbName, tableName, pageSize, currentPage = 1, whereClause = '') {
+function buildSelectSql(dbName, tableName, pageSize, currentPage = 1, whereClause = '', orderBy = null) {
   const target = dbName
     ? `${quoteIdent(dbName)}.${quoteIdent(tableName)}`
     : quoteIdent(tableName)
@@ -1407,9 +1407,12 @@ function buildSelectSql(dbName, tableName, pageSize, currentPage = 1, whereClaus
   const limit  = pageSize === 'all' ? BACKEND_HARD_CAP : Math.max(1, pageSize | 0)
   const offset = pageSize === 'all' ? 0 : (page - 1) * limit
   const where  = normaliseWhere(whereClause)
-  const head   = where
+  let head = where
     ? `SELECT * FROM ${target} WHERE ${where}`
     : `SELECT * FROM ${target}`
+  if (orderBy?.col) {
+    head += ` ORDER BY ${quoteIdent(orderBy.col)} ${orderBy.dir === 'desc' ? 'DESC' : 'ASC'}`
+  }
   return offset > 0
     ? `${head} LIMIT ${limit} OFFSET ${offset}`
     : `${head} LIMIT ${limit}`
@@ -1541,9 +1544,99 @@ function FilterBar({
   runButtonTitle,
   sqlForWhereClause,
   persistHint,
+  columns,
 }) {
   const inputRef    = useRef(null)
   const dropdownRef = useRef(null)
+
+  // ── Autocomplete state ──────────────────────────────────────────────────
+  const [acSuggestions, setAcSuggestions] = useState([])
+  const [acOpen,        setAcOpen]        = useState(false)
+  const [acIdx,         setAcIdx]         = useState(-1)
+
+  // Identifier-like word immediately before the cursor.
+  const getWordBeforeCursor = (value, cursorPos) => {
+    const before = value.slice(0, cursorPos)
+    const m = before.match(/`?[\w.]+$/)
+    return m ? m[0].replace(/^`/, '') : ''
+  }
+
+  // Rebuild the suggestion list every time input value / cursor moves.
+  const rebuildAc = useCallback((value, cursorPos) => {
+    const word = getWordBeforeCursor(value, cursorPos)
+    if (!word) { setAcOpen(false); setAcSuggestions([]); return }
+
+    const lower      = word.toLowerCase()
+    const colNames   = (columns ?? []).map((c) => c.name)
+    const sqlKw      = ['AND', 'OR', 'NOT', 'LIKE', 'IN', 'IS', 'NULL',
+                        'BETWEEN', 'TRUE', 'FALSE', 'EXISTS']
+
+    const colMatches = colNames
+      .filter((n) => n.toLowerCase().startsWith(lower) && n.toLowerCase() !== lower)
+      .map((n) => ({ text: n, kind: 'column' }))
+    const kwMatches  = sqlKw
+      .filter((k) => k.toLowerCase().startsWith(lower) && k.toLowerCase() !== lower)
+      .map((k) => ({ text: k, kind: 'keyword' }))
+
+    const all = [...colMatches, ...kwMatches]
+    if (all.length === 0) { setAcOpen(false); setAcSuggestions([]); return }
+    setAcSuggestions(all)
+    setAcOpen(true)
+    setAcIdx(-1)
+  }, [columns])
+
+  // Insert a suggestion, replacing the word before the cursor.
+  const applySuggestion = useCallback((sugg) => {
+    const input = inputRef.current
+    if (!input) return
+    const cursor    = input.selectionStart ?? draft.length
+    const before    = draft.slice(0, cursor)
+    const after     = draft.slice(cursor)
+    const m         = before.match(/`?[\w.]+$/)
+    const wordStart = m ? cursor - m[0].length : cursor
+    const newVal    = draft.slice(0, wordStart) + sugg.text + after
+    onDraftChange(newVal)
+    const newCursor = wordStart + sugg.text.length
+    requestAnimationFrame(() => {
+      input.selectionStart = newCursor
+      input.selectionEnd   = newCursor
+      input.focus()
+    })
+    setAcOpen(false)
+    setAcIdx(-1)
+  }, [draft, onDraftChange])
+
+  // Intercepts autocomplete keyboard nav; falls through to parent's onKeyDown.
+  const handleKeyDown = useCallback((e) => {
+    if (acOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setAcIdx((i) => Math.min(i + 1, acSuggestions.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setAcIdx((i) => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        applySuggestion(acIdx >= 0 ? acSuggestions[acIdx] : acSuggestions[0])
+        return
+      }
+      if (e.key === 'Enter' && acIdx >= 0) {
+        e.preventDefault()
+        applySuggestion(acSuggestions[acIdx])
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setAcOpen(false)
+        return
+      }
+    }
+    onKeyDown?.(e)
+  }, [acOpen, acIdx, acSuggestions, applySuggestion, onKeyDown])
 
   // Click-outside closes the history dropdown.  Attached only while the
   // dropdown is open to avoid a global listener on every table view.
@@ -1600,8 +1693,18 @@ function FilterBar({
             ref={inputRef}
             type="text"
             value={draft}
-            onChange={(e) => onDraftChange(e.target.value)}
-            onKeyDown={onKeyDown}
+            onChange={(e) => {
+              const val    = e.target.value
+              const cursor = e.target.selectionStart ?? val.length
+              onDraftChange(val)
+              rebuildAc(val, cursor)
+            }}
+            onKeyDown={handleKeyDown}
+            onFocus={(e) => rebuildAc(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+            onBlur={() => setTimeout(() => setAcOpen(false), 150)}
+            onSelect={(e) => {
+              if (acOpen) rebuildAc(e.target.value, e.target.selectionStart ?? e.target.value.length)
+            }}
             placeholder="id > 10 AND status = 'active'"
             autoCapitalize="off"
             autoCorrect="off"
@@ -1620,6 +1723,53 @@ function FilterBar({
             </button>
           )}
         </div>
+
+        {/* Autocomplete dropdown ────────────────────────────────────── */}
+        {acOpen && acSuggestions.length > 0 && (
+          <div
+            className="absolute top-full left-0 right-0 mt-0.5 z-40 rounded border border-line
+                       bg-panel shadow-xl overflow-hidden"
+            style={{ maxHeight: 240 }}
+          >
+            <div className="overflow-y-auto" style={{ maxHeight: 210 }}>
+              {acSuggestions.map((sugg, i) => {
+                const colType = sugg.kind === 'column'
+                  ? (columns ?? []).find((c) => c.name === sugg.text)?.type ?? ''
+                  : ''
+                return (
+                  <button
+                    key={`${sugg.kind}-${sugg.text}`}
+                    onMouseDown={(e) => { e.preventDefault(); applySuggestion(sugg) }}
+                    className={[
+                      'w-full flex items-center gap-2 px-3 py-1 text-left font-mono text-[12px] transition-colors',
+                      i === acIdx
+                        ? 'bg-selected text-fg-on-accent'
+                        : 'text-fg-primary hover:bg-hover',
+                    ].join(' ')}
+                  >
+                    <span className={[
+                      'text-[9px] font-sans px-1 py-px rounded flex-shrink-0',
+                      sugg.kind === 'column'
+                        ? 'bg-success/20 text-success'
+                        : 'bg-accent/20 text-accent',
+                    ].join(' ')}>
+                      {sugg.kind === 'column' ? 'col' : 'kw'}
+                    </span>
+                    <span className="flex-1 truncate">{sugg.text}</span>
+                    {colType && (
+                      <span className="text-fg-muted text-[10px] font-sans flex-shrink-0">
+                        {colType}
+                      </span>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="px-3 py-0.5 border-t border-line-subtle bg-titlebar text-[10px] text-fg-muted select-none">
+              Tab / ↵ 插入 · ↑↓ 导航 · Esc 关闭
+            </div>
+          </div>
+        )}
 
         {/* History dropdown ─────────────────────────────────────────── */}
         {historyOpen && (
@@ -1746,6 +1896,8 @@ function DataView({ tableName, dbName, connId, schema }) {
   const [history,     setHistory]     = useState([])
   const [historyOpen, setHistoryOpen] = useState(false)
   const [showSqlBar,  setShowSqlBar]  = useState(true)
+  // Column-header sort: { colIdx, col (name), dir: 'asc'|'desc' } or null
+  const [sortConfig,  setSortConfig]  = useState(null)
   // Names of columns the database fills for us — informs Duplicate Row
   // behaviour.  Empty until the metadata query resolves; if the query
   // fails (no privileges on INFORMATION_SCHEMA, etc.) we degrade to
@@ -1762,7 +1914,7 @@ function DataView({ tableName, dbName, connId, schema }) {
   // SQL surfaced to the thin info bar: always reflects the next planned
   // fetch so operators can see exactly which WHERE / LIMIT / OFFSET is in
   // flight.  Uses the COMMITTED whereClause, not the unsaved draft.
-  const selectSql = buildSelectSql(dbName, tableName, pageSize, currentPage, whereClause)
+  const selectSql = buildSelectSql(dbName, tableName, pageSize, currentPage, whereClause, sortConfig)
 
   // ── Count(*) — runs once per (connId, dbName, tableName) + on Refresh.
   // The count is the authoritative pagination total; we keep it separate
@@ -1773,7 +1925,7 @@ function DataView({ tableName, dbName, connId, schema }) {
     setIsCounting(true)
     setCountError('')
 
-    runQuery(connId, buildCountSql(dbName, tableName, whereClause))
+    runQuery(connId, dbName, buildCountSql(dbName, tableName, whereClause))
       .then((result) => {
         if (cancelled) return
         if (result.error) {
@@ -1802,7 +1954,7 @@ function DataView({ tableName, dbName, connId, schema }) {
   // failure here is non-fatal: we just fall back to copying every cell.
   const loadColumnMeta = useCallback(() => {
     let cancelled = false
-    runQuery(connId, buildColumnMetaSql(dbName, tableName))
+    runQuery(connId, dbName, buildColumnMetaSql(dbName, tableName))
       .then((result) => {
         if (cancelled) return
         if (result.error || !Array.isArray(result.rows)) {
@@ -1830,10 +1982,10 @@ function DataView({ tableName, dbName, connId, schema }) {
     setLoadError('')
     setDataResult(null)
 
-    const sql = buildSelectSql(dbName, tableName, size, page, whereClause)
+    const sql = buildSelectSql(dbName, tableName, size, page, whereClause, sortConfig)
     const fetchStart = performance.now()
 
-    runQuery(connId, sql)
+    runQuery(connId, dbName, sql)
       .then((result) => {
         if (cancelled) return
         const fetchMs = Math.round(performance.now() - fetchStart)
@@ -1858,7 +2010,7 @@ function DataView({ tableName, dbName, connId, schema }) {
       })
 
     return () => { cancelled = true }
-  }, [connId, tableName, dbName, whereClause])
+  }, [connId, tableName, dbName, whereClause, sortConfig])
 
   // Tab identity change (new table / db / conn) — reset page, wipe the live
   // filter draft, and refresh the auto-filled-column set.  Per-table
@@ -1876,6 +2028,7 @@ function DataView({ tableName, dbName, connId, schema }) {
     setWhereDraft('')
     setHistory([])
     setHistoryOpen(false)
+    setSortConfig(null)
     loadColumnMeta()
     let cancelled = false
     getDataFilterHistory(connId, dbName, tableName)
@@ -1995,6 +2148,25 @@ function DataView({ tableName, dbName, connId, schema }) {
 
   const cols = dataResult?.columns ?? []
   const rows = dataResult?.rows    ?? []
+
+  // ── Column-header click → server-side ORDER BY ─────────────────────────
+  // Cycling: first click → ASC, second → DESC, third → clear.
+  // Resets to page 1 so the user always sees the globally sorted top rows.
+  const handleHeaderClicked = useCallback((colIndex) => {
+    const colName = cols[colIndex]?.name
+    if (!colName) return
+    setSortConfig((prev) => {
+      if (prev?.col !== colName) return { colIdx: colIndex, col: colName, dir: 'asc' }
+      if (prev.dir === 'asc')    return { colIdx: colIndex, col: colName, dir: 'desc' }
+      return null
+    })
+    setCurrentPage(1)
+  }, [cols])
+
+  // Expose sortConfig in the form GridCanvas expects ({ colIdx, dir } | null)
+  const gridSortConfig = sortConfig
+    ? { colIdx: sortConfig.colIdx, dir: sortConfig.dir }
+    : null
 
   // ── Edit state (Phase 6.8) ─────────────────────────────────────────────
   // dataResult is used as resetKey: every table reload clears pending edits.
@@ -2156,6 +2328,7 @@ function DataView({ tableName, dbName, connId, schema }) {
         runButtonTitle={runButtonTitle}
         sqlForWhereClause={sqlForWhere}
         persistHint="Filter history is saved in your local griplite database and survives restarts."
+        columns={schema?.columns ?? []}
       />
 
       {/* Collapsible full-SQL strip — keeps the "what is being executed"
@@ -2175,6 +2348,8 @@ function DataView({ tableName, dbName, connId, schema }) {
           execMs={dataResult?.execMs}
           exportFilename={`${tableName}.csv`}
           editState={editState}
+          onHeaderClicked={handleHeaderClicked}
+          sortConfig={gridSortConfig}
         />
       </div>
 

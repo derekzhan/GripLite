@@ -23,10 +23,10 @@
  *   execMs   – number     query time in ms (optional, shown in toolbar)
  *   truncated – boolean   show a warning badge (optional)
  */
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { GridCellKind } from '@glideapps/glide-data-grid'
 import { PanelRightOpen } from 'lucide-react'
-import { AutoSizedGrid, deriveColumns, useCellContent, useRowOverrides } from './DataGrid'
+import { AutoSizedGrid, deriveColumns, useRowOverrides } from './DataGrid'
 import ValuePanel from './ValuePanel'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,21 +142,116 @@ function ToggleGroup({ options, value, onChange }) {
 //   • Edited cells receive a subtle yellow cell-level themeOverride.
 //   • onCellEdited writes the new value back into editState.
 // ─────────────────────────────────────────────────────────────────────────────
-function GridCanvas({ columns, rows, selectedRow, onCellClick, editState }) {
-  const glideCols        = deriveColumns(columns)
-  const stdGetCellContent = useCellContent(rows)
-  const rowOverrides      = useRowOverrides()
+// Column comparator that handles numbers, dates, and strings.
+function compareValues(a, b) {
+  // Nulls last
+  if (a === null || a === undefined) return 1
+  if (b === null || b === undefined) return -1
+  const na = Number(a)
+  const nb = Number(b)
+  if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+}
 
-  // ── Edit-aware getCellContent (only used when editState is provided) ────
+/**
+ * GridCanvas — canvas grid with integrated column-header sort.
+ *
+ * Sort behaviour:
+ *   - When `onHeaderClicked` is NOT supplied by the parent the grid manages its
+ *     own client-side sort (suitable for result sets that are fully in memory).
+ *   - When `onHeaderClicked` IS supplied the parent owns the sort logic
+ *     (e.g. TableViewer reloads with ORDER BY).  The `sortConfig` prop
+ *     (`{ colIdx, dir }`) drives the ↑ / ↓ indicator in that case.
+ *
+ * Cycling: first click → ASC, second click → DESC, third click → clear.
+ */
+function GridCanvas({
+  columns,
+  rows,
+  selectedRow,
+  onCellClick,
+  editState,
+  // External sort — supplied by TableViewer for server-side ORDER BY.
+  onHeaderClicked:  externalOnHeaderClicked,
+  sortConfig:       externalSortConfig = null,
+}) {
+  const rowOverrides = useRowOverrides()
+  const { nullText } = rowOverrides
+
+  // ── Internal (client-side) sort state ────────────────────────────────
+  const isExternal = !!externalOnHeaderClicked
+  const [internalSort, setInternalSort] = useState(null) // {colIdx, dir}
+  const sortConfig = isExternal ? externalSortConfig : internalSort
+  const numRows = editState ? editState.totalDisplayRows : rows.length
+
+  // Visual row order inside the grid. We keep selection/edit state keyed by
+  // source-row index, then map display row -> source row after sorting.
+  const rowOrder = useMemo(() => {
+    const order = Array.from({ length: numRows }, (_, i) => i)
+    if (isExternal || !internalSort) return order
+    const { colIdx, dir } = internalSort
+    order.sort((a, b) => {
+      const aValue = editState ? editState.getCellValue(colIdx, a) : rows?.[a]?.[colIdx]
+      const bValue = editState ? editState.getCellValue(colIdx, b) : rows?.[b]?.[colIdx]
+      const cmp = compareValues(aValue, bValue)
+      return dir === 'asc' ? cmp : -cmp
+    })
+    return order
+  }, [numRows, isExternal, internalSort, editState, rows])
+
+  const mapDisplayRow = useCallback(
+    (displayRow) => rowOrder[displayRow] ?? displayRow,
+    [rowOrder],
+  )
+
+  // ── Column objects with sort indicator appended to title ──────────────
+  const glideCols = useMemo(() =>
+    deriveColumns(columns).map((col, i) => {
+      const active = sortConfig?.colIdx === i
+      const arrow  = active ? (sortConfig.dir === 'asc' ? ' ↑' : ' ↓') : ''
+      return { ...col, title: col.title + arrow }
+    }),
+  [columns, sortConfig])
+
+  // ── Header click: internal or delegate to parent ───────────────────────
+  const handleHeaderClicked = useCallback((colIndex) => {
+    if (isExternal) {
+      externalOnHeaderClicked(colIndex)
+    } else {
+      setInternalSort((prev) => {
+        if (prev?.colIdx !== colIndex) return { colIdx: colIndex, dir: 'asc' }
+        if (prev.dir === 'asc')        return { colIdx: colIndex, dir: 'desc' }
+        return null // 3rd click clears sort
+      })
+    }
+  }, [isExternal, externalOnHeaderClicked])
+
+  // ── Cell content (read-only or edit-aware) ────────────────────────────
+  const stdGetCellContent = useCallback(
+    ([col, displayRow]) => {
+      const sourceRow = mapDisplayRow(displayRow)
+      const cell = rows?.[sourceRow]?.[col]
+      const isNull = cell === null || cell === undefined
+      const display = isNull ? 'NULL' : String(cell)
+      return {
+        kind:        GridCellKind.Text,
+        data:        display,
+        displayData: display,
+        allowOverlay: false,
+        ...(isNull ? { themeOverride: { textDark: nullText } } : {}),
+      }
+    },
+    [rows, mapDisplayRow, nullText],
+  )
+
   const editGetCellContent = useCallback(
-    ([col, row]) => {
-      const deleted  = editState.isDeleted(row)
-      const edited   = editState.isEdited(col, row)
-      const isSelected = row === selectedRow
-
-      const raw  = editState.getCellValue(col, row)
+    ([col, displayRow]) => {
+      const sourceRow = mapDisplayRow(displayRow)
+      const deleted    = editState.isDeleted(sourceRow)
+      const edited     = editState.isEdited(col, sourceRow)
+      const isSelected = sourceRow === selectedRow
+      const raw  = editState.getCellValue(col, sourceRow)
       const text = raw === null || raw === undefined ? '' : String(raw)
-
       return {
         kind:         GridCellKind.Text,
         data:         text,
@@ -169,49 +264,67 @@ function GridCanvas({ columns, rows, selectedRow, onCellClick, editState }) {
           : undefined,
       }
     },
-    [editState, selectedRow, rowOverrides],
+    [editState, selectedRow, rowOverrides, mapDisplayRow],
   )
 
   const getCellContent = editState ? editGetCellContent : stdGetCellContent
 
   // ── Row-level colour themes ────────────────────────────────────────────
   const getRowThemeOverride = useCallback(
-    (row) => {
-      if (row === selectedRow)              return rowOverrides.selected
-      if (editState?.isDeleted(row))        return rowOverrides.deleted
-      if (editState?.isAdded(row))          return rowOverrides.added
+    (displayRow) => {
+      const sourceRow = mapDisplayRow(displayRow)
+      if (sourceRow === selectedRow)         return rowOverrides.selected
+      if (editState?.isDeleted(sourceRow))   return rowOverrides.deleted
+      if (editState?.isAdded(sourceRow))     return rowOverrides.added
       return undefined
     },
-    [selectedRow, editState, rowOverrides],
+    [selectedRow, editState, rowOverrides, mapDisplayRow],
   )
 
   // ── Edit committed by user in the overlay editor ───────────────────────
   const handleCellEdited = useCallback(
-    ([col, row], newValue) => {
+    ([col, displayRow], newValue) => {
       if (editState && newValue.kind === GridCellKind.Text) {
-        editState.editCell(col, row, newValue.data)
+        editState.editCell(col, mapDisplayRow(displayRow), newValue.data)
       }
     },
-    [editState],
+    [editState, mapDisplayRow],
   )
 
-  // Forward full [col, row] to parent so it can read the cell value.
   const handleCellClicked = useCallback(
-    ([col, row]) => onCellClick(col, row),
-    [onCellClick],
+    ([col, displayRow]) => onCellClick(col, mapDisplayRow(displayRow)),
+    [onCellClick, mapDisplayRow],
   )
 
-  const numRows = editState ? editState.totalDisplayRows : rows.length
+  // ── Imperative cell invalidation after sort ───────────────────────────
+  // Glide DataEditor v6 redraws column headers when `columns` changes but
+  // does NOT re-fetch cell content unless explicitly told to.
+  // We keep a ref to the DataEditor and call updateCells() after every
+  // internal sort change to force Glide to repaint every data cell.
+  const gridRef = useRef(null)
+  useEffect(() => {
+    if (isExternal || !gridRef.current || numRows === 0 || !glideCols.length) return
+    const damage = []
+    for (let row = 0; row < numRows; row++) {
+      for (let col = 0; col < glideCols.length; col++) {
+        damage.push({ cell: [col, row] })
+      }
+    }
+    gridRef.current.updateCells(damage)
+  // Run whenever internalSort changes (covers both set and clear).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [internalSort])
 
   return (
     <AutoSizedGrid
+      ref={gridRef}
       columns={glideCols}
       getCellContentFn={getCellContent}
       numRows={numRows}
       getRowThemeOverride={getRowThemeOverride}
       onCellClicked={handleCellClicked}
+      onHeaderClicked={handleHeaderClicked}
       onCellEdited={editState ? handleCellEdited : undefined}
-      // Glide requires this flag to enable the overlay text editor
       {...(editState ? { getCellsForSelection: true } : {})}
     />
   )
@@ -245,7 +358,7 @@ function GridCanvas({ columns, rows, selectedRow, onCellClick, editState }) {
  *   panelWidth   – current panel width in px (default 340)
  *   panelCell    – { col, row, value, colName } of the last clicked cell
  */
-function GridWithPanel({ columns, rows, selectedRow, onSelectRow, editState }) {
+function GridWithPanel({ columns, rows, selectedRow, onSelectRow, editState, onHeaderClicked, sortConfig }) {
   const [panelOpen,  setPanelOpen]  = useState(false)
   const [panelWidth, setPanelWidth] = useState(340)
   const [panelCell,  setPanelCell]  = useState({ col: 0, row: 0, value: null, colName: '' })
@@ -301,6 +414,8 @@ function GridWithPanel({ columns, rows, selectedRow, onSelectRow, editState }) {
           selectedRow={selectedRow}
           onCellClick={handleCellClick}
           editState={editState}
+          onHeaderClicked={onHeaderClicked}
+          sortConfig={sortConfig}
         />
       </div>
 
@@ -774,6 +889,14 @@ export default function DataViewer({
    * fully editable (Phase 6.8).  When omitted the grid is read-only.
    */
   editState,
+  /**
+   * onHeaderClicked / sortConfig — optional server-side sort integration.
+   * When supplied (e.g. by TableViewer) clicking a column header calls
+   * onHeaderClicked(colIndex) and the ↑ / ↓ indicator is driven by sortConfig.
+   * When omitted the grid sorts its rows in-memory.
+   */
+  onHeaderClicked,
+  sortConfig,
 }) {
   const [mode,        setMode]        = useState('grid')
   const [textFormat,  setTextFormat]  = useState('table')
@@ -888,6 +1011,8 @@ export default function DataViewer({
                 selectedRow={selectedRow}
                 onSelectRow={setSelectedRow}
                 editState={editState}
+                onHeaderClicked={onHeaderClicked}
+                sortConfig={sortConfig}
               />
             )}
             {mode === 'text' && (

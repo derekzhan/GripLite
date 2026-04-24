@@ -110,16 +110,16 @@ export function RemoveConnection(arg1) {
   return window['go']['main']['App']['RemoveConnection'](arg1);
 }
 
-export function RunQuery(arg1, arg2) {
-  return window['go']['main']['App']['RunQuery'](arg1, arg2);
+export function RunQuery(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RunQuery'](arg1, arg2, arg3);
 }
 
 export function SaveConnection(arg1) {
   return window['go']['main']['App']['SaveConnection'](arg1);
 }
 
-export function SearchCompletions(arg1, arg2) {
-  return window['go']['main']['App']['SearchCompletions'](arg1, arg2);
+export function SearchCompletions(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SearchCompletions'](arg1, arg2, arg3);
 }
 
 export function SetDataFilterHistory(arg1, arg2, arg3, arg4) {

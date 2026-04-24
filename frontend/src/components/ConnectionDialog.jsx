@@ -432,12 +432,24 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
     setSavedList(list ?? [])
   }, [])
 
+  const resetToBlank = useCallback(() => {
+    const blank = makeBlankForm()
+    setForm(blank)
+    setSelectedId(null)
+    prevFormRef.current = JSON.stringify(blank)
+    setIsDirty(false)
+    setTestResult(null)
+    setActiveTab('General')
+  }, [])
+
   useEffect(() => {
     if (!isOpen) return
     loadList()
     // If an initialId was provided (right-click → Properties), pre-select it.
     if (initialId) {
       selectConnection(initialId)
+    } else {
+      resetToBlank()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, initialId])
@@ -473,13 +485,7 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
 
   // ── Create new connection ───────────────────────────────────────────────
   const handleNew = () => {
-    const blank = makeBlankForm()
-    setForm(blank)
-    setSelectedId(null)
-    prevFormRef.current = JSON.stringify(blank)
-    setIsDirty(false)
-    setTestResult(null)
-    setActiveTab('General')
+    resetToBlank()
   }
 
   // ── Delete selected connection ──────────────────────────────────────────

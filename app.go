@@ -349,11 +349,17 @@ func (a *App) RemoveConnection(connectionID string) error {
 // requiring the user to do anything — exactly the behaviour any DataGrip /
 // DBeaver user expects.
 func (a *App) ListConnections() []ConnectionInfo {
-	// 1. Start from persisted connections (disk-truth).
+	// order tracks insertion order so the UI list is stable across refreshes.
+	// Go maps iterate in a non-deterministic order, so we must NOT rely on
+	// ranging over byID to build the result slice.
+	var order []string
 	byID := make(map[string]ConnectionInfo, 8)
+
+	// 1. Start from persisted connections (disk-truth), preserving their order.
 	if a.store != nil {
 		if saved, err := a.store.List(); err == nil {
 			for _, sc := range saved {
+				order = append(order, sc.ID)
 				byID[sc.ID] = ConnectionInfo{
 					ID:        sc.ID,
 					Name:      sc.Name,
@@ -370,10 +376,14 @@ func (a *App) ListConnections() []ConnectionInfo {
 	}
 
 	// 2. Overlay with any live drivers (serverVersion + Connected flag).
+	// Unsaved live connections (edge case) are appended after saved ones.
 	a.mu.RLock()
 	for id, drv := range a.connections {
 		cfg := a.configs[id]
-		info := byID[id] // may be zero value if not saved
+		info := byID[id] // zero value when not saved
+		if _, known := byID[id]; !known {
+			order = append(order, id)
+		}
 		info.ID = id
 		if info.Name == "" {
 			info.Name = cfg.Name
@@ -396,9 +406,11 @@ func (a *App) ListConnections() []ConnectionInfo {
 	}
 	a.mu.RUnlock()
 
-	result := make([]ConnectionInfo, 0, len(byID))
-	for _, v := range byID {
-		result = append(result, v)
+	result := make([]ConnectionInfo, 0, len(order))
+	for _, id := range order {
+		if info, ok := byID[id]; ok {
+			result = append(result, info)
+		}
 	}
 	return result
 }
@@ -538,7 +550,7 @@ func (a *App) ensureLive(connectionID string) (driver.DatabaseDriver, error) {
 //	const result = await RunQuery("c1", "SELECT * FROM users LIMIT 50")
 //	if (result.error) { showError(result.error) }
 //	else { displayGrid(result.columns, result.rows) }
-func (a *App) RunQuery(connectionID, sql string) (*QueryResult, error) {
+func (a *App) RunQuery(connectionID, dbName, sql string) (*QueryResult, error) {
 	// Phase 16: transparently reopen a saved connection if it was not yet
 	// re-established after an app restart.
 	drv, err := a.ensureLive(connectionID)
@@ -552,7 +564,9 @@ func (a *App) RunQuery(connectionID, sql string) (*QueryResult, error) {
 	ctx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
 	defer cancel()
 
-	rs, err := drv.ExecuteQuery(ctx, sql)
+	// ExecuteQueryOnDB runs USE `dbName` first on the same dedicated connection,
+	// ensuring the database context is correct even with a connection pool.
+	rs, err := drv.ExecuteQueryOnDB(ctx, dbName, sql)
 	if err != nil {
 		// Return the error in-band so the React component can display it.
 		return &QueryResult{Error: err.Error()}, nil
@@ -639,18 +653,19 @@ func (a *App) FetchTables(connectionID, dbName string) ([]driver.TableInfo, erro
 
 // SearchCompletions returns Monaco autocomplete candidates for the given keyword.
 // It queries the local SQLite cache (sub-millisecond) without hitting the DB server.
+// dbName restricts results to a single schema; pass "" to search all schemas.
 //
 // Frontend usage:
 //
-//	const items = await SearchCompletions("c1", "use")
-//	// → [{ kind:"table", label:"users", detail:"db1" }, ...]
-func (a *App) SearchCompletions(connectionID, keyword string) ([]cache.CompletionItem, error) {
+//	const items = await SearchCompletions("c1", "im_platform", "use")
+//	// → [{ kind:"table", label:"users", detail:"im_platform" }, ...]
+func (a *App) SearchCompletions(connectionID, dbName, keyword string) ([]cache.CompletionItem, error) {
 	if a.meta == nil {
 		return nil, nil // cache not initialised (startup error)
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 200*time.Millisecond)
 	defer cancel()
-	return a.meta.SearchColumns(ctx, connectionID, keyword)
+	return a.meta.SearchColumns(ctx, connectionID, dbName, keyword)
 }
 
 // TriggerSync manually re-triggers a background schema sync for a connection.

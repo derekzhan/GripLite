@@ -17,7 +17,10 @@
  *   expanded     — Set<nodeId>  (toggle on arrow click)
  *   nodeCache    — Map<nodeId, CacheEntry> where
  *                    CacheEntry = { status: 'loading'|'loaded'|'error', children: Node[], error: string }
- *   filter       — string for substring search across loaded node labels
+ *   searchQuery  — substring search across loaded table (and related) node
+ *                  labels, **only for connections with connected === true**;
+ *                  When the field is empty the full connection list (including
+ *                  disconnected) is shown as before.
  *
  * Cleanup
  * ───────
@@ -271,6 +274,18 @@ export default function DatabaseExplorer({
   // plus a graceful degradation path).
   const connections = externalConnections ?? ownConnections
 
+  // Subset used while `searchQuery` is active — the left search box is meant
+  // to find tables only under live TCP connections, not in saved entries that
+  // the user has not re-opened (connected === false).
+  const connectedConnections = useMemo(
+    () => connections.filter((c) => c.connected),
+    [connections],
+  )
+
+  // Tree rows to show: every connection in browse mode, connected-only
+  // while searching (disconnected data sources are hidden for the search UX).
+  const treeConnections = searchQuery ? connectedConnections : connections
+
   // Right-click context menu — discriminated by `kind`:
   //   { kind: 'connection',    x, y, connId, connName }
   //   { kind: 'tables-folder', x, y, connId, dbName, nodeRef }
@@ -293,9 +308,9 @@ export default function DatabaseExplorer({
   //
   //   effectiveExpanded = expanded ∪ autoExpanded
   //
-  // We walk every connection's loaded subtree in nodeCache.  The walk bails
-  // out as soon as a subtree has no match, so the worst case scales with
-  // (# matching subtrees × subtree depth), which is tiny.
+  // We walk every *connected* connection's loaded subtree in nodeCache.  The
+  // walk bails out as soon as a subtree has no match, so the worst case scales
+  // with (# matching subtrees × subtree depth), which is tiny.
   const autoExpanded = useMemo(() => {
     const set = new Set()
     if (!searchQuery) return set
@@ -312,12 +327,12 @@ export default function DatabaseExplorer({
       return anyChildMatches
     }
 
-    for (const conn of connections) {
+    for (const conn of connectedConnections) {
       const root = { id: connNodeId(conn.id) }
       visit(root)
     }
     return set
-  }, [searchQuery, nodeCache, connections])
+  }, [searchQuery, nodeCache, connectedConnections])
 
   const isEffectivelyExpanded = useCallback(
     (nodeId) => expanded.has(nodeId) || autoExpanded.has(nodeId),
@@ -1030,7 +1045,8 @@ export default function DatabaseExplorer({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Escape') setSearchQuery('') }}
-            placeholder="Search tables…"
+            placeholder="在已连接库中搜表…"
+            title="仅搜索已连接数据源的表（已保存但未连上的连接不参与）"
             className="w-full bg-panel text-fg-primary text-[12px] pl-7 pr-7 py-1
                        rounded border border-line outline-none
                        placeholder:text-fg-muted focus:border-accent transition-colors"
@@ -1081,30 +1097,37 @@ export default function DatabaseExplorer({
           </div>
         )}
 
-        {connections.map((conn) => (
+        {treeConnections.map((conn) => (
           <ConnectionRow key={conn.id} conn={conn} />
         ))}
 
         {/*
-          Phase 17: when the user searches but nothing in the loaded cache
-          matches, surface a clear "no results" message instead of an empty
-          pane.  autoExpanded being empty is a sufficient test — if any
-          subtree had a match we would have added its ancestor ids.  We also
-          check that no connection label matches directly (that case would
-          render without any auto-expansion).
+          When searching: (1) no connected sources — prompt to connect first;
+          (2) connected but nothing in the loaded cache matches the query.
         */}
-        {!connLoading && !connError && searchQuery && connections.length > 0 &&
-          autoExpanded.size === 0 &&
-          !connections.some((c) =>
+        {!connLoading && !connError && searchQuery && connections.length > 0
+          && connectedConnections.length === 0 && (
+          <div className="px-4 py-6 text-[12px] text-fg-muted text-center select-none">
+            <Unplug size={20} className="mx-auto mb-2 opacity-50" />
+            <div>当前没有已连接的数据源</div>
+            <div className="text-[11px] mt-1 text-fg-faint">
+              请先点连接，再使用左侧搜表
+            </div>
+          </div>
+        )}
+
+        {!connLoading && !connError && searchQuery && connectedConnections.length > 0
+          && autoExpanded.size === 0 &&
+          !connectedConnections.some((c) =>
             matchesLabel(c.name || `${c.host}:${c.port}`, searchQuery) ||
             matchesLabel(`${c.host}:${c.port}`, searchQuery) ||
             matchesLabel(c.database ?? '', searchQuery),
           ) && (
             <div className="px-4 py-6 text-[12px] text-fg-muted text-center select-none">
               <div className="text-[20px] mb-1">🔍</div>
-              <div>No matches for "{searchQuery}"</div>
+              <div>没有与「{searchQuery}」匹配的结果</div>
               <div className="text-[11px] mt-1 text-fg-faint">
-                Expand a connection first so its tables are indexed locally.
+                搜索范围仅限已连接的来源；可展开该连接以加载其表
               </div>
             </div>
           )}

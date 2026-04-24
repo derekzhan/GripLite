@@ -1045,8 +1045,8 @@ export default function DatabaseExplorer({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Escape') setSearchQuery('') }}
-            placeholder="在已连接库中搜表…"
-            title="仅搜索已连接数据源的表（已保存但未连上的连接不参与）"
+            placeholder="在已连接的数据源中搜索表名…"
+            title="只搜索已建立连接的数据源；已保存但尚未连线的项不会出现"
             className="w-full bg-panel text-fg-primary text-[12px] pl-7 pr-7 py-1
                        rounded border border-line outline-none
                        placeholder:text-fg-muted focus:border-accent transition-colors"

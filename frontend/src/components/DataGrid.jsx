@@ -178,9 +178,12 @@ export function useRowOverrides() {
 /**
  * AutoSizedGrid — ResizeObserver wrapper around Glide DataEditor.
  *
- * The ref forwarded from callers points at the inner DataEditor, exposing
- * Glide's imperative API (e.g. `updateCells`, `scrollTo`) so that features
- * like client-side sort can force a canvas repaint without remounting.
+ * Features:
+ *  • Fills its container exactly via ResizeObserver.
+ *  • Forwards a ref to DataEditor for imperative API access (updateCells, etc.).
+ *  • Maintains per-column width overrides so users can drag dividers to resize.
+ *    Widths are stored by column index and reset whenever the columns array
+ *    reference changes (i.e. a new query result with different schema).
  */
 export const AutoSizedGrid = forwardRef(function AutoSizedGrid({
   columns,
@@ -209,6 +212,32 @@ export const AutoSizedGrid = forwardRef(function AutoSizedGrid({
     return () => ro.disconnect()
   }, [])
 
+  // ── Column-width overrides (drag-to-resize) ──────────────────────────────
+  // Keyed by column index so sort-arrow title changes don't reset widths.
+  const [colWidths, setColWidths] = useState({}) // { [colIndex]: number }
+
+  // Reset when the underlying schema changes (different number of columns or
+  // different column ids, which happens on every new query result).
+  const columnsKeyRef = useRef(null)
+  const columnsKey = columns.map((c) => c.id ?? c.title).join('\0')
+  if (columnsKeyRef.current !== columnsKey) {
+    columnsKeyRef.current = columnsKey
+    // Direct mutation during render is intentional here — we want the reset to
+    // be synchronous so the first paint after a new result uses default widths.
+    // eslint-disable-next-line no-param-reassign
+    Object.keys(colWidths).forEach((k) => delete colWidths[k])
+  }
+
+  // Merge user-dragged widths into the column definitions.
+  const sizedColumns = useMemo(
+    () => columns.map((col, i) => (colWidths[i] !== undefined ? { ...col, width: colWidths[i] } : col)),
+    [columns, colWidths],
+  )
+
+  const handleColumnResize = useCallback((_col, newWidth, colIndex) => {
+    setColWidths((prev) => ({ ...prev, [colIndex]: newWidth }))
+  }, [])
+
   return (
     <div ref={containerRef} style={{ width: '100%', height: '100%', overflow: 'hidden' }}>
       {dims.width > 0 && dims.height > 0 && (
@@ -216,7 +245,7 @@ export const AutoSizedGrid = forwardRef(function AutoSizedGrid({
           ref={ref}
           {...rest}
           getCellContent={getCellContentFn}
-          columns={columns}
+          columns={sizedColumns}
           rows={numRows}
           width={dims.width}
           height={dims.height}
@@ -225,6 +254,9 @@ export const AutoSizedGrid = forwardRef(function AutoSizedGrid({
           theme={theme}
           rowMarkers={rowMarkers}
           rowMarkerWidth={rowMarkerWidth}
+          onColumnResize={handleColumnResize}
+          // getCellsForSelection is required by Glide to enable column resize
+          getCellsForSelection={rest.getCellsForSelection ?? true}
         />
       )}
     </div>

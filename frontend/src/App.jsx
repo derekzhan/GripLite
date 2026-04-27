@@ -36,7 +36,7 @@ import KeyboardShortcutsModal from './components/KeyboardShortcutsModal'
 import ErrorBoundary      from './components/ErrorBoundary'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
-import { runQuery, listConnections } from './lib/bridge'
+import { runQuery, listConnections, getBuildInfo } from './lib/bridge'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -338,8 +338,13 @@ export default function App() {
   const [connDialogInitId, setConnDialogInitId] = useState(null)
 
   // ── Phase 18: About modal ──────────────────────────────────────────────────
-  const [aboutOpen, setAboutOpen] = useState(false)
-  const [docsOpen,  setDocsOpen]  = useState(false)
+  const [aboutOpen,  setAboutOpen]  = useState(false)
+  const [docsOpen,   setDocsOpen]   = useState(false)
+  const [appVersion, setAppVersion] = useState('')
+
+  useEffect(() => {
+    getBuildInfo().then((info) => setAppVersion(info?.version ?? '')).catch(() => {})
+  }, [])
 
   const handleNewConnectionOpen = useCallback(() => {
     setConnDialogInitId(null)
@@ -594,7 +599,7 @@ export default function App() {
           title="About GripLite"
           className="ml-auto text-[11px] opacity-80 hover:opacity-100 transition-opacity cursor-pointer"
         >
-          GripLite v0.1.1
+          GripLite {appVersion}
         </button>
       </footer>
 

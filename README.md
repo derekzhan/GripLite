@@ -2,7 +2,7 @@
 
 **GripLite** is a lightweight, cross-platform database IDE for MySQL — fast to launch, easy to use, and designed to stay out of your way.
 
-![GripLite Screenshot](build/appicon.png)
+<img src="build/appicon.png" alt="GripLite" width="96" />
 
 > **Latest release:** [v0.1.4](https://github.com/derekzhan/GripLite/releases/latest)
 

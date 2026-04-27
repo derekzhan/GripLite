@@ -16,6 +16,231 @@ const TABS_INIT = [
 
 let nextTabId = 2
 
+// ── MySQL keyword data ───────────────────────────────────────────────────────
+//
+// SHOW_SUBCMDS: completions offered when the cursor is inside a SHOW statement.
+// SQL_KEYWORDS: completions offered anywhere else in the buffer.
+//
+// Multi-word items (e.g. "CHARACTER SET") are inserted as a single unit; the
+// completion range covers all text typed since the start of the subcommand.
+
+const SHOW_SUBCMDS = [
+  { label: 'DATABASES',           detail: 'List all databases' },
+  { label: 'SCHEMAS',             detail: 'Alias for SHOW DATABASES' },
+  { label: 'TABLES',              detail: 'Tables in the active database' },
+  { label: 'FULL TABLES',         detail: 'Tables with TABLE_TYPE column' },
+  { label: 'OPEN TABLES',         detail: 'Tables currently open in the table cache' },
+  { label: 'COLUMNS',             detail: 'Columns of a table (FROM tbl)' },
+  { label: 'FULL COLUMNS',        detail: 'Columns with collation/privileges info' },
+  { label: 'INDEX',               detail: 'Index information for a table' },
+  { label: 'INDEXES',             detail: 'Alias for SHOW INDEX' },
+  { label: 'KEYS',                detail: 'Alias for SHOW INDEX' },
+  { label: 'TABLE STATUS',        detail: 'Status / stats for every table' },
+  { label: 'FULL TABLE STATUS',   detail: 'Table status with full comments' },
+  { label: 'VARIABLES',           detail: 'All system variables' },
+  { label: 'GLOBAL VARIABLES',    detail: 'Global system variables' },
+  { label: 'SESSION VARIABLES',   detail: 'Session-level system variables' },
+  { label: 'STATUS',              detail: 'Server status counters' },
+  { label: 'GLOBAL STATUS',       detail: 'Global server status counters' },
+  { label: 'SESSION STATUS',      detail: 'Session-level status counters' },
+  { label: 'PROCESSLIST',         detail: 'Active client threads' },
+  { label: 'FULL PROCESSLIST',    detail: 'Active threads with full SQL text' },
+  { label: 'GRANTS',              detail: 'GRANT statements for the current user' },
+  { label: 'GRANTS FOR',          detail: 'GRANT statements for a specific user' },
+  { label: 'CREATE TABLE',        detail: 'CREATE TABLE DDL for a table' },
+  { label: 'CREATE DATABASE',     detail: 'CREATE DATABASE DDL' },
+  { label: 'CREATE VIEW',         detail: 'CREATE VIEW DDL' },
+  { label: 'CREATE PROCEDURE',    detail: 'CREATE PROCEDURE DDL' },
+  { label: 'CREATE FUNCTION',     detail: 'CREATE FUNCTION DDL' },
+  { label: 'CREATE TRIGGER',      detail: 'CREATE TRIGGER DDL' },
+  { label: 'CREATE EVENT',        detail: 'CREATE EVENT DDL' },
+  { label: 'WARNINGS',            detail: 'Warnings from the last statement' },
+  { label: 'ERRORS',              detail: 'Errors from the last statement' },
+  { label: 'ENGINES',             detail: 'Available storage engines' },
+  { label: 'STORAGE ENGINES',     detail: 'Available storage engines (alias)' },
+  { label: 'CHARACTER SET',       detail: 'Available character sets' },
+  { label: 'CHARSET',             detail: 'Available character sets (alias)' },
+  { label: 'COLLATION',           detail: 'Available collations' },
+  { label: 'PLUGINS',             detail: 'Installed server plugins' },
+  { label: 'PRIVILEGES',          detail: 'Privilege types and their context' },
+  { label: 'BINARY LOGS',         detail: 'Binary log files on the server' },
+  { label: 'BINLOG EVENTS',       detail: 'Events in a binary log file' },
+  { label: 'MASTER STATUS',       detail: 'Status of the primary server' },
+  { label: 'REPLICA STATUS',      detail: 'Status of the replica' },
+  { label: 'SLAVE STATUS',        detail: 'Replica status (legacy name)' },
+  { label: 'EVENTS',              detail: 'Scheduled events' },
+  { label: 'TRIGGERS',            detail: 'Triggers in the active database' },
+  { label: 'PROCEDURE STATUS',    detail: 'Stored procedures metadata' },
+  { label: 'FUNCTION STATUS',     detail: 'Stored functions metadata' },
+]
+
+const SQL_KEYWORDS = [
+  // DML
+  { label: 'SELECT',            detail: 'Query rows from one or more tables' },
+  { label: 'INSERT INTO',       detail: 'Insert rows into a table' },
+  { label: 'UPDATE',            detail: 'Modify existing rows' },
+  { label: 'DELETE FROM',       detail: 'Delete rows from a table' },
+  { label: 'REPLACE INTO',      detail: 'Insert or replace rows' },
+  // DDL
+  { label: 'CREATE TABLE',      detail: 'Create a new table' },
+  { label: 'ALTER TABLE',       detail: 'Modify a table\'s structure' },
+  { label: 'DROP TABLE',        detail: 'Drop a table' },
+  { label: 'TRUNCATE TABLE',    detail: 'Remove all rows from a table' },
+  { label: 'CREATE DATABASE',   detail: 'Create a new database / schema' },
+  { label: 'DROP DATABASE',     detail: 'Drop a database' },
+  { label: 'CREATE INDEX',      detail: 'Create an index on a table' },
+  { label: 'DROP INDEX',        detail: 'Drop an index' },
+  { label: 'CREATE VIEW',       detail: 'Create a virtual table (view)' },
+  { label: 'DROP VIEW',         detail: 'Drop a view' },
+  { label: 'CREATE PROCEDURE',  detail: 'Create a stored procedure' },
+  { label: 'CREATE FUNCTION',   detail: 'Create a stored function' },
+  // Utility
+  { label: 'SHOW',              detail: 'Show database/server information' },
+  { label: 'USE',               detail: 'Switch the active database' },
+  { label: 'DESCRIBE',          detail: 'Describe table structure' },
+  { label: 'DESC',              detail: 'Alias for DESCRIBE' },
+  { label: 'EXPLAIN',           detail: 'Show query execution plan' },
+  { label: 'SET',               detail: 'Set a system or session variable' },
+  { label: 'CALL',              detail: 'Call a stored procedure' },
+  { label: 'FLUSH',             detail: 'Reload server caches / logs' },
+  { label: 'OPTIMIZE TABLE',    detail: 'Defragment a table' },
+  { label: 'ANALYZE TABLE',     detail: 'Update table statistics' },
+  // Clauses
+  { label: 'FROM',              detail: 'Specify source table(s)' },
+  { label: 'WHERE',             detail: 'Filter rows' },
+  { label: 'GROUP BY',          detail: 'Group rows by column(s)' },
+  { label: 'ORDER BY',          detail: 'Sort result rows' },
+  { label: 'HAVING',            detail: 'Filter groups (after GROUP BY)' },
+  { label: 'LIMIT',             detail: 'Limit the number of rows returned' },
+  { label: 'OFFSET',            detail: 'Skip N rows before returning results' },
+  { label: 'JOIN',              detail: 'INNER JOIN two tables' },
+  { label: 'LEFT JOIN',         detail: 'Left outer join' },
+  { label: 'RIGHT JOIN',        detail: 'Right outer join' },
+  { label: 'INNER JOIN',        detail: 'Inner join (default JOIN)' },
+  { label: 'CROSS JOIN',        detail: 'Cartesian product of two tables' },
+  { label: 'UNION',             detail: 'Combine result sets (deduplicated)' },
+  { label: 'UNION ALL',         detail: 'Combine result sets (with duplicates)' },
+  { label: 'DISTINCT',          detail: 'Return unique rows only' },
+  { label: 'AS',                detail: 'Column or table alias' },
+  { label: 'ON',                detail: 'Join condition' },
+  { label: 'IN',                detail: 'Match any value in a list' },
+  { label: 'NOT IN',            detail: 'Exclude values in a list' },
+  { label: 'IS NULL',           detail: 'Test for NULL' },
+  { label: 'IS NOT NULL',       detail: 'Test for non-NULL' },
+  { label: 'LIKE',              detail: 'Pattern match with % and _' },
+  { label: 'NOT LIKE',          detail: 'Negative pattern match' },
+  { label: 'BETWEEN',           detail: 'Range comparison (inclusive)' },
+  { label: 'EXISTS',            detail: 'True if subquery returns any rows' },
+  { label: 'CASE',              detail: 'Conditional expression' },
+  { label: 'WHEN',              detail: 'Condition branch inside CASE' },
+  { label: 'THEN',              detail: 'Result branch inside CASE' },
+  { label: 'ELSE',              detail: 'Default branch inside CASE / IF' },
+  { label: 'END',               detail: 'Close CASE or BEGIN…END block' },
+  { label: 'AND',               detail: 'Logical AND' },
+  { label: 'OR',                detail: 'Logical OR' },
+  { label: 'NOT',               detail: 'Logical NOT' },
+  { label: 'INTO',              detail: 'Target table for INSERT / SELECT INTO' },
+  { label: 'VALUES',            detail: 'Row data for INSERT' },
+  { label: 'DEFAULT',           detail: 'Use column\'s default value' },
+  { label: 'NULL',              detail: 'NULL literal / marker' },
+  { label: 'PRIMARY KEY',       detail: 'Primary key constraint' },
+  { label: 'FOREIGN KEY',       detail: 'Foreign key constraint' },
+  { label: 'REFERENCES',        detail: 'Foreign key target table/column' },
+  { label: 'NOT NULL',          detail: 'Column cannot be NULL' },
+  { label: 'AUTO_INCREMENT',    detail: 'Auto-increment integer column' },
+  { label: 'UNIQUE',            detail: 'Unique constraint' },
+  { label: 'INDEX',             detail: 'Regular index' },
+  { label: 'ENGINE',            detail: 'Storage engine (e.g. InnoDB)' },
+  { label: 'CHARSET',           detail: 'Character set for a table/column' },
+  { label: 'COLLATE',           detail: 'Collation for a table/column' },
+  { label: 'CHARACTER SET',     detail: 'Character set specification' },
+  { label: 'IF NOT EXISTS',     detail: 'Skip if already present (CREATE)' },
+  { label: 'IF EXISTS',         detail: 'Skip if absent (DROP)' },
+  // Transactions
+  { label: 'BEGIN',             detail: 'Start a transaction' },
+  { label: 'START TRANSACTION', detail: 'Start an explicit transaction' },
+  { label: 'COMMIT',            detail: 'Commit the current transaction' },
+  { label: 'ROLLBACK',          detail: 'Roll back the current transaction' },
+  { label: 'SAVEPOINT',         detail: 'Create a savepoint inside a transaction' },
+  { label: 'RELEASE SAVEPOINT', detail: 'Remove a savepoint' },
+  // Aggregate / scalar functions
+  { label: 'COUNT',             detail: 'Count matching rows' },
+  { label: 'SUM',               detail: 'Sum numeric values' },
+  { label: 'AVG',               detail: 'Average of numeric values' },
+  { label: 'MIN',               detail: 'Minimum value' },
+  { label: 'MAX',               detail: 'Maximum value' },
+  { label: 'NOW()',             detail: 'Current date and time' },
+  { label: 'CURDATE()',         detail: 'Current date' },
+  { label: 'CURTIME()',         detail: 'Current time' },
+  { label: 'COALESCE',          detail: 'First non-NULL value in a list' },
+  { label: 'IFNULL',            detail: 'Return alternate value if NULL' },
+  { label: 'NULLIF',            detail: 'Return NULL if two values are equal' },
+  { label: 'IF',                detail: 'Inline IF(cond, true_val, false_val)' },
+  { label: 'CONCAT',            detail: 'Concatenate strings' },
+  { label: 'GROUP_CONCAT',      detail: 'Concatenate values within a group' },
+  { label: 'LENGTH',            detail: 'Byte length of a string' },
+  { label: 'CHAR_LENGTH',       detail: 'Character length of a string' },
+  { label: 'SUBSTRING',         detail: 'Extract a substring' },
+  { label: 'TRIM',              detail: 'Remove leading/trailing whitespace' },
+  { label: 'UPPER',             detail: 'Convert to upper case' },
+  { label: 'LOWER',             detail: 'Convert to lower case' },
+  { label: 'REPLACE',           detail: 'Replace occurrences in a string' },
+  { label: 'CAST',              detail: 'Convert a value to a given type' },
+  { label: 'CONVERT',           detail: 'Convert type or character set' },
+  { label: 'DATE_FORMAT',       detail: 'Format a date value' },
+  { label: 'STR_TO_DATE',       detail: 'Parse a string as a date' },
+  { label: 'YEAR',              detail: 'Extract year from a date' },
+  { label: 'MONTH',             detail: 'Extract month from a date' },
+  { label: 'DAY',               detail: 'Extract day from a date' },
+  { label: 'HOUR',              detail: 'Extract hour from a time/datetime' },
+  { label: 'MINUTE',            detail: 'Extract minute' },
+  { label: 'SECOND',            detail: 'Extract second' },
+  { label: 'DATEDIFF',          detail: 'Difference in days between two dates' },
+  { label: 'DATE_ADD',          detail: 'Add a time interval to a date' },
+  { label: 'DATE_SUB',          detail: 'Subtract a time interval from a date' },
+  { label: 'FLOOR',             detail: 'Round down to nearest integer' },
+  { label: 'CEIL',              detail: 'Round up to nearest integer' },
+  { label: 'ROUND',             detail: 'Round to a specified decimal place' },
+  { label: 'ABS',               detail: 'Absolute value' },
+  { label: 'RAND()',            detail: 'Random float 0 ≤ x < 1' },
+  { label: 'UUID()',            detail: 'Generate a UUID string' },
+  { label: 'LAST_INSERT_ID()',  detail: 'ID of the last auto-increment insert' },
+  { label: 'ROW_COUNT()',       detail: 'Rows affected by the last DML' },
+  { label: 'DATABASE()',        detail: 'Name of the active database' },
+  { label: 'USER()',            detail: 'Current MySQL user' },
+  { label: 'VERSION()',         detail: 'MySQL server version string' },
+  // Window functions
+  { label: 'ROW_NUMBER()',      detail: 'Row number within a partition' },
+  { label: 'RANK()',            detail: 'Rank within partition (with gaps)' },
+  { label: 'DENSE_RANK()',      detail: 'Rank without gaps' },
+  { label: 'LEAD',              detail: 'Value from a following row' },
+  { label: 'LAG',               detail: 'Value from a preceding row' },
+  { label: 'OVER',              detail: 'Define window for window function' },
+  { label: 'PARTITION BY',      detail: 'Divide rows into window partitions' },
+  // Data types
+  { label: 'INT',               detail: 'Integer (4 bytes)' },
+  { label: 'BIGINT',            detail: 'Large integer (8 bytes)' },
+  { label: 'TINYINT',           detail: 'Small integer (1 byte)' },
+  { label: 'SMALLINT',          detail: 'Small integer (2 bytes)' },
+  { label: 'DECIMAL',           detail: 'Fixed-point decimal number' },
+  { label: 'FLOAT',             detail: 'Single-precision floating point' },
+  { label: 'DOUBLE',            detail: 'Double-precision floating point' },
+  { label: 'VARCHAR',           detail: 'Variable-length string' },
+  { label: 'CHAR',              detail: 'Fixed-length string' },
+  { label: 'TEXT',              detail: 'Long text string' },
+  { label: 'LONGTEXT',          detail: 'Very long text (up to 4 GB)' },
+  { label: 'BLOB',              detail: 'Binary large object' },
+  { label: 'JSON',              detail: 'JSON document column' },
+  { label: 'DATE',              detail: 'Date (YYYY-MM-DD)' },
+  { label: 'DATETIME',          detail: 'Date and time' },
+  { label: 'TIMESTAMP',         detail: 'Timestamp (auto-updated)' },
+  { label: 'TIME',              detail: 'Time of day' },
+  { label: 'YEAR',              detail: 'Year (2 or 4 digits)' },
+  { label: 'BOOLEAN',           detail: 'Boolean (alias for TINYINT(1))' },
+  { label: 'ENUM',              detail: 'Enumeration of string values' },
+  { label: 'SET',               detail: 'Set of string values' },
+]
+
 /**
  * resolveTableAlias — scan a SQL string for FROM / JOIN clauses and return
  * the real table name for a given alias token.
@@ -273,20 +498,49 @@ export default function SqlEditor({
           }
         }
 
-        // ── Regular keyword completion (table names + columns) ────────────
+        // ── SHOW sub-command completion ────────────────────────────────────
+        // Detect that the cursor is inside a SHOW statement on the current
+        // line and offer the list of SHOW sub-commands.  The regex captures
+        // everything typed after "SHOW " so multi-word items like
+        // "CHARACTER SET" are matched and replaced as a single unit.
+        const currentLine = textUntilCursor.split('\n').pop()
+        const showMatch   = currentLine.match(/\bSHOW\s+([\w ]*)$/i)
+        if (showMatch) {
+          const partialSubcmd = showMatch[1]          // e.g. "" | "C" | "CHARACTER S"
+          const upper         = partialSubcmd.toUpperCase()
+
+          const prefix  = upper.trimEnd()
+          const matched = prefix === ''
+            ? SHOW_SUBCMDS                                            // show all when cursor is right after "SHOW "
+            : SHOW_SUBCMDS.filter((cmd) => cmd.label.startsWith(prefix))
+
+          // Replace the entire partial sub-command text typed so far.
+          const replaceStart = position.column - partialSubcmd.length
+          const range = {
+            startLineNumber: position.lineNumber,
+            endLineNumber:   position.lineNumber,
+            startColumn:     replaceStart,
+            endColumn:       position.column,
+          }
+
+          return {
+            suggestions: matched.map((cmd) => ({
+              label: { label: cmd.label, description: cmd.detail },
+              kind:        monaco.languages.CompletionItemKind.Keyword,
+              insertText:  cmd.label,
+              filterText:  cmd.label,
+              detail:      cmd.detail,
+              sortText:    '0' + cmd.label,
+              range,
+            })),
+          }
+        }
+
+        // ── General keyword + schema-object completion ─────────────────────
         const wordInfo = model.getWordUntilPosition(position)
         const keyword  = wordInfo.word
 
         if (!keyword || keyword.length < 1) return { suggestions: [] }
-
-        let items = []
-        try {
-          // Pass selectedDb so the cache only returns tables/columns from the
-          // currently active schema, preventing cross-DB noise in suggestions.
-          items = await searchCompletions(connectionId, selectedDbRef.current, keyword)
-        } catch {
-          return { suggestions: [] }
-        }
 
         const range = {
           startLineNumber: position.lineNumber,
@@ -295,7 +549,33 @@ export default function SqlEditor({
           endColumn:       wordInfo.endColumn,
         }
 
-        const suggestions = items.map((item) => ({
+        // Filter SQL_KEYWORDS whose first word starts with the typed prefix.
+        const kwUpper = keyword.toUpperCase()
+        const kwSuggestions = SQL_KEYWORDS
+          .filter((kw) => kw.label.split(' ')[0].startsWith(kwUpper))
+          .map((kw) => ({
+            label:       { label: kw.label, description: kw.detail },
+            kind:        monaco.languages.CompletionItemKind.Keyword,
+            insertText:  kw.label,
+            filterText:  kw.label,
+            detail:      kw.detail,
+            // Sort keywords after schema objects so table/column names win
+            // when both match (e.g. typing "users" should prefer the table).
+            sortText:    '5' + kw.label,
+            range,
+          }))
+
+        // Fetch schema-object candidates (tables + columns) from the cache.
+        let cacheItems = []
+        try {
+          // Pass selectedDb so the cache only returns tables/columns from the
+          // currently active schema, preventing cross-DB noise in suggestions.
+          cacheItems = await searchCompletions(connectionId, selectedDbRef.current, keyword)
+        } catch {
+          // Cache unavailable — still return keyword suggestions.
+        }
+
+        const cacheSuggestions = cacheItems.map((item) => ({
           label: {
             label:       item.label,
             description: item.tableName ? `${item.tableName}.${item.label}` : item.label,
@@ -313,7 +593,7 @@ export default function SqlEditor({
           range,
         }))
 
-        return { suggestions }
+        return { suggestions: [...cacheSuggestions, ...kwSuggestions] }
       },
     })
   }
@@ -321,30 +601,24 @@ export default function SqlEditor({
   /**
    * validateSql — debounced SQL syntax checker (C3).
    *
-   * Strategy: run EXPLAIN <sql> against the connected backend and interpret
-   * the result.  This uses the actual MySQL parser rather than a client-side
-   * approximation, so it catches all syntax errors including invalid keywords,
-   * wrong clause ordering, and type mismatches.
+   * Strategy: split the buffer into individual statements, then run
+   * EXPLAIN <stmt> for each one that MySQL can EXPLAIN (SELECT / INSERT /
+   * UPDATE / DELETE / REPLACE).  Statements that are not EXPLAINable —
+   * SHOW, USE, SET, DDL, CALL, etc. — are silently skipped so they never
+   * trigger false-positive syntax errors.
    *
-   * Error-position extraction:
-   *   MySQL errors include a "near '<token>' at line N" pattern.  We parse
-   *   that to find the offending line; column position defaults to 1 if not
-   *   available (MySQL rarely gives precise column offsets).
+   * Each EXPLAIN call uses only its own statement text, never the full
+   * buffer, so MySQL's "at line N" error offsets map correctly back into
+   * the per-statement text and then into the Monaco buffer.
    *
    * Limitations:
    *   - Requires a live connection (skipped silently in browser mock mode).
-   *   - EXPLAIN is not valid for all statements (DDL, multi-statement blocks).
-   *     We handle these gracefully: if EXPLAIN itself returns "not supported"
-   *     or similar, we clear markers and treat syntax as unknown.
    *   - 800 ms debounce avoids hammering the DB on every keystroke.
    */
   const validateSql = useCallback((sql, model, monaco) => {
     clearTimeout(validateTimerRef.current)
     const trimmed = sql?.trim() ?? ''
-    // Skip validation when there is no content, or when the user has only
-    // typed a single token (no whitespace) — a bare word like "t" or "select"
-    // is not a valid statement and EXPLAIN would always return a syntax error.
-    if (!trimmed || !trimmed.includes(' ')) {
+    if (!trimmed) {
       setSqlValid(null)
       if (model && !model.isDisposed()) {
         monaco.editor.setModelMarkers(model, 'sql-lint', [])
@@ -355,52 +629,74 @@ export default function SqlEditor({
     validateTimerRef.current = setTimeout(async () => {
       if (!model || model.isDisposed()) return
 
+      // Split into individual statements so each is validated in isolation.
+      const stmts = splitSql(sql)
+
+      // Only attempt EXPLAIN for statement types MySQL supports it on.
+      // Everything else (SHOW, USE, SET, DDL, CALL, …) is skipped silently.
+      const explainablePrefix = /^(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/i
+
+      const candidates = stmts.filter((s) => explainablePrefix.test(s.sql.trimStart()))
+
+      if (candidates.length === 0) {
+        // No EXPLAINable statements — nothing to validate; clear markers.
+        setSqlValid(null)
+        if (!model.isDisposed()) {
+          monaco.editor.setModelMarkers(model, 'sql-lint', [])
+        }
+        return
+      }
+
       try {
-        const result = await runQuery(connectionId, selectedDbRef.current, `EXPLAIN ${sql}`)
-        if (!result || model.isDisposed()) return
+        const markers = []
 
-        if (!result.error) {
-          setSqlValid(true)
-          monaco.editor.setModelMarkers(model, 'sql-lint', [])
-          return
+        for (const stmt of candidates) {
+          // Skip bare keywords with no whitespace — "select" alone would
+          // always fail EXPLAIN; wait until the user has typed more.
+          if (!stmt.sql.includes(' ')) continue
+
+          const result = await runQuery(connectionId, selectedDbRef.current, `EXPLAIN ${stmt.sql}`)
+          if (!result || model.isDisposed()) return
+          if (!result.error) continue
+
+          const errMsg = result.error
+
+          // Silently skip if EXPLAIN is unsupported for this specific variant
+          // (e.g. EXPLAIN INSERT … ON DUPLICATE KEY on older servers).
+          const unsupportedPhrases = [
+            'not supported', 'command denied', 'access denied',
+            'only supported', 'cannot use', 'not available',
+          ]
+          if (unsupportedPhrases.some((p) => errMsg.toLowerCase().includes(p))) continue
+
+          // "at line N" in the MySQL error is relative to the statement text,
+          // not the full buffer.  Convert to a buffer line number by counting
+          // newlines before stmt.startOffset.
+          const bufferLinesBefore = sql.slice(0, stmt.startOffset).split('\n').length - 1
+          const lineMatch  = errMsg.match(/at line (\d+)/i)
+          const stmtLine   = lineMatch ? parseInt(lineMatch[1], 10) : 1
+          const lineNumber = bufferLinesBefore + stmtLine
+
+          const nearMatch = errMsg.match(/near '([^']*)'/i)
+          const token     = nearMatch?.[1] ?? ''
+          const lineText  = model.getLineContent(lineNumber) ?? ''
+          const colStart  = token ? Math.max(1, lineText.indexOf(token) + 1) : 1
+          const colEnd    = colStart + Math.max(token.length, 1)
+
+          markers.push({
+            startLineNumber: lineNumber,
+            endLineNumber:   lineNumber,
+            startColumn:     colStart,
+            endColumn:       colEnd,
+            message:         errMsg,
+            severity:        monaco.MarkerSeverity.Error,
+            source:          'MySQL',
+          })
         }
 
-        const errMsg = result.error
-
-        // Silently skip if EXPLAIN is unsupported for this statement type
-        // (e.g. DDL like CREATE TABLE, or stored-procedure syntax).
-        const unsupportedPhrases = [
-          'not supported', 'command denied', 'access denied',
-          'only supported', 'cannot use', 'not available',
-        ]
-        if (unsupportedPhrases.some((p) => errMsg.toLowerCase().includes(p))) {
-          setSqlValid(null)
-          monaco.editor.setModelMarkers(model, 'sql-lint', [])
-          return
-        }
-
-        // Parse "at line N" from the MySQL error message.
-        // Example: "You have an error in your SQL syntax … near 'FOM' at line 1"
-        const lineMatch  = errMsg.match(/at line (\d+)/i)
-        const lineNumber = lineMatch ? parseInt(lineMatch[1], 10) : 1
-
-        // Try to locate the offending token from "near '<token>'" to set column.
-        const nearMatch = errMsg.match(/near '([^']*)'/i)
-        const token     = nearMatch?.[1] ?? ''
-        const lineText  = model.getLineContent(lineNumber) ?? ''
-        const colStart  = token ? Math.max(1, lineText.indexOf(token) + 1) : 1
-        const colEnd    = colStart + Math.max(token.length, 1)
-
-        setSqlValid(false)
-        monaco.editor.setModelMarkers(model, 'sql-lint', [{
-          startLineNumber: lineNumber,
-          endLineNumber:   lineNumber,
-          startColumn:     colStart,
-          endColumn:       colEnd,
-          message:         errMsg,
-          severity:        monaco.MarkerSeverity.Error,
-          source:          'MySQL',
-        }])
+        if (model.isDisposed()) return
+        setSqlValid(markers.length === 0 ? true : false)
+        monaco.editor.setModelMarkers(model, 'sql-lint', markers)
       } catch {
         // Network / IPC error — don't show false positives.
         setSqlValid(null)

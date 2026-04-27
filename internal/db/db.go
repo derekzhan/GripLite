@@ -194,6 +194,18 @@ var extendedDDL = []string{
 		PRIMARY KEY (conn_id, db_name, table_name)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_dfh_updated ON data_filter_history(updated_at)`,
+
+	// Query history — one row per RunQuery invocation.
+	`CREATE TABLE IF NOT EXISTS query_history (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		conn_id     TEXT    NOT NULL,
+		db_name     TEXT    NOT NULL DEFAULT '',
+		sql_text    TEXT    NOT NULL,
+		exec_ms     INTEGER NOT NULL DEFAULT 0,
+		error_msg   TEXT    NOT NULL DEFAULT '',
+		executed_at TEXT    NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_qh_conn ON query_history(conn_id, executed_at)`,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +311,8 @@ func applySchema(db *sql.DB) error {
 		`ALTER TABLE metadata_cache   ADD COLUMN comment TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE metadata_tables  ADD COLUMN comment TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE metadata_columns ADD COLUMN comment TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE connections ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE connections ADD COLUMN color TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		if _, err := db.Exec(m); err != nil {

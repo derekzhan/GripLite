@@ -10,6 +10,14 @@ export function ApplyChanges(arg1) {
   return window['go']['main']['App']['ApplyChanges'](arg1);
 }
 
+export function CancelQuery(arg1) {
+  return window['go']['main']['App']['CancelQuery'](arg1);
+}
+
+export function ClearQueryHistory(arg1) {
+  return window['go']['main']['App']['ClearQueryHistory'](arg1);
+}
+
 export function Connect(arg1) {
   return window['go']['main']['App']['Connect'](arg1);
 }
@@ -38,12 +46,28 @@ export function ExecuteTableAlter(arg1, arg2) {
   return window['go']['main']['App']['ExecuteTableAlter'](arg1, arg2);
 }
 
+export function ExportDump(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ExportDump'](arg1, arg2, arg3);
+}
+
 export function FetchDatabases(arg1) {
   return window['go']['main']['App']['FetchDatabases'](arg1);
 }
 
+export function FetchEvents(arg1, arg2) {
+  return window['go']['main']['App']['FetchEvents'](arg1, arg2);
+}
+
+export function FetchRoutines(arg1, arg2) {
+  return window['go']['main']['App']['FetchRoutines'](arg1, arg2);
+}
+
 export function FetchTables(arg1, arg2) {
   return window['go']['main']['App']['FetchTables'](arg1, arg2);
+}
+
+export function FetchTriggers(arg1, arg2) {
+  return window['go']['main']['App']['FetchTriggers'](arg1, arg2);
 }
 
 export function GetBuildInfo() {
@@ -60,6 +84,10 @@ export function GetDataFilterHistory(arg1, arg2, arg3) {
 
 export function GetDatabasesFromCache(arg1) {
   return window['go']['main']['App']['GetDatabasesFromCache'](arg1);
+}
+
+export function GetQueryHistory(arg1, arg2) {
+  return window['go']['main']['App']['GetQueryHistory'](arg1, arg2);
 }
 
 export function GetSavedConnection(arg1) {
@@ -90,6 +118,10 @@ export function InitLocalDB() {
   return window['go']['main']['App']['InitLocalDB']();
 }
 
+export function KillQuery(arg1, arg2) {
+  return window['go']['main']['App']['KillQuery'](arg1, arg2);
+}
+
 export function ListConnections() {
   return window['go']['main']['App']['ListConnections']();
 }
@@ -112,6 +144,10 @@ export function RemoveConnection(arg1) {
 
 export function RunQuery(arg1, arg2, arg3) {
   return window['go']['main']['App']['RunQuery'](arg1, arg2, arg3);
+}
+
+export function RunQueryPage(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['RunQueryPage'](arg1, arg2, arg3, arg4, arg5);
 }
 
 export function SaveConnection(arg1) {

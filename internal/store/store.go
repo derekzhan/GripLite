@@ -75,6 +75,8 @@ type SavedConnection struct {
 	TLS            bool            `json:"tls"`
 	SSH            SSHConfig       `json:"ssh"`
 	AdvancedParams []AdvancedParam `json:"advancedParams"`
+	ReadOnly       bool            `json:"readOnly"`
+	Color          string          `json:"color"` // e.g. "#ef4444" or "" for default
 	CreatedAt      string          `json:"createdAt"`
 	UpdatedAt      string          `json:"updatedAt"`
 }
@@ -198,13 +200,17 @@ func (s *ConnectionStore) Save(c SavedConnection) error {
 	if c.TLS {
 		tls = 1
 	}
+	readOnly := 0
+	if c.ReadOnly {
+		readOnly = 1
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	_, err = s.db.Exec(`
 		INSERT INTO connections
 			(id, name, comment, kind, host, port, username, encrypted_password, database, tls,
-			 ssh_config_json, ssh_pw_enc, advanced_options_json, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			 ssh_config_json, ssh_pw_enc, advanced_options_json, read_only, color, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			name                  = excluded.name,
 			comment               = excluded.comment,
@@ -218,9 +224,11 @@ func (s *ConnectionStore) Save(c SavedConnection) error {
 			ssh_config_json       = excluded.ssh_config_json,
 			ssh_pw_enc            = excluded.ssh_pw_enc,
 			advanced_options_json = excluded.advanced_options_json,
+			read_only             = excluded.read_only,
+			color                 = excluded.color,
 			updated_at            = excluded.updated_at`,
 		c.ID, c.Name, c.Comment, c.Kind, c.Host, c.Port, c.Username, pwEnc, c.Database, tls,
-		string(sshJSON), sshPwEnc, string(advJSON), now, now,
+		string(sshJSON), sshPwEnc, string(advJSON), readOnly, c.Color, now, now,
 	)
 	return err
 }
@@ -229,7 +237,7 @@ func (s *ConnectionStore) Save(c SavedConnection) error {
 func (s *ConnectionStore) List() ([]SavedConnection, error) {
 	rows, err := s.db.Query(`
 		SELECT id, name, comment, kind, host, port, username, database, tls,
-		       ssh_config_json, advanced_options_json, created_at, updated_at
+		       ssh_config_json, advanced_options_json, read_only, color, created_at, updated_at
 		FROM connections ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -239,15 +247,16 @@ func (s *ConnectionStore) List() ([]SavedConnection, error) {
 	var results []SavedConnection
 	for rows.Next() {
 		var c SavedConnection
-		var tls int
+		var tls, readOnly int
 		var sshJSON, advJSON string
 		if err := rows.Scan(
 			&c.ID, &c.Name, &c.Comment, &c.Kind, &c.Host, &c.Port, &c.Username,
-			&c.Database, &tls, &sshJSON, &advJSON, &c.CreatedAt, &c.UpdatedAt,
+			&c.Database, &tls, &sshJSON, &advJSON, &readOnly, &c.Color, &c.CreatedAt, &c.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		c.TLS = tls != 0
+		c.ReadOnly = readOnly != 0
 		_ = json.Unmarshal([]byte(sshJSON), &c.SSH)
 		_ = json.Unmarshal([]byte(advJSON), &c.AdvancedParams)
 		if c.AdvancedParams == nil {
@@ -261,14 +270,14 @@ func (s *ConnectionStore) List() ([]SavedConnection, error) {
 // Get returns a single connection with passwords decrypted (for the edit dialog).
 func (s *ConnectionStore) Get(id string) (*SavedConnection, error) {
 	var c SavedConnection
-	var tls int
+	var tls, readOnly int
 	var pwEnc, sshPwEnc, sshJSON, advJSON string
 	err := s.db.QueryRow(`
 		SELECT id, name, comment, kind, host, port, username, encrypted_password, database, tls,
-		       ssh_config_json, ssh_pw_enc, advanced_options_json, created_at, updated_at
+		       ssh_config_json, ssh_pw_enc, advanced_options_json, read_only, color, created_at, updated_at
 		FROM connections WHERE id = ?`, id).Scan(
 		&c.ID, &c.Name, &c.Comment, &c.Kind, &c.Host, &c.Port, &c.Username, &pwEnc,
-		&c.Database, &tls, &sshJSON, &sshPwEnc, &advJSON, &c.CreatedAt, &c.UpdatedAt,
+		&c.Database, &tls, &sshJSON, &sshPwEnc, &advJSON, &readOnly, &c.Color, &c.CreatedAt, &c.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("store: connection %q not found", id)
@@ -277,6 +286,7 @@ func (s *ConnectionStore) Get(id string) (*SavedConnection, error) {
 		return nil, err
 	}
 	c.TLS = tls != 0
+	c.ReadOnly = readOnly != 0
 	c.Password, _ = crypto.Decrypt(pwEnc)
 	_ = json.Unmarshal([]byte(sshJSON), &c.SSH)
 	c.SSH.Password, _ = crypto.Decrypt(sshPwEnc)

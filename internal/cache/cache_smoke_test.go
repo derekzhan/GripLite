@@ -206,7 +206,7 @@ func TestCache_SearchColumns(t *testing.T) {
 	waitForSyncDone(t, c, "conn-2", 3*time.Second)
 
 	// "use" should match both the "users" table and "user_id" column.
-	items, err := c.SearchColumns(context.Background(), "conn-2", "use")
+	items, err := c.SearchColumns(context.Background(), "conn-2", "", "use")
 	if err != nil {
 		t.Fatalf("SearchColumns: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestCache_SyncSchema_Comment(t *testing.T) {
 func TestCache_SearchColumns_EmptyKeyword(t *testing.T) {
 	c := newTestCache(t)
 
-	items, err := c.SearchColumns(context.Background(), "conn", "")
+	items, err := c.SearchColumns(context.Background(), "conn", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

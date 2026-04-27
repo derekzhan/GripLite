@@ -43,10 +43,12 @@ const DEFAULT_ADVANCED = [
 
 function makeBlankForm(id) {
   return {
-    id:      id ?? crypto.randomUUID(),
-    name:    'New Connection',
-    comment: '',
-    kind:    'mysql',
+    id:       id ?? crypto.randomUUID(),
+    name:     'New Connection',
+    comment:  '',
+    color:    '',
+    readOnly: false,
+    kind:     'mysql',
     host:    '127.0.0.1',
     port:    3306,
     username: 'root',
@@ -187,6 +189,43 @@ function GeneralTab({ form, setForm }) {
         onChange={(val) => setForm((f) => ({ ...f, tls: val }))}
         label="Require TLS/SSL"
       />
+
+      {/* Color label */}
+      <div className="flex flex-col gap-1">
+        <label className="text-[11px] text-fg-secondary">Color label</label>
+        <div className="flex items-center gap-2">
+          {['', '#6b7280', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'].map(color => (
+            <button
+              key={color}
+              type="button"
+              onClick={() => setForm(f => ({ ...f, color }))}
+              title={color || 'Default (no color)'}
+              className={[
+                'w-5 h-5 rounded-full border-2 transition-all',
+                (form.color ?? '') === color
+                  ? 'border-fg-primary scale-110'
+                  : 'border-transparent hover:border-fg-secondary',
+                color === '' ? 'bg-line border border-line-subtle' : '',
+              ].join(' ')}
+              style={color ? { backgroundColor: color } : {}}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* Read-only mode */}
+      <div className="flex items-center gap-3">
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={!!form.readOnly}
+            onChange={(e) => setForm(f => ({ ...f, readOnly: e.target.checked }))}
+            className="accent-accent w-4 h-4"
+          />
+          <span className="text-[12px] text-fg-secondary">Read-only mode</span>
+        </label>
+        <span className="text-[10px] text-fg-muted">Blocks write operations (INSERT/UPDATE/DELETE/DDL)</span>
+      </div>
 
       {/* Live URL preview */}
       <div>

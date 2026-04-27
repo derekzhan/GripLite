@@ -42,6 +42,8 @@ export default function ResultPanel({
   resultSets     = null,
   activeResultId = null,
   onSelectResult,
+  onLoadMore,       // async () => void — fetches next page and appends rows
+  loadingMore = false,
 }) {
   const [activeTab,    setActiveTab]    = useState('Result')
   const [pageSize,     setPageSize]     = useState(DEFAULT_PAGE_SIZE)
@@ -131,6 +133,17 @@ export default function ResultPanel({
 
         <div className="ml-auto flex items-center gap-3 px-3 text-[11px] text-fg-muted">
           {isRunning && <span className="text-accent animate-pulse">Running…</span>}
+          {!isRunning && queryResult?.truncated && onLoadMore && (
+            <button
+              onClick={onLoadMore}
+              disabled={loadingMore}
+              className="text-[11px] px-2 py-0.5 rounded border border-line text-fg-secondary
+                         hover:border-accent hover:text-fg-primary transition-colors select-none
+                         disabled:opacity-40"
+            >
+              {loadingMore ? '…Loading' : '↓ Load More'}
+            </button>
+          )}
           {activeTab === 'Result' && hasResult && !hasError && !isEmptyResultSet && (
             <span className={queryResult.truncated ? 'text-warn' : ''}>
               {totalRows.toLocaleString()} total

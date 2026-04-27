@@ -411,6 +411,108 @@ func (d *mysqlDriver) FetchTableDetail(ctx context.Context, dbName, tableName st
 	}, nil
 }
 
+// FetchRoutines returns stored procedures and functions for a database.
+func (d *mysqlDriver) FetchRoutines(ctx context.Context, dbName string) ([]driver.RoutineInfo, error) {
+	if d.db == nil {
+		return nil, driver.ErrNotConnected
+	}
+	const q = `
+		SELECT ROUTINE_NAME, ROUTINE_TYPE,
+		       COALESCE(DTD_IDENTIFIER, '') AS return_type,
+		       COALESCE(ROUTINE_COMMENT, '') AS comment,
+		       COALESCE(CREATED, '') AS created,
+		       COALESCE(LAST_ALTERED, '') AS modified
+		FROM information_schema.ROUTINES
+		WHERE ROUTINE_SCHEMA = ?
+		ORDER BY ROUTINE_TYPE, ROUTINE_NAME`
+	rows, err := d.db.QueryContext(ctx, q, dbName)
+	if err != nil {
+		return nil, fmt.Errorf("mysql: FetchRoutines %q: %w", dbName, err)
+	}
+	defer rows.Close()
+	var result []driver.RoutineInfo
+	for rows.Next() {
+		var r driver.RoutineInfo
+		var created, modified interface{}
+		if err := rows.Scan(&r.Name, &r.Type, &r.ReturnType, &r.Comment, &created, &modified); err != nil {
+			return nil, err
+		}
+		if created != nil {
+			r.Created = fmt.Sprintf("%v", created)
+		}
+		if modified != nil {
+			r.Modified = fmt.Sprintf("%v", modified)
+		}
+		result = append(result, r)
+	}
+	if result == nil {
+		result = []driver.RoutineInfo{}
+	}
+	return result, rows.Err()
+}
+
+// FetchTriggers returns triggers for a database.
+func (d *mysqlDriver) FetchTriggers(ctx context.Context, dbName string) ([]driver.TriggerDetail, error) {
+	if d.db == nil {
+		return nil, driver.ErrNotConnected
+	}
+	const q = `
+		SELECT TRIGGER_NAME, EVENT_MANIPULATION, ACTION_TIMING,
+		       COALESCE(ACTION_STATEMENT, '') AS stmt
+		FROM information_schema.TRIGGERS
+		WHERE TRIGGER_SCHEMA = ?
+		ORDER BY TRIGGER_NAME`
+	rows, err := d.db.QueryContext(ctx, q, dbName)
+	if err != nil {
+		return nil, fmt.Errorf("mysql: FetchTriggers %q: %w", dbName, err)
+	}
+	defer rows.Close()
+	var result []driver.TriggerDetail
+	for rows.Next() {
+		var t driver.TriggerDetail
+		if err := rows.Scan(&t.Name, &t.Event, &t.Timing, &t.Statement); err != nil {
+			return nil, err
+		}
+		result = append(result, t)
+	}
+	if result == nil {
+		result = []driver.TriggerDetail{}
+	}
+	return result, rows.Err()
+}
+
+// FetchEvents returns scheduled events for a database.
+func (d *mysqlDriver) FetchEvents(ctx context.Context, dbName string) ([]driver.EventInfo, error) {
+	if d.db == nil {
+		return nil, driver.ErrNotConnected
+	}
+	const q = `
+		SELECT EVENT_NAME,
+		       COALESCE(STATUS, '') AS status,
+		       COALESCE(INTERVAL_VALUE, '') AS schedule,
+		       COALESCE(EVENT_COMMENT, '') AS comment
+		FROM information_schema.EVENTS
+		WHERE EVENT_SCHEMA = ?
+		ORDER BY EVENT_NAME`
+	rows, err := d.db.QueryContext(ctx, q, dbName)
+	if err != nil {
+		return nil, fmt.Errorf("mysql: FetchEvents %q: %w", dbName, err)
+	}
+	defer rows.Close()
+	var result []driver.EventInfo
+	for rows.Next() {
+		var e driver.EventInfo
+		if err := rows.Scan(&e.Name, &e.Status, &e.Schedule, &e.Comment); err != nil {
+			return nil, err
+		}
+		result = append(result, e)
+	}
+	if result == nil {
+		result = []driver.EventInfo{}
+	}
+	return result, rows.Err()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Query execution
 // ─────────────────────────────────────────────────────────────────────────────

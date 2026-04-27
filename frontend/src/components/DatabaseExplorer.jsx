@@ -39,10 +39,11 @@ import {
   Eye, KeyRound, Users as UsersIcon, UserRound,
   Settings2, Info, Cable, RotateCw, Link2, Unplug,
   FolderOpen, FolderTree,
-  ListChecks, Play,
+  ListChecks, Play, Zap, Bell, Code2,
 } from 'lucide-react'
 import {
   listConnections, fetchDatabases, fetchTables, getTableSchema,
+  fetchRoutines, fetchTriggers, fetchEvents,
   runQuery, syncMetadata, connect, connectSaved, disconnect,
 } from '../lib/bridge'
 import { normalizeError } from '../lib/errors'
@@ -114,9 +115,12 @@ function TreeIcon({ type, folderKind, groupKind, kind, isPK, className = '' }) {
   else if (type === 'user')                       { Cmp = UserRound;  color = 'var(--syntax-user)' }
   else if (type === 'admin')                      { Cmp = Cable;      color = 'var(--syntax-keyword)' }
   else if (type === 'sysinfo')                    { Cmp = Info;       color = 'var(--syntax-keyword)' }
-  else if (type === 'folder' && folderKind === 'tables') { Cmp = FolderTree; color = 'var(--fg-muted)' }
-  else if (type === 'folder' && folderKind === 'views')  { Cmp = Eye;        color = 'var(--fg-muted)' }
-  else if (type === 'folder')                            { Cmp = FolderOpen; color = 'var(--fg-muted)' }
+  else if (type === 'folder' && folderKind === 'tables')   { Cmp = FolderTree; color = 'var(--fg-muted)' }
+  else if (type === 'folder' && folderKind === 'views')    { Cmp = Eye;        color = 'var(--fg-muted)' }
+  else if (type === 'folder' && folderKind === 'routines') { Cmp = Code2;      color = 'var(--fg-muted)' }
+  else if (type === 'folder' && folderKind === 'triggers') { Cmp = Zap;        color = 'var(--fg-muted)' }
+  else if (type === 'folder' && folderKind === 'events')   { Cmp = Bell;       color = 'var(--fg-muted)' }
+  else if (type === 'folder')                              { Cmp = FolderOpen; color = 'var(--fg-muted)' }
   else if (type === 'group' && groupKind === 'databases')  { Cmp = Database;  color = 'var(--success)' }
   else if (type === 'group' && groupKind === 'users')      { Cmp = UsersIcon; color = 'var(--syntax-user)' }
   else if (type === 'group' && groupKind === 'administer') { Cmp = Settings2; color = 'var(--syntax-pk)' }
@@ -587,23 +591,30 @@ export default function DatabaseExplorer({
 
       } else if (type === 'database') {
         // Databases show virtual folder nodes so the tree mirrors DBeaver.
-        // Expanding the "Tables" folder triggers a fetchTables call.
         children = [
           {
-            id:         `folder::tables::${connId}::${dbName}`,
-            type:       'folder',
-            folderKind: 'tables',
-            label:      'Tables',
-            connId,
-            dbName,
-            hasChildren: true,
+            id: `folder::tables::${connId}::${dbName}`,
+            type: 'folder', folderKind: 'tables', label: 'Tables',
+            connId, dbName, hasChildren: true,
+          },
+          {
+            id: `folder::routines::${connId}::${dbName}`,
+            type: 'folder', folderKind: 'routines', label: 'Procedures & Functions',
+            connId, dbName, hasChildren: true,
+          },
+          {
+            id: `folder::triggers::${connId}::${dbName}`,
+            type: 'folder', folderKind: 'triggers', label: 'Triggers',
+            connId, dbName, hasChildren: true,
+          },
+          {
+            id: `folder::events::${connId}::${dbName}`,
+            type: 'folder', folderKind: 'events', label: 'Events',
+            connId, dbName, hasChildren: true,
           },
         ]
 
       } else if (type === 'folder' && node.folderKind === 'tables') {
-        // "Tables" folder expansion — fetch the actual table list.
-        // Wails returns `null` (not `[]`) for an empty Go slice, so coerce
-        // before mapping to avoid a TypeError on schemas with zero tables.
         const tables = (await fetchTables(connId, dbName)) ?? []
         if (cancelled) return
         children = tables.map((t) => ({
@@ -611,6 +622,50 @@ export default function DatabaseExplorer({
           kind: t.kind, rowCount: t.rowCount, sizeBytes: t.sizeBytes ?? -1,
           connId, dbName, tableName: t.name, hasChildren: true,
         }))
+
+      } else if (type === 'folder' && node.folderKind === 'routines') {
+        const routines = (await fetchRoutines(connId, dbName)) ?? []
+        if (cancelled) return
+        children = routines.length === 0
+          ? [{ id: `${node.id}::empty`, type: 'sysinfo', label: 'No procedures or functions', connId, hasChildren: false }]
+          : routines.map((r) => ({
+              id: `routine::${connId}::${dbName}::${r.name}::${r.type}`,
+              type: 'sysinfo',
+              label: `${r.name}${r.type === 'FUNCTION' ? ' ()' : ''}`,
+              connId, dbName,
+              hasChildren: false,
+              sql: r.type === 'FUNCTION'
+                ? `SHOW CREATE FUNCTION \`${dbName}\`.\`${r.name}\``
+                : `SHOW CREATE PROCEDURE \`${dbName}\`.\`${r.name}\``,
+            }))
+
+      } else if (type === 'folder' && node.folderKind === 'triggers') {
+        const triggers = (await fetchTriggers(connId, dbName)) ?? []
+        if (cancelled) return
+        children = triggers.length === 0
+          ? [{ id: `${node.id}::empty`, type: 'sysinfo', label: 'No triggers', connId, hasChildren: false }]
+          : triggers.map((t) => ({
+              id: `trigger::${connId}::${dbName}::${t.name}`,
+              type: 'sysinfo',
+              label: `${t.timing} ${t.event} on ${t.name}`,
+              connId, dbName,
+              hasChildren: false,
+              sql: `SHOW CREATE TRIGGER \`${dbName}\`.\`${t.name}\``,
+            }))
+
+      } else if (type === 'folder' && node.folderKind === 'events') {
+        const events = (await fetchEvents(connId, dbName)) ?? []
+        if (cancelled) return
+        children = events.length === 0
+          ? [{ id: `${node.id}::empty`, type: 'sysinfo', label: 'No events', connId, hasChildren: false }]
+          : events.map((e) => ({
+              id: `event::${connId}::${dbName}::${e.name}`,
+              type: 'sysinfo',
+              label: `${e.name} (${e.status})`,
+              connId, dbName,
+              hasChildren: false,
+              sql: `SHOW CREATE EVENT \`${dbName}\`.\`${e.name}\``,
+            }))
 
       } else if (type === 'table') {
         // Column data comes from the local SQLite cache — sub-millisecond.
@@ -1054,9 +1109,19 @@ export default function DatabaseExplorer({
                        : <ChevronRight size={CHEVRON_SIZE} strokeWidth={2} />}
           </span>
           <TreeIcon type="connection" />
+          {conn.color && (
+            <span
+              className="w-2.5 h-2.5 rounded-full flex-shrink-0 -ml-0.5 mr-0.5 border border-black/10"
+              style={{ backgroundColor: conn.color }}
+              title={`Color label: ${conn.color}`}
+            />
+          )}
           <div className="flex-1 flex flex-col min-w-0">
             <span className="text-[12px] truncate text-fg-primary font-medium">
               {conn.name || `${conn.host}:${conn.port}`}
+              {conn.readOnly && (
+                <span className="ml-1.5 text-[9px] text-warn bg-warn/10 border border-warn/30 rounded px-1 select-none">RO</span>
+              )}
             </span>
             {conn.database && (
               <span className="text-[10px] text-fg-muted truncate">{conn.database}</span>
@@ -1300,6 +1365,38 @@ export default function DatabaseExplorer({
           label:    <MenuLabel icon={ListChecks} text="View Table" />,
           shortcut: 'F4', key: 'F4',
           action:   () => openTable(nodeRef, null, 'properties'),
+        },
+        { divider: true },
+        {
+          label:    <MenuLabel icon={Play} text="Export SQL Dump…" />,
+          key: 'd',
+          action:   async () => {
+            try {
+              const { exportDump } = await import('../lib/bridge')
+              const sql = await exportDump(connId, dbName, tableName)
+              const blob = new Blob([sql], { type: 'text/plain;charset=utf-8;' })
+              const url  = URL.createObjectURL(blob)
+              const a    = Object.assign(document.createElement('a'), {
+                href: url, download: `${tableName}_dump.sql`,
+              })
+              document.body.appendChild(a)
+              a.click()
+              document.body.removeChild(a)
+              URL.revokeObjectURL(url)
+              toast.success(`Exported ${tableName}_dump.sql`)
+            } catch (e) {
+              toast.error(`Dump failed: ${normalizeError(e)}`)
+            }
+          },
+        },
+        {
+          label:    <MenuLabel icon={Play} text="Copy SELECT" />,
+          key: 's',
+          action:   () => onConsoleOpen?.({
+            initialSql: `SELECT * FROM \`${dbName}\`.\`${tableName}\` LIMIT 100;`,
+            label: `SELECT — ${tableName}`,
+            defaultDb: dbName,
+          }),
         },
       ]
     }

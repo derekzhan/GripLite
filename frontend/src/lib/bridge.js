@@ -910,6 +910,105 @@ export async function applyChanges(changeSet) {
  *                    platform:string, goVersion:string, license:string,
  *                    author:string, email:string, homepage:string}>}
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// Query History
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function getQueryHistory(connectionID, limit = 200) {
+  if (isWails()) {
+    const { GetQueryHistory } = await import('../../wailsjs/go/main/App.js')
+    return (await GetQueryHistory(connectionID, limit)) ?? []
+  }
+  return []
+}
+
+export async function clearQueryHistory(connectionID) {
+  if (isWails()) {
+    const { ClearQueryHistory } = await import('../../wailsjs/go/main/App.js')
+    return ClearQueryHistory(connectionID)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cancel running query
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function cancelQuery(connectionID) {
+  if (isWails()) {
+    const { CancelQuery } = await import('../../wailsjs/go/main/App.js')
+    return CancelQuery(connectionID)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Load More (offset pagination)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function runQueryPage(connectionID, dbName, sql, offset, limit = 1000) {
+  if (isWails()) {
+    const { RunQueryPage } = await import('../../wailsjs/go/main/App.js')
+    return RunQueryPage(connectionID, dbName ?? '', sql, offset, limit)
+  }
+  await delay(100)
+  return { columns: [], rows: [], rowCount: 0, truncated: false, execMs: 0, error: '' }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kill Query
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function killQuery(connectionID, processID) {
+  if (isWails()) {
+    const { KillQuery } = await import('../../wailsjs/go/main/App.js')
+    return KillQuery(connectionID, processID)
+  }
+  return { columns: [], rows: [], rowCount: 0, execMs: 0, error: '' }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Schema: routines, triggers, events
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function fetchRoutines(connectionID, dbName) {
+  if (isWails()) {
+    const { FetchRoutines } = await import('../../wailsjs/go/main/App.js')
+    return (await FetchRoutines(connectionID, dbName)) ?? []
+  }
+  return []
+}
+
+export async function fetchTriggers(connectionID, dbName) {
+  if (isWails()) {
+    const { FetchTriggers } = await import('../../wailsjs/go/main/App.js')
+    return (await FetchTriggers(connectionID, dbName)) ?? []
+  }
+  return []
+}
+
+export async function fetchEvents(connectionID, dbName) {
+  if (isWails()) {
+    const { FetchEvents } = await import('../../wailsjs/go/main/App.js')
+    return (await FetchEvents(connectionID, dbName)) ?? []
+  }
+  return []
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SQL Dump Export
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function exportDump(connectionID, dbName, tableName) {
+  if (isWails()) {
+    const { ExportDump } = await import('../../wailsjs/go/main/App.js')
+    return ExportDump(connectionID, dbName, tableName)
+  }
+  return `-- Mock dump for ${dbName}.${tableName}\n-- Run inside the Wails app for live output.\n`
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Build info
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function getBuildInfo() {
   if (isWails()) {
     const { GetBuildInfo } = await import('../../wailsjs/go/main/App.js')
@@ -918,7 +1017,7 @@ export async function getBuildInfo() {
   await delay(10)
   return {
     name: 'GripLite',
-    version: 'v0.1.3',
+    version: 'v0.1.5',
     buildDate: new Date().toISOString().slice(0, 10),
     platform: 'Wails + React (browser preview)',
     goVersion: 'go (dev)',

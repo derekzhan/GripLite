@@ -36,7 +36,7 @@ import KeyboardShortcutsModal from './components/KeyboardShortcutsModal'
 import ErrorBoundary      from './components/ErrorBoundary'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
-import { runQuery, listConnections, getBuildInfo } from './lib/bridge'
+import { runQuery, runQueryPage, listConnections, getBuildInfo } from './lib/bridge'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -220,6 +220,57 @@ export default function App() {
       return { ...prev, [consoleId]: { ...d, activeResultId: resultId } }
     })
   }, [])
+
+  // ── Load More (offset pagination) ─────────────────────────────────────────
+  const handleLoadMore = useCallback(async (consoleId, resultId) => {
+    const data   = consolesData[consoleId]
+    if (!data) return
+    const entry  = data.resultSets?.find((r) => r.id === resultId)
+    if (!entry || !entry.queryResult?.truncated) return
+    const offset = entry.queryResult.rows?.length ?? 0
+    if (offset === 0) return
+
+    // Mark loading state
+    setConsolesData((prev) => ({
+      ...prev,
+      [consoleId]: { ...prev[consoleId], loadingMore: true },
+    }))
+
+    try {
+      const pageResult = await runQueryPage(
+        connIdRef.current,
+        entry.queryResult.dbName ?? '',
+        entry.sql,
+        offset,
+        1000,
+      )
+      if (!pageResult?.error && Array.isArray(pageResult?.rows)) {
+        setConsolesData((prev) => {
+          const d = prev[consoleId]
+          if (!d) return prev
+          const nextSets = d.resultSets.map((r) => {
+            if (r.id !== resultId) return r
+            const merged = {
+              ...r.queryResult,
+              rows:      [...(r.queryResult.rows ?? []), ...pageResult.rows],
+              rowCount:  (r.queryResult.rows?.length ?? 0) + pageResult.rows.length,
+              truncated: pageResult.truncated,
+            }
+            return { ...r, queryResult: merged }
+          })
+          return { ...d, resultSets: nextSets, loadingMore: false }
+        })
+      }
+    } catch {
+      // ignore load-more errors
+    } finally {
+      setConsolesData((prev) => {
+        const d = prev[consoleId]
+        if (!d) return prev
+        return { ...prev, [consoleId]: { ...d, loadingMore: false } }
+      })
+    }
+  }, [consolesData])
 
   // ── Table open ────────────────────────────────────────────────────────────
   /**
@@ -506,6 +557,10 @@ export default function App() {
                           resultSets={data.resultSets}
                           activeResultId={activeResult?.id ?? null}
                           onSelectResult={(rid) => handleSelectResult(tab.id, rid)}
+                          onLoadMore={activeResult
+                            ? () => handleLoadMore(tab.id, activeResult.id)
+                            : undefined}
+                          loadingMore={!!data.loadingMore}
                         />
                       </SplitPane>
                     </ErrorBoundary>

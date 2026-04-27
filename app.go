@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,6 +69,8 @@ type ConnectionInfo struct {
 	Database      string `json:"database"`
 	ServerVersion string `json:"serverVersion"`
 	Connected     bool   `json:"connected"`
+	Color         string `json:"color"`
+	ReadOnly      bool   `json:"readOnly"`
 }
 
 // maxQueryRows is the safety cap on rows read into memory per query.
@@ -105,14 +108,19 @@ type App struct {
 	// dbMgr is the runtime connection pool manager (Phase 9).
 	// It owns the map[connID]*sql.DB and handles SSH tunnel setup.
 	dbMgr *database.Manager
+
+	// queryMu protects queryCancels.
+	queryMu      sync.Mutex
+	queryCancels map[string]context.CancelFunc
 }
 
 // NewApp creates the App instance. Called once at startup.
 func NewApp() *App {
 	return &App{
-		connections: make(map[string]driver.DatabaseDriver),
-		configs:     make(map[string]driver.ConnectionConfig),
-		dbMgr:       database.NewManager(),
+		connections:  make(map[string]driver.DatabaseDriver),
+		configs:      make(map[string]driver.ConnectionConfig),
+		dbMgr:        database.NewManager(),
+		queryCancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -367,6 +375,8 @@ func (a *App) ListConnections() []ConnectionInfo {
 					Host:      sc.Host,
 					Port:      sc.Port,
 					Database:  sc.Database,
+					Color:     sc.Color,
+					ReadOnly:  sc.ReadOnly,
 					Connected: false, // not open until the user opens it
 				}
 			}
@@ -558,11 +568,35 @@ func (a *App) RunQuery(connectionID, dbName, sql string) (*QueryResult, error) {
 		return nil, err
 	}
 
-	// Give the query a generous but bounded deadline so a runaway query
-	// cannot block the app forever. The frontend can also cancel via context
-	// propagation in future iterations.
-	ctx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
-	defer cancel()
+	// Enforce read-only mode: block DML/DDL statements.
+	a.mu.RLock()
+	cfg, hasCfg := a.configs[connectionID]
+	a.mu.RUnlock()
+	if hasCfg && cfg.ReadOnly {
+		upper := strings.ToUpper(strings.TrimSpace(sql))
+		isDML := strings.HasPrefix(upper, "INSERT") || strings.HasPrefix(upper, "UPDATE") ||
+			strings.HasPrefix(upper, "DELETE") || strings.HasPrefix(upper, "DROP") ||
+			strings.HasPrefix(upper, "CREATE") || strings.HasPrefix(upper, "ALTER") ||
+			strings.HasPrefix(upper, "TRUNCATE") || strings.HasPrefix(upper, "RENAME")
+		if isDML {
+			return &QueryResult{Error: "connection is in read-only mode; write operations are blocked"}, nil
+		}
+	}
+
+	// Set up a cancellable context so CancelQuery can abort in-flight queries.
+	baseCtx, baseCancel := context.WithTimeout(a.ctx, 60*time.Second)
+	defer baseCancel()
+	cancelCtx, cancelFn := context.WithCancel(baseCtx)
+	defer cancelFn()
+	a.queryMu.Lock()
+	a.queryCancels[connectionID] = cancelFn
+	a.queryMu.Unlock()
+	defer func() {
+		a.queryMu.Lock()
+		delete(a.queryCancels, connectionID)
+		a.queryMu.Unlock()
+	}()
+	ctx := cancelCtx
 
 	// ExecuteQueryOnDB runs USE `dbName` first on the same dedicated connection,
 	// ensuring the database context is correct even with a connection pool.
@@ -611,6 +645,19 @@ func (a *App) RunQuery(connectionID, dbName, sql string) (*QueryResult, error) {
 			Error:   fmt.Sprintf("row iteration: %v", err),
 			ExecMs:  rs.ExecutionTime.Milliseconds(),
 		}, nil
+	}
+
+	// Persist to local history (best-effort, runs in background goroutine).
+	if a.sharedDB != nil {
+		execMs := rs.ExecutionTime.Milliseconds()
+		go func() {
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel2()
+			_, _ = a.sharedDB.ExecContext(ctx2,
+				`INSERT INTO query_history (conn_id, db_name, sql_text, exec_ms, error_msg)
+				 VALUES (?, ?, ?, ?, ?)`,
+				connectionID, dbName, sql, execMs, "")
+		}()
 	}
 
 	return &QueryResult{
@@ -1121,6 +1168,7 @@ func savedConnToDriverCfg(sc store.SavedConnection) driver.ConnectionConfig {
 		Password: sc.Password,
 		Database: sc.Database,
 		TLS:      sc.TLS,
+		ReadOnly: sc.ReadOnly,
 	}
 	// SSH tunnel
 	cfg.SSHTunnel = mysqlpkg.ToDriverSSHTunnel(
@@ -1275,4 +1323,267 @@ func (a *App) OpenFileDialog(title string) (string, error) {
 		},
 	})
 	return path, err
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Query history
+// ─────────────────────────────────────────────────────────────────────────────
+
+// QueryHistoryItem is one row from the local query history log.
+type QueryHistoryItem struct {
+	ID         int64  `json:"id"`
+	ConnID     string `json:"connId"`
+	DBName     string `json:"dbName"`
+	SQL        string `json:"sql"`
+	ExecMs     int64  `json:"execMs"`
+	ErrorMsg   string `json:"errorMsg"`
+	ExecutedAt string `json:"executedAt"`
+}
+
+// GetQueryHistory returns recent query history for a connection, newest first.
+// limit defaults to 200 when ≤ 0.
+func (a *App) GetQueryHistory(connID string, limit int) ([]QueryHistoryItem, error) {
+	if a.sharedDB == nil {
+		return nil, fmt.Errorf("local database not initialised")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := a.sharedDB.QueryContext(a.ctx,
+		`SELECT id, conn_id, db_name, sql_text, exec_ms, error_msg, executed_at
+		 FROM query_history WHERE conn_id = ?
+		 ORDER BY executed_at DESC, id DESC LIMIT ?`,
+		connID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []QueryHistoryItem
+	for rows.Next() {
+		var it QueryHistoryItem
+		if err := rows.Scan(&it.ID, &it.ConnID, &it.DBName, &it.SQL, &it.ExecMs, &it.ErrorMsg, &it.ExecutedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	if items == nil {
+		items = []QueryHistoryItem{}
+	}
+	return items, rows.Err()
+}
+
+// ClearQueryHistory deletes all query history for a connection.
+func (a *App) ClearQueryHistory(connID string) error {
+	if a.sharedDB == nil {
+		return fmt.Errorf("local database not initialised")
+	}
+	_, err := a.sharedDB.ExecContext(a.ctx, `DELETE FROM query_history WHERE conn_id = ?`, connID)
+	return err
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cancel running query
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CancelQuery cancels the in-flight RunQuery for the given connection.
+// Returns nil when a query was cancelled; returns an error if none was running.
+func (a *App) CancelQuery(connectionID string) error {
+	a.queryMu.Lock()
+	fn, ok := a.queryCancels[connectionID]
+	a.queryMu.Unlock()
+	if !ok {
+		return fmt.Errorf("no running query for connection %q", connectionID)
+	}
+	fn()
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Paginated query (Load More)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RunQueryPage executes a SQL statement and returns a page of rows starting at
+// offset. Used for "Load More" in the result grid.
+func (a *App) RunQueryPage(connectionID, dbName, sqlStr string, offset, limit int) (*QueryResult, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = maxQueryRows
+	}
+	pagedSQL := fmt.Sprintf("SELECT * FROM (%s) _page LIMIT %d OFFSET %d", sqlStr, limit, offset)
+	ctx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
+	defer cancel()
+	rs, err := drv.ExecuteQueryOnDB(ctx, dbName, pagedSQL)
+	if err != nil {
+		return &QueryResult{Error: err.Error()}, nil
+	}
+	defer rs.Rows.Close()
+	cols := make([]ColumnMeta, len(rs.Columns))
+	for i, c := range rs.Columns {
+		cols[i] = ColumnMeta{Name: c.Name, Type: c.DatabaseType, Nullable: c.Nullable}
+	}
+	var rows [][]any
+	truncated := false
+	for rs.Rows.Next() {
+		if len(rows) >= limit {
+			truncated = true
+			break
+		}
+		row := rs.Rows.Row()
+		if row == nil {
+			break
+		}
+		rows = append(rows, row)
+	}
+	return &QueryResult{
+		Columns:   cols,
+		Rows:      rows,
+		RowCount:  len(rows),
+		Truncated: truncated,
+		ExecMs:    rs.ExecutionTime.Milliseconds(),
+	}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kill query (KILL QUERY <pid>)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// KillQuery sends KILL QUERY <processID> on the given connection.
+func (a *App) KillQuery(connectionID string, processID int64) (*QueryResult, error) {
+	return a.RunQuery(connectionID, "", fmt.Sprintf("KILL QUERY %d", processID))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FetchRoutines / FetchTriggers / FetchEvents
+// ─────────────────────────────────────────────────────────────────────────────
+
+// FetchRoutines returns stored procedures and functions for a database.
+func (a *App) FetchRoutines(connectionID, dbName string) ([]driver.RoutineInfo, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	type routinesFetcher interface {
+		FetchRoutines(ctx context.Context, dbName string) ([]driver.RoutineInfo, error)
+	}
+	rf, ok := drv.(routinesFetcher)
+	if !ok {
+		return []driver.RoutineInfo{}, nil
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+	defer cancel()
+	return rf.FetchRoutines(ctx, dbName)
+}
+
+// FetchTriggers returns triggers for a database.
+func (a *App) FetchTriggers(connectionID, dbName string) ([]driver.TriggerDetail, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	type triggersFetcher interface {
+		FetchTriggers(ctx context.Context, dbName string) ([]driver.TriggerDetail, error)
+	}
+	tf, ok := drv.(triggersFetcher)
+	if !ok {
+		return []driver.TriggerDetail{}, nil
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+	defer cancel()
+	return tf.FetchTriggers(ctx, dbName)
+}
+
+// FetchEvents returns scheduled events for a database.
+func (a *App) FetchEvents(connectionID, dbName string) ([]driver.EventInfo, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	type eventsFetcher interface {
+		FetchEvents(ctx context.Context, dbName string) ([]driver.EventInfo, error)
+	}
+	ef, ok := drv.(eventsFetcher)
+	if !ok {
+		return []driver.EventInfo{}, nil
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+	defer cancel()
+	return ef.FetchEvents(ctx, dbName)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SQL dump export
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ExportDump generates a SQL dump (CREATE TABLE + INSERT statements) for a
+// table and returns it as a string. Limited to 10000 rows to protect memory.
+func (a *App) ExportDump(connectionID, dbName, tableName string) (string, error) {
+	if tableName == "" {
+		return "", fmt.Errorf("tableName is required")
+	}
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return "", err
+	}
+	adv, ok := drv.(driver.AdvancedSchemaDriver)
+	if !ok {
+		return "", fmt.Errorf("driver does not support schema introspection")
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
+	defer cancel()
+
+	props, err := adv.FetchAdvancedTableProperties(ctx, dbName, tableName)
+	if err != nil {
+		return "", err
+	}
+
+	dataSQL := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT 10000", dbName, tableName)
+	rs, err := drv.ExecuteQueryOnDB(ctx, dbName, dataSQL)
+	if err != nil {
+		return "", err
+	}
+	defer rs.Rows.Close()
+
+	var sb strings.Builder
+	sb.WriteString("-- GripLite SQL Dump\n")
+	sb.WriteString(fmt.Sprintf("-- Table: %s.%s\n", dbName, tableName))
+	sb.WriteString(fmt.Sprintf("-- Generated: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+
+	sb.WriteString("SET FOREIGN_KEY_CHECKS=0;\n\n")
+	sb.WriteString(props.DDL)
+	sb.WriteString(";\n\n")
+
+	colNames := make([]string, len(rs.Columns))
+	for i, c := range rs.Columns {
+		colNames[i] = "`" + strings.ReplaceAll(c.Name, "`", "``") + "`"
+	}
+	colList := strings.Join(colNames, ", ")
+
+	count := 0
+	for rs.Rows.Next() {
+		row := rs.Rows.Row()
+		if row == nil {
+			break
+		}
+		vals := make([]string, len(row))
+		for i, v := range row {
+			if v == nil {
+				vals[i] = "NULL"
+			} else {
+				s := fmt.Sprintf("%v", v)
+				s = strings.ReplaceAll(s, "'", "\\'")
+				vals[i] = "'" + s + "'"
+			}
+		}
+		sb.WriteString(fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s);\n",
+			tableName, colList, strings.Join(vals, ", ")))
+		count++
+	}
+
+	sb.WriteString(fmt.Sprintf("\n-- %d rows dumped\n", count))
+	sb.WriteString("SET FOREIGN_KEY_CHECKS=1;\n")
+
+	return sb.String(), nil
 }

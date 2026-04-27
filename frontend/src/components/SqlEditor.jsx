@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
 import Editor from '@monaco-editor/react'
 import { format as formatSql } from 'sql-formatter'
-import { searchCompletions, runQuery, fetchDatabases } from '../lib/bridge'
+import { searchCompletions, runQuery, fetchDatabases, cancelQuery, getQueryHistory, clearQueryHistory } from '../lib/bridge'
 import { splitSql, findStatementAt } from '../lib/sqlSplit'
 import { useTheme } from '../theme/ThemeProvider'
 
@@ -266,6 +266,16 @@ function resolveTableAlias(sql, alias) {
   return null
 }
 
+// ── Saved SQL Snippets ───────────────────────────────────────────────────────
+const SNIPPETS_KEY = 'griplite_snippets_v1'
+
+function loadSnippets() {
+  try { return JSON.parse(localStorage.getItem(SNIPPETS_KEY) || '[]') } catch { return [] }
+}
+function saveSnippetsToStorage(snips) {
+  try { localStorage.setItem(SNIPPETS_KEY, JSON.stringify(snips)) } catch {}
+}
+
 /**
  * @param {object} props
  * @param {string} [props.initialSql]
@@ -300,6 +310,13 @@ export default function SqlEditor({
   const [sqlValid, setSqlValid] = useState(null) // null=unknown, true=ok, false=error
   const [runMenuOpen, setRunMenuOpen] = useState(false)  // split-button dropdown
   const runMenuRef = useRef(null)
+  const [snippets, setSnippets] = useState(() => loadSnippets())
+  const [showSnippets,  setShowSnippets]  = useState(false)
+  const snippetsRef = useRef(null)
+  const [showHistory,   setShowHistory]   = useState(false)
+  const [historyItems,  setHistoryItems]  = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const historyRef = useRef(null)
 
   const activeContent = tabs.find((t) => t.id === activeTab)?.content ?? ''
 
@@ -825,6 +842,92 @@ export default function SqlEditor({
     onRunQuery?.(stmts.map((s) => s.sql), { multi: true, dbName: db })
   }, [onRunQuery])
 
+  const handleTxn = useCallback((sql) => {
+    if (!connectionId || isRunning) return
+    onRunQuery?.(sql, { dbName: selectedDbRef.current })
+  }, [connectionId, isRunning, onRunQuery])
+
+  const insertSnippet = useCallback((sql) => {
+    const editor = editorRef.current
+    if (!editor) return
+    const selection = editor.getSelection()
+    editor.executeEdits('snippet', [{
+      range: selection,
+      text: sql,
+      forceMoveMarkers: true,
+    }])
+    editor.focus()
+    setShowSnippets(false)
+  }, [])
+
+  const saveSnippet = useCallback(() => {
+    const editor = editorRef.current
+    if (!editor) return
+    const sql = editor.getValue()
+    if (!sql.trim()) return
+    const name = window.prompt('Snippet name:')
+    if (!name) return
+    const newSnip = { id: Date.now().toString(), name, sql, createdAt: new Date().toISOString() }
+    const updated = [newSnip, ...snippets]
+    setSnippets(updated)
+    saveSnippetsToStorage(updated)
+  }, [snippets])
+
+  // Close snippets dropdown on outside click.
+  useEffect(() => {
+    if (!showSnippets) return
+    const handle = (e) => {
+      if (snippetsRef.current && !snippetsRef.current.contains(e.target)) {
+        setShowSnippets(false)
+      }
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [showSnippets])
+
+  // ── Query History ────────────────────────────────────────────────────────
+  const openHistory = useCallback(async () => {
+    setShowHistory(p => !p)
+    if (!connectionId || historyItems.length > 0) return
+    setHistoryLoading(true)
+    try {
+      const items = await getQueryHistory(connectionId, 200)
+      setHistoryItems(items ?? [])
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [connectionId, historyItems.length])
+
+  const handleClearHistory = useCallback(async () => {
+    if (!connectionId) return
+    await clearQueryHistory(connectionId)
+    setHistoryItems([])
+  }, [connectionId])
+
+  // Reload history whenever the dropdown opens (fresh data).
+  useEffect(() => {
+    if (!showHistory || !connectionId) return
+    getQueryHistory(connectionId, 200).then(items => setHistoryItems(items ?? []))
+  }, [showHistory, connectionId])
+
+  // Close history dropdown on outside click.
+  useEffect(() => {
+    if (!showHistory) return
+    const handle = (e) => {
+      if (historyRef.current && !historyRef.current.contains(e.target)) {
+        setShowHistory(false)
+      }
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [showHistory])
+
+  // ── Cancel running query ────────────────────────────────────────────────
+  const handleCancelQuery = useCallback(async () => {
+    if (!connectionId) return
+    try { await cancelQuery(connectionId) } catch { /* ignore */ }
+  }, [connectionId])
+
   return (
     <div className="flex flex-col h-full bg-app">
       {/* Tab bar */}
@@ -916,6 +1019,83 @@ export default function SqlEditor({
         </div>
         <div className="h-4 w-px bg-line" />
 
+        {/* Transaction buttons */}
+        {connectionId && (
+          <div className="flex items-stretch rounded border border-line overflow-hidden text-[11px] ml-1">
+            {[
+              { label: 'BEGIN',    sql: 'BEGIN',    title: 'Begin transaction' },
+              { label: 'COMMIT',   sql: 'COMMIT',   title: 'Commit transaction' },
+              { label: 'ROLLBACK', sql: 'ROLLBACK', title: 'Rollback transaction' },
+            ].map((btn, i) => (
+              <button
+                key={btn.label}
+                onClick={() => handleTxn(btn.sql)}
+                disabled={isRunning}
+                title={btn.title}
+                className={[
+                  'px-2 py-1 transition-colors select-none',
+                  i > 0 ? 'border-l border-line' : '',
+                  'text-fg-secondary hover:text-fg-primary hover:bg-hover disabled:opacity-40',
+                ].join(' ')}
+              >
+                {btn.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Snippets button + dropdown */}
+        <div ref={snippetsRef} className="relative ml-1">
+          <button
+            onClick={() => setShowSnippets(p => !p)}
+            title="SQL Snippets"
+            className={[
+              'text-[11px] px-2 py-1 rounded border transition-colors select-none',
+              showSnippets
+                ? 'border-accent text-accent'
+                : 'border-line text-fg-secondary hover:border-accent hover:text-fg-primary',
+            ].join(' ')}
+          >
+            Snippets{snippets.length > 0 ? ` (${snippets.length})` : ''}
+          </button>
+          {showSnippets && (
+            <div className="absolute top-full left-0 mt-1 z-50 bg-panel border border-line rounded
+                            min-w-[300px] max-h-[400px] overflow-y-auto py-1">
+              <div className="flex items-center justify-between px-3 py-1.5 border-b border-line-subtle">
+                <span className="text-[10px] uppercase tracking-wider text-fg-muted">SQL Snippets</span>
+                <button onClick={saveSnippet} className="text-[10px] text-accent hover:underline select-none">
+                  + Save current
+                </button>
+              </div>
+              {snippets.length === 0 ? (
+                <div className="px-3 py-4 text-[12px] text-fg-muted text-center">No snippets yet</div>
+              ) : snippets.map(snip => (
+                <div key={snip.id} className="group flex items-start gap-2 px-3 py-2 hover:bg-hover border-b border-line-subtle">
+                  <button
+                    onClick={() => insertSnippet(snip.sql)}
+                    className="flex-1 text-left min-w-0"
+                    title={snip.sql}
+                  >
+                    <div className="text-[12px] text-fg-primary font-medium truncate">{snip.name}</div>
+                    <div className="text-[10px] text-fg-muted font-mono truncate">{snip.sql.slice(0, 60)}{snip.sql.length > 60 ? '…' : ''}</div>
+                  </button>
+                  <button
+                    onClick={() => {
+                      const updated = snippets.filter(s => s.id !== snip.id)
+                      setSnippets(updated)
+                      saveSnippetsToStorage(updated)
+                    }}
+                    className="opacity-0 group-hover:opacity-100 text-fg-muted hover:text-danger text-[10px] select-none mt-0.5"
+                    title="Delete snippet"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Connection label */}
         {connectionLabel && (
           <span className="text-[11px] text-fg-muted select-none">{connectionLabel}</span>
@@ -995,6 +1175,75 @@ export default function SqlEditor({
           <span className="text-[11px] text-danger select-none" title="Syntax error detected (see red underline)">
             ✗ Syntax error
           </span>
+        )}
+
+        {/* Cancel button — only when a query is running */}
+        {isRunning && (
+          <button
+            onClick={handleCancelQuery}
+            title="Cancel running query"
+            className="text-[11px] px-2 py-1 rounded border border-danger text-danger
+                       hover:bg-danger hover:text-white transition-colors select-none ml-1"
+          >
+            ✕ Cancel
+          </button>
+        )}
+
+        {/* Query history button */}
+        {connectionId && (
+          <div ref={historyRef} className="relative ml-1">
+            <button
+              onClick={openHistory}
+              title="Query history"
+              className={[
+                'text-[11px] px-2 py-1 rounded border transition-colors select-none',
+                showHistory
+                  ? 'border-accent text-accent'
+                  : 'border-line text-fg-secondary hover:border-accent hover:text-fg-primary',
+              ].join(' ')}
+            >
+              History
+            </button>
+            {showHistory && (
+              <div className="absolute top-full right-0 mt-1 z-50 bg-panel border border-line rounded
+                              w-[420px] max-h-[420px] overflow-y-auto py-1">
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-line-subtle">
+                  <span className="text-[10px] uppercase tracking-wider text-fg-muted">
+                    {historyLoading ? 'Loading…' : `${historyItems.length} recent queries`}
+                  </span>
+                  <button
+                    onClick={handleClearHistory}
+                    className="text-[10px] text-danger hover:underline select-none"
+                  >
+                    Clear all
+                  </button>
+                </div>
+                {historyItems.length === 0 && !historyLoading ? (
+                  <div className="px-3 py-4 text-[12px] text-fg-muted text-center">No history yet</div>
+                ) : historyItems.map(item => (
+                  <div
+                    key={item.id}
+                    className="group flex items-start gap-2 px-3 py-2 hover:bg-hover border-b border-line-subtle cursor-pointer"
+                    onClick={() => {
+                      insertSnippet(item.sql)
+                      setShowHistory(false)
+                    }}
+                    title="Click to insert into editor"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[11px] font-mono text-fg-primary truncate">{item.sql}</div>
+                      <div className="text-[10px] text-fg-muted mt-0.5 flex items-center gap-2">
+                        {item.dbName && <span className="text-accent">{item.dbName}</span>}
+                        <span>{item.execMs} ms</span>
+                        {item.errorMsg && <span className="text-danger">✗ Error</span>}
+                        <span className="ml-auto">{item.executedAt?.slice(0, 16)}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         <div className="ml-auto flex items-center gap-1 text-[11px] text-fg-muted">

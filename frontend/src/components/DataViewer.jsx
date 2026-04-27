@@ -30,6 +30,23 @@ import { AutoSizedGrid, deriveColumns, useRowOverrides } from './DataGrid'
 import ValuePanel from './ValuePanel'
 
 // ─────────────────────────────────────────────────────────────────────────────
+// INSERT SQL generator
+// ─────────────────────────────────────────────────────────────────────────────
+function generateInsertSql(columns, rows, tableName = 'table_name') {
+  const quoteIdent = (s) => '`' + String(s).replace(/`/g, '``') + '`'
+  const quoteVal = (v) => {
+    if (v === null || v === undefined) return 'NULL'
+    if (typeof v === 'number') return String(v)
+    if (typeof v === 'boolean') return v ? '1' : '0'
+    return "'" + String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r') + "'"
+  }
+  const colList = columns.map(c => quoteIdent(c.name)).join(', ')
+  return rows.map(row =>
+    `INSERT INTO ${quoteIdent(tableName)} (${colList}) VALUES (${row.map(quoteVal).join(', ')});`
+  ).join('\n')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CSV export (E2)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -687,7 +704,22 @@ function InlineValueCell({ value, onCommit, onSetNull, readOnly, edited }) {
 }
 
 function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
-  const [copied, setCopied] = useState(false)
+  const [copied,    setCopied]    = useState(false)
+  const [fieldSort, setFieldSort] = useState(null) // null | 'asc' | 'desc'
+
+  const cycleFieldSort = () =>
+    setFieldSort((s) => (s === null ? 'asc' : s === 'asc' ? 'desc' : null))
+
+  // Sorted column index mapping for the detail table only.
+  // Does NOT affect row data — `row[i]` is still indexed by original column order.
+  const sortedIndices = useMemo(() => {
+    const base = columns.map((_, i) => i)
+    if (!fieldSort) return base
+    return [...base].sort((a, b) => {
+      const cmp = columns[a].name.localeCompare(columns[b].name, undefined, { sensitivity: 'base' })
+      return fieldSort === 'asc' ? cmp : -cmp
+    })
+  }, [columns, fieldSort])
 
   // When editState is active, the effective row set includes added (draft)
   // rows as well as the original rows.  Otherwise fall back to the prop.
@@ -806,9 +838,17 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
               </colgroup>
               <thead>
                 <tr>
-                  <th className="sticky top-0 z-10 bg-titlebar px-4 py-2 text-left text-[11px] font-semibold
-                                 uppercase tracking-wider text-fg-muted border-b border-r border-line-subtle">
+                  <th
+                    onClick={cycleFieldSort}
+                    title="Click to sort fields A→Z / Z→A"
+                    className="sticky top-0 z-10 bg-titlebar px-4 py-2 text-left text-[11px] font-semibold
+                               uppercase tracking-wider text-fg-muted border-b border-r border-line-subtle
+                               cursor-pointer select-none hover:text-fg-primary transition-colors"
+                  >
                     Field
+                    {fieldSort === 'asc'  && <span className="ml-1 text-accent">↑</span>}
+                    {fieldSort === 'desc' && <span className="ml-1 text-accent">↓</span>}
+                    {fieldSort === null   && <span className="ml-1 opacity-30">↕</span>}
                   </th>
                   <th className="sticky top-0 z-10 bg-titlebar px-4 py-2 text-left text-[11px] font-semibold
                                  uppercase tracking-wider text-fg-muted border-b border-line-subtle">
@@ -817,7 +857,8 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
                 </tr>
               </thead>
               <tbody>
-                {columns.map((col, i) => {
+                {sortedIndices.map((i) => {
+                  const col     = columns[i]
                   const val     = row[i]
                   const isEdited = !!editState?.isEdited(i, idx)
                   return (
@@ -901,6 +942,12 @@ export default function DataViewer({
   const [mode,        setMode]        = useState('grid')
   const [textFormat,  setTextFormat]  = useState('table')
   const [csvFlash,    setCsvFlash]    = useState(false)
+  const [insertFlash, setInsertFlash] = useState(false)
+  const [jsonFlash,   setJsonFlash]   = useState(false)
+  const [tblName,     setTblName]     = useState('table_name')
+  const [hiddenCols,  setHiddenCols]  = useState(new Set())
+  const [showColPicker, setShowColPicker] = useState(false)
+  const colPickerRef = useRef(null)
   /**
    * selectedRow is the shared cursor between Grid and Record modes.
    *   Grid  → onCellClicked updates selectedRow
@@ -936,6 +983,55 @@ export default function DataViewer({
     setTimeout(() => setCsvFlash(false), 2000)
   }
 
+  const handleCopyInsert = () => {
+    if (!canExport) return
+    const name = window.prompt('Table name for INSERT statements:', tblName) ?? tblName
+    if (!name) return
+    setTblName(name)
+    const sql = generateInsertSql(columns, rows, name)
+    navigator.clipboard.writeText(sql).then(() => {
+      setInsertFlash(true)
+      setTimeout(() => setInsertFlash(false), 2000)
+    })
+  }
+
+  const handleExportJson = () => {
+    if (!canExport) return
+    const objs = rows.map(row => Object.fromEntries(columns.map((c, i) => [c.name, row[i] ?? null])))
+    const json = JSON.stringify(objs, null, 2)
+    const blob = new Blob([json], { type: 'application/json;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = Object.assign(document.createElement('a'), {
+      href: url,
+      download: (exportFilename ?? 'export').replace(/\.csv$/, '') + '.json'
+    })
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    setJsonFlash(true)
+    setTimeout(() => setJsonFlash(false), 2000)
+  }
+
+  // Reset selected row when hidden columns change to avoid out-of-bounds.
+  useEffect(() => {
+    setSelectedRow(0)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hiddenCols])
+
+  // Close the column picker on outside click.
+  useEffect(() => {
+    if (!showColPicker) return
+    const handle = (e) => {
+      if (!e.target.closest('[data-col-picker]')) setShowColPicker(false)
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [showColPicker])
+
+  const visibleColumns = columns.filter((_, i) => !hiddenCols.has(i))
+  const visibleRows    = rows.map(row => row.filter((_, i) => !hiddenCols.has(i)))
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
 
@@ -948,6 +1044,60 @@ export default function DataViewer({
         {/* Text format sub-toggle (only when in text mode) */}
         {mode === 'text' && !noColumns && (
           <ToggleGroup options={TEXT_FORMATS} value={textFormat} onChange={setTextFormat} />
+        )}
+
+        {/* Column visibility picker (grid mode only) */}
+        {mode === 'grid' && !noColumns && (
+          <div className="relative" data-col-picker ref={colPickerRef}>
+            <button
+              onClick={() => setShowColPicker(p => !p)}
+              title="Show/hide columns"
+              className={[
+                'text-[11px] px-2 py-0.5 rounded border transition-colors select-none',
+                showColPicker || hiddenCols.size > 0
+                  ? 'border-accent text-accent'
+                  : 'border-line text-fg-secondary hover:border-accent hover:text-fg-primary',
+              ].join(' ')}
+            >
+              Columns{hiddenCols.size > 0 ? ` (${columns.length - hiddenCols.size}/${columns.length})` : ''}
+            </button>
+            {showColPicker && (
+              <div className="absolute left-0 top-full mt-1 z-50 bg-panel border border-line rounded
+                              shadow-md min-w-[180px] max-h-[320px] overflow-y-auto py-1">
+                <div className="flex items-center justify-between px-2 py-1 border-b border-line-subtle">
+                  <span className="text-[10px] uppercase tracking-wider text-fg-muted select-none">Columns</span>
+                  <button
+                    onClick={() => setHiddenCols(new Set())}
+                    className="text-[10px] text-accent hover:underline select-none"
+                  >
+                    Show all
+                  </button>
+                </div>
+                {columns.map((col, i) => (
+                  <label
+                    key={i}
+                    className="flex items-center gap-2 px-2 py-1.5 hover:bg-hover cursor-pointer select-none"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!hiddenCols.has(i)}
+                      onChange={() => {
+                        setHiddenCols(prev => {
+                          const next = new Set(prev)
+                          if (next.has(i)) next.delete(i)
+                          else next.add(i)
+                          return next
+                        })
+                      }}
+                      className="accent-accent"
+                    />
+                    <span className="text-[12px] text-fg-primary font-mono truncate">{col.name}</span>
+                    {col.type && <span className="text-[10px] text-fg-muted ml-auto">{col.type}</span>}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         <div className="flex-1" />
@@ -980,6 +1130,40 @@ export default function DataViewer({
         >
           {csvFlash ? '✓ Saved' : '↓ CSV'}
         </button>
+
+        {/* JSON export button */}
+        <button
+          onClick={handleExportJson}
+          disabled={!canExport}
+          title={canExport ? 'Export to JSON' : 'Nothing to export'}
+          className={[
+            'text-[11px] px-2 py-0.5 rounded border transition-colors select-none',
+            !canExport
+              ? 'border-line-subtle text-fg-faint cursor-not-allowed'
+              : jsonFlash
+                ? 'border-success text-success'
+                : 'border-line text-fg-secondary hover:border-accent hover:text-fg-primary',
+          ].join(' ')}
+        >
+          {jsonFlash ? '✓ Saved' : '↓ JSON'}
+        </button>
+
+        {/* Copy as INSERT SQL button */}
+        <button
+          onClick={handleCopyInsert}
+          disabled={!canExport}
+          title={canExport ? 'Copy rows as INSERT SQL' : 'Nothing to copy'}
+          className={[
+            'text-[11px] px-2 py-0.5 rounded border transition-colors select-none',
+            !canExport
+              ? 'border-line-subtle text-fg-faint cursor-not-allowed'
+              : insertFlash
+                ? 'border-success text-success'
+                : 'border-line text-fg-secondary hover:border-accent hover:text-fg-primary',
+          ].join(' ')}
+        >
+          {insertFlash ? '✓ Copied' : '⇥ INSERT'}
+        </button>
       </div>
 
       {/* ── Content area ────────────────────────────────────────────────
@@ -1006,8 +1190,8 @@ export default function DataViewer({
           <>
             {mode === 'grid' && (
               <GridWithPanel
-                columns={columns}
-                rows={rows}
+                columns={visibleColumns}
+                rows={visibleRows}
                 selectedRow={selectedRow}
                 onSelectRow={setSelectedRow}
                 editState={editState}

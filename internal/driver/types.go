@@ -116,6 +116,9 @@ type ConnectionConfig struct {
 
 	// AdvancedParams are driver-specific key/value options appended to the DSN.
 	AdvancedParams []AdvancedParam `json:"advancedParams,omitempty"`
+
+	// ReadOnly, when true, blocks DML/DDL statements at the app layer.
+	ReadOnly bool `json:"readOnly"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -550,6 +553,24 @@ type TriggerDetail struct {
 	Event     string `json:"event"`     // INSERT / UPDATE / DELETE
 	Timing    string `json:"timing"`    // BEFORE / AFTER
 	Statement string `json:"statement"` // body (truncated in UI if very long)
+}
+
+// RoutineInfo describes a stored procedure or function in a database.
+type RoutineInfo struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`       // PROCEDURE or FUNCTION
+	ReturnType string `json:"returnType"` // only for FUNCTION
+	Comment    string `json:"comment"`
+	Created    string `json:"created"`
+	Modified   string `json:"modified"`
+}
+
+// EventInfo describes a MySQL scheduled event.
+type EventInfo struct {
+	Name     string `json:"name"`
+	Status   string `json:"status"`   // ENABLED / DISABLED
+	Schedule string `json:"schedule"` // human description
+	Comment  string `json:"comment"`
 }
 
 // AdvancedTableProperties is the aggregate payload returned by

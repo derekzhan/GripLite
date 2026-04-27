@@ -10,6 +10,10 @@ export function AddConnection(arg1:driver.ConnectionConfig):Promise<string>;
 
 export function ApplyChanges(arg1:database.ChangeSet):Promise<database.ApplyResult>;
 
+export function CancelQuery(arg1:string):Promise<void>;
+
+export function ClearQueryHistory(arg1:string):Promise<void>;
+
 export function Connect(arg1:database.ConnectionConfig):Promise<main.ConnectResult>;
 
 export function ConnectSaved(arg1:string):Promise<string>;
@@ -24,9 +28,17 @@ export function ExecuteQuery(arg1:string,arg2:string,arg3:number):Promise<databa
 
 export function ExecuteTableAlter(arg1:string,arg2:driver.SchemaChangeRequest):Promise<driver.SchemaChangeResult>;
 
+export function ExportDump(arg1:string,arg2:string,arg3:string):Promise<string>;
+
 export function FetchDatabases(arg1:string):Promise<Array<string>>;
 
+export function FetchEvents(arg1:string,arg2:string):Promise<Array<driver.EventInfo>>;
+
+export function FetchRoutines(arg1:string,arg2:string):Promise<Array<driver.RoutineInfo>>;
+
 export function FetchTables(arg1:string,arg2:string):Promise<Array<driver.TableInfo>>;
+
+export function FetchTriggers(arg1:string,arg2:string):Promise<Array<driver.TriggerDetail>>;
 
 export function GetBuildInfo():Promise<main.BuildInfo>;
 
@@ -35,6 +47,8 @@ export function GetDBPath():Promise<string>;
 export function GetDataFilterHistory(arg1:string,arg2:string,arg3:string):Promise<Array<string>>;
 
 export function GetDatabasesFromCache(arg1:string):Promise<Array<string>>;
+
+export function GetQueryHistory(arg1:string,arg2:number):Promise<Array<main.QueryHistoryItem>>;
 
 export function GetSavedConnection(arg1:string):Promise<store.SavedConnection>;
 
@@ -50,6 +64,8 @@ export function GetTablesFromCache(arg1:string,arg2:string):Promise<Array<databa
 
 export function InitLocalDB():Promise<void>;
 
+export function KillQuery(arg1:string,arg2:number):Promise<main.QueryResult>;
+
 export function ListConnections():Promise<Array<main.ConnectionInfo>>;
 
 export function ListSavedConnections():Promise<Array<store.SavedConnection>>;
@@ -61,6 +77,8 @@ export function PreviewTableAlter(arg1:string,arg2:driver.SchemaChangeRequest):P
 export function RemoveConnection(arg1:string):Promise<void>;
 
 export function RunQuery(arg1:string,arg2:string,arg3:string):Promise<main.QueryResult>;
+
+export function RunQueryPage(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<main.QueryResult>;
 
 export function SaveConnection(arg1:store.SavedConnection):Promise<void>;
 

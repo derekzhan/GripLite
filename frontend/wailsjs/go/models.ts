@@ -579,6 +579,7 @@ export namespace driver {
 	    tls: boolean;
 	    sshTunnel?: SSHTunnelConfig;
 	    advancedParams?: AdvancedParam[];
+	    readOnly: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConnectionConfig(source);
@@ -600,6 +601,7 @@ export namespace driver {
 	        this.tls = source["tls"];
 	        this.sshTunnel = this.convertValues(source["sshTunnel"], SSHTunnelConfig);
 	        this.advancedParams = this.convertValues(source["advancedParams"], AdvancedParam);
+	        this.readOnly = source["readOnly"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -621,9 +623,49 @@ export namespace driver {
 		}
 	}
 	
+	export class EventInfo {
+	    name: string;
+	    status: string;
+	    schedule: string;
+	    comment: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EventInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.status = source["status"];
+	        this.schedule = source["schedule"];
+	        this.comment = source["comment"];
+	    }
+	}
 	
 	
 	
+	export class RoutineInfo {
+	    name: string;
+	    type: string;
+	    returnType: string;
+	    comment: string;
+	    created: string;
+	    modified: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RoutineInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.returnType = source["returnType"];
+	        this.comment = source["comment"];
+	        this.created = source["created"];
+	        this.modified = source["modified"];
+	    }
+	}
 	
 	export class SchemaChangeStatement {
 	    kind: string;
@@ -881,6 +923,8 @@ export namespace main {
 	    database: string;
 	    serverVersion: string;
 	    connected: boolean;
+	    color: string;
+	    readOnly: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConnectionInfo(source);
@@ -896,6 +940,32 @@ export namespace main {
 	        this.database = source["database"];
 	        this.serverVersion = source["serverVersion"];
 	        this.connected = source["connected"];
+	        this.color = source["color"];
+	        this.readOnly = source["readOnly"];
+	    }
+	}
+	export class QueryHistoryItem {
+	    id: number;
+	    connId: string;
+	    dbName: string;
+	    sql: string;
+	    execMs: number;
+	    errorMsg: string;
+	    executedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryHistoryItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.connId = source["connId"];
+	        this.dbName = source["dbName"];
+	        this.sql = source["sql"];
+	        this.execMs = source["execMs"];
+	        this.errorMsg = source["errorMsg"];
+	        this.executedAt = source["executedAt"];
 	    }
 	}
 	export class QueryResult {
@@ -998,6 +1068,8 @@ export namespace store {
 	    tls: boolean;
 	    ssh: SSHConfig;
 	    advancedParams: AdvancedParam[];
+	    readOnly: boolean;
+	    color: string;
 	    createdAt: string;
 	    updatedAt: string;
 	
@@ -1019,6 +1091,8 @@ export namespace store {
 	        this.tls = source["tls"];
 	        this.ssh = this.convertValues(source["ssh"], SSHConfig);
 	        this.advancedParams = this.convertValues(source["advancedParams"], AdvancedParam);
+	        this.readOnly = source["readOnly"];
+	        this.color = source["color"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }

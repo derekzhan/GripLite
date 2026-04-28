@@ -302,11 +302,17 @@ function GridCanvas({
   )
 
   // ── Right-click on a cell ─────────────────────────────────────────────
+  // Wrapper div ref — used to convert Glide's canvas-local coords to viewport coords.
+  const canvasWrapperRef = useRef(null)
+
   const handleCellContextMenu = useCallback(
     ([, displayRow], event) => {
       event.preventDefault()
       const sourceRow = mapDisplayRow(displayRow)
-      onRowContextMenu?.(sourceRow, event.localEventX ?? event.clientX, event.localEventY ?? event.clientY)
+      // Glide gives localEventX/Y relative to the canvas element, not the viewport.
+      // Add the canvas container's viewport offset to get the correct fixed position.
+      const rect = canvasWrapperRef.current?.getBoundingClientRect() ?? { left: 0, top: 0 }
+      onRowContextMenu?.(sourceRow, rect.left + event.localEventX, rect.top + event.localEventY)
     },
     [mapDisplayRow, onRowContextMenu],
   )
@@ -346,18 +352,20 @@ function GridCanvas({
   }, [internalSort])
 
   return (
-    <AutoSizedGrid
-      ref={gridRef}
-      columns={glideCols}
-      getCellContentFn={getCellContent}
-      numRows={numRows}
-      getRowThemeOverride={getRowThemeOverride}
-      onCellClicked={handleCellClicked}
-      onHeaderClicked={handleHeaderClicked}
-      onCellEdited={editState ? handleCellEdited : undefined}
-      onCellContextMenu={onRowContextMenu ? handleCellContextMenu : undefined}
-      {...(editState ? { getCellsForSelection: true } : {})}
-    />
+    <div ref={canvasWrapperRef} style={{ width: '100%', height: '100%' }}>
+      <AutoSizedGrid
+        ref={gridRef}
+        columns={glideCols}
+        getCellContentFn={getCellContent}
+        numRows={numRows}
+        getRowThemeOverride={getRowThemeOverride}
+        onCellClicked={handleCellClicked}
+        onHeaderClicked={handleHeaderClicked}
+        onCellEdited={editState ? handleCellEdited : undefined}
+        onCellContextMenu={onRowContextMenu ? handleCellContextMenu : undefined}
+        {...(editState ? { getCellsForSelection: true } : {})}
+      />
+    </div>
   )
 }
 

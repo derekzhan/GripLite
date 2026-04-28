@@ -1373,17 +1373,10 @@ export default function DatabaseExplorer({
           action:   async () => {
             try {
               const { exportDump } = await import('../lib/bridge')
-              const sql = await exportDump(connId, dbName, tableName)
-              const blob = new Blob([sql], { type: 'text/plain;charset=utf-8;' })
-              const url  = URL.createObjectURL(blob)
-              const a    = Object.assign(document.createElement('a'), {
-                href: url, download: `${tableName}_dump.sql`,
-              })
-              document.body.appendChild(a)
-              a.click()
-              document.body.removeChild(a)
-              URL.revokeObjectURL(url)
-              toast.success(`Exported ${tableName}_dump.sql`)
+              const savedPath = await exportDump(connId, dbName, tableName)
+              if (savedPath) {
+                toast.success(`Exported ${tableName}_dump.sql`)
+              }
             } catch (e) {
               toast.error(`Dump failed: ${normalizeError(e)}`)
             }

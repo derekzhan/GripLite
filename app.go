@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -1518,7 +1519,9 @@ func (a *App) FetchEvents(connectionID, dbName string) ([]driver.EventInfo, erro
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ExportDump generates a SQL dump (CREATE TABLE + INSERT statements) for a
-// table and returns it as a string. Limited to 10000 rows to protect memory.
+// table, opens a native Save-File dialog, writes the file, and returns the
+// saved path. Returns an empty string (no error) when the user cancels.
+// Limited to 10000 rows to protect memory.
 func (a *App) ExportDump(connectionID, dbName, tableName string) (string, error) {
 	if tableName == "" {
 		return "", fmt.Errorf("tableName is required")
@@ -1585,5 +1588,25 @@ func (a *App) ExportDump(connectionID, dbName, tableName string) (string, error)
 	sb.WriteString(fmt.Sprintf("\n-- %d rows dumped\n", count))
 	sb.WriteString("SET FOREIGN_KEY_CHECKS=1;\n")
 
-	return sb.String(), nil
+	// Open native save-file dialog so the user can choose the destination.
+	savePath, err := wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
+		DefaultFilename: fmt.Sprintf("%s_dump.sql", tableName),
+		Title:           "Save SQL Dump",
+		Filters: []wailsruntime.FileFilter{
+			{DisplayName: "SQL files (*.sql)", Pattern: "*.sql"},
+			{DisplayName: "All files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("save dialog: %w", err)
+	}
+	if savePath == "" {
+		// User cancelled the dialog — not an error.
+		return "", nil
+	}
+
+	if err := os.WriteFile(savePath, []byte(sb.String()), 0o644); err != nil {
+		return "", fmt.Errorf("write file: %w", err)
+	}
+	return savePath, nil
 }

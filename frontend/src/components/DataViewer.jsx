@@ -23,12 +23,13 @@
  *   execMs   – number     query time in ms (optional, shown in toolbar)
  *   truncated – boolean   show a warning badge (optional)
  */
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo, forwardRef } from 'react'
 import { GridCellKind } from '@glideapps/glide-data-grid'
 import { PanelRightOpen } from 'lucide-react'
 import { AutoSizedGrid, deriveColumns, useRowOverrides } from './DataGrid'
 import ValuePanel from './ValuePanel'
 import { saveTextFile } from '../lib/bridge'
+import { useTheme } from '../theme/ThemeProvider'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INSERT SQL generator
@@ -186,6 +187,10 @@ function GridCanvas({
   // External sort — supplied by TableViewer for server-side ORDER BY.
   onHeaderClicked:  externalOnHeaderClicked,
   sortConfig:       externalSortConfig = null,
+  // Row colorization: Map<sourceRowIndex, cssColorString>
+  rowColors,
+  // Right-click: (sourceRowIndex, x, y) => void
+  onRowContextMenu,
 }) {
   const rowOverrides = useRowOverrides()
   const { nullText } = rowOverrides
@@ -288,9 +293,22 @@ function GridCanvas({
       if (sourceRow === selectedRow)         return rowOverrides.selected
       if (editState?.isDeleted(sourceRow))   return rowOverrides.deleted
       if (editState?.isAdded(sourceRow))     return rowOverrides.added
+      // User-assigned row colour
+      const userColor = rowColors?.get(sourceRow)
+      if (userColor) return { bgCell: userColor, bgCellMedium: userColor }
       return undefined
     },
-    [selectedRow, editState, rowOverrides, mapDisplayRow],
+    [selectedRow, editState, rowOverrides, mapDisplayRow, rowColors],
+  )
+
+  // ── Right-click on a cell ─────────────────────────────────────────────
+  const handleCellContextMenu = useCallback(
+    ([, displayRow], event) => {
+      event.preventDefault()
+      const sourceRow = mapDisplayRow(displayRow)
+      onRowContextMenu?.(sourceRow, event.localEventX ?? event.clientX, event.localEventY ?? event.clientY)
+    },
+    [mapDisplayRow, onRowContextMenu],
   )
 
   // ── Edit committed by user in the overlay editor ───────────────────────
@@ -337,6 +355,7 @@ function GridCanvas({
       onCellClicked={handleCellClicked}
       onHeaderClicked={handleHeaderClicked}
       onCellEdited={editState ? handleCellEdited : undefined}
+      onCellContextMenu={onRowContextMenu ? handleCellContextMenu : undefined}
       {...(editState ? { getCellsForSelection: true } : {})}
     />
   )
@@ -370,10 +389,197 @@ function GridCanvas({
  *   panelWidth   – current panel width in px (default 340)
  *   panelCell    – { col, row, value, colName } of the last clicked cell
  */
-function GridWithPanel({ columns, rows, selectedRow, onSelectRow, editState, onHeaderClicked, sortConfig }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// RowContextMenu
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Colour swatches for row colouring (DataGrip-style) ──────────────────────
+const ROW_COLORS = [
+  { label: 'Red',    value: '#fde8e8', dark: '#3b1010' },
+  { label: 'Orange', value: '#fef3e2', dark: '#3b2010' },
+  { label: 'Yellow', value: '#fef9c3', dark: '#3b3010' },
+  { label: 'Green',  value: '#dcfce7', dark: '#0d2a15' },
+  { label: 'Cyan',   value: '#cffafe', dark: '#0a2a30' },
+  { label: 'Blue',   value: '#dbeafe', dark: '#0a1f3b' },
+  { label: 'Purple', value: '#ede9fe', dark: '#1e1040' },
+  { label: 'Pink',   value: '#fce7f3', dark: '#2d0a20' },
+]
+
+/**
+ * RowContextMenu — floating right-click menu for a grid row.
+ * Positioned absolutely inside the GridWithPanel's relative container.
+ */
+const RowContextMenu = forwardRef(function RowContextMenu(
+  { x, y, row, rows, columns, exportFilename, rowColors, isDark, onSetRowColor, onClose },
+  ref
+) {
+  const rowData  = rows[row] ?? []
+  const hasRow   = rowData.length > 0
+
+  const copyInsertRow = () => {
+    if (!hasRow) return
+    const quoteIdent = (s) => '`' + String(s).replace(/`/g, '``') + '`'
+    const quoteVal = (v) => {
+      if (v === null || v === undefined) return 'NULL'
+      if (typeof v === 'number') return String(v)
+      if (typeof v === 'boolean') return v ? '1' : '0'
+      return "'" + String(v).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n') + "'"
+    }
+    const tbl = (exportFilename ?? 'table_name').replace(/\.csv$/, '')
+    const cols = columns.map(c => quoteIdent(c.name)).join(', ')
+    const vals = rowData.map(quoteVal).join(', ')
+    navigator.clipboard.writeText(`INSERT INTO ${quoteIdent(tbl)} (${cols}) VALUES (${vals});`)
+    onClose()
+  }
+
+  const exportRowJson = async () => {
+    if (!hasRow) return
+    const obj = Object.fromEntries(columns.map((c, i) => [c.name, rowData[i] ?? null]))
+    await saveTextFile(
+      (exportFilename ?? 'row').replace(/\.csv$/, '') + `_row${row}.json`,
+      JSON.stringify(obj, null, 2)
+    )
+    onClose()
+  }
+
+  const exportRowCsv = async () => {
+    if (!hasRow) return
+    const q = (v) => {
+      const s = v === null || v === undefined ? 'NULL' : String(v)
+      return s.includes(',') || s.includes('"') || s.includes('\n') ? '"' + s.replace(/"/g, '""') + '"' : s
+    }
+    const header = columns.map(c => q(c.name)).join(',')
+    const body   = rowData.map(q).join(',')
+    await saveTextFile(
+      (exportFilename ?? 'row').replace(/\.csv$/, '') + `_row${row}.csv`,
+      '\uFEFF' + header + '\r\n' + body
+    )
+    onClose()
+  }
+
+  const currentColor = rowColors?.get(row)
+
+  const menuStyle = {
+    position: 'fixed',
+    left: x,
+    top: y,
+    zIndex: 9999,
+  }
+
+  return (
+    <div
+      ref={ref}
+      style={menuStyle}
+      className="min-w-[200px] rounded-lg border border-[color:var(--border-strong)]
+                 bg-[color:var(--card-bg)] shadow-lg py-1 text-[12px]
+                 text-[color:var(--fg-primary)] select-none"
+    >
+      {/* Generate SQL section */}
+      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-muted)]">
+        Generate SQL
+      </div>
+      <CtxItem label="Copy row as INSERT" onClick={copyInsertRow} disabled={!hasRow} />
+      <div className="my-1 border-t border-[color:var(--border-subtle)]" />
+
+      {/* Export section */}
+      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-muted)]">
+        Export row
+      </div>
+      <CtxItem label="Export row as JSON…" onClick={exportRowJson} disabled={!hasRow} />
+      <CtxItem label="Export row as CSV…"  onClick={exportRowCsv}  disabled={!hasRow} />
+      <div className="my-1 border-t border-[color:var(--border-subtle)]" />
+
+      {/* Row colour section */}
+      <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--fg-muted)]">
+        Row color
+      </div>
+      <div className="px-3 py-1.5 flex items-center gap-1.5 flex-wrap">
+        {ROW_COLORS.map((c) => {
+          const isActive = currentColor === (isDark ? c.dark : c.value)
+          return (
+            <button
+              key={c.label}
+              title={c.label}
+              onClick={() => onSetRowColor(c)}
+              className="w-5 h-5 rounded-full border-2 transition-transform hover:scale-110"
+              style={{
+                background: isDark ? c.dark : c.value,
+                borderColor: isActive ? 'var(--accent)' : 'var(--border-strong)',
+              }}
+            />
+          )
+        })}
+        {currentColor && (
+          <button
+            title="Clear color"
+            onClick={() => onSetRowColor(null)}
+            className="w-5 h-5 rounded-full border-2 flex items-center justify-center
+                       text-[9px] text-[color:var(--fg-muted)] hover:text-danger
+                       border-[color:var(--border-strong)] hover:border-danger transition-colors"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+    </div>
+  )
+})
+
+function CtxItem({ label, onClick, disabled }) {
+  return (
+    <button
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      className={[
+        'w-full text-left px-3 py-1.5 transition-colors',
+        disabled
+          ? 'opacity-40 cursor-not-allowed'
+          : 'hover:bg-[color:var(--hover)] cursor-pointer',
+      ].join(' ')}
+    >
+      {label}
+    </button>
+  )
+}
+
+function GridWithPanel({ columns, rows, selectedRow, onSelectRow, editState, onHeaderClicked, sortConfig, exportFilename }) {
   const [panelOpen,  setPanelOpen]  = useState(false)
   const [panelWidth, setPanelWidth] = useState(340)
   const [panelCell,  setPanelCell]  = useState({ col: 0, row: 0, value: null, colName: '' })
+
+  // ── Row colours (user-assigned) ─────────────────────────────────────────
+  const [rowColors, setRowColors] = useState(() => new Map())
+  const { resolvedTheme } = useTheme()
+  const isDark = resolvedTheme === 'dark'
+
+  const setRowColor = useCallback((rowIdx, colorEntry) => {
+    setRowColors((prev) => {
+      const next = new Map(prev)
+      if (colorEntry === null) {
+        next.delete(rowIdx)
+      } else {
+        next.set(rowIdx, isDark ? colorEntry.dark : colorEntry.value)
+      }
+      return next
+    })
+  }, [isDark])
+
+  // ── Context menu state ────────────────────────────────────────────────
+  const [ctxMenu, setCtxMenu] = useState(null) // { x, y, row }
+  const ctxRef = useRef(null)
+
+  const openContextMenu = useCallback((row, x, y) => {
+    setCtxMenu({ x, y, row })
+  }, [])
+
+  useEffect(() => {
+    if (!ctxMenu) return
+    const handler = (e) => {
+      if (!ctxRef.current?.contains(e.target)) setCtxMenu(null)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [ctxMenu])
 
   // ── Cell click: update selected row + which cell the panel reflects.
   // We deliberately do NOT auto-open the panel here (DBeaver behaviour):
@@ -417,7 +623,7 @@ function GridWithPanel({ columns, rows, selectedRow, onSelectRow, editState, onH
   }, [panelWidth])
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full overflow-hidden relative">
       {/* ── Grid area — grows to fill available space ───────────────── */}
       <div className="flex-1 min-w-0 overflow-hidden">
         <GridCanvas
@@ -428,6 +634,8 @@ function GridWithPanel({ columns, rows, selectedRow, onSelectRow, editState, onH
           editState={editState}
           onHeaderClicked={onHeaderClicked}
           sortConfig={sortConfig}
+          rowColors={rowColors}
+          onRowContextMenu={openContextMenu}
         />
       </div>
 
@@ -481,6 +689,23 @@ function GridWithPanel({ columns, rows, selectedRow, onSelectRow, editState, onH
           setPanelOpen((o) => !o)
         }}
       />
+
+      {/* ── Row context menu ─────────────────────────────────────────── */}
+      {ctxMenu && (
+        <RowContextMenu
+          ref={ctxRef}
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          row={ctxMenu.row}
+          rows={rows}
+          columns={columns}
+          exportFilename={exportFilename}
+          rowColors={rowColors}
+          isDark={isDark}
+          onSetRowColor={(entry) => { setRowColor(ctxMenu.row, entry); setCtxMenu(null) }}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
     </div>
   )
 }
@@ -1186,6 +1411,7 @@ export default function DataViewer({
                 editState={editState}
                 onHeaderClicked={onHeaderClicked}
                 sortConfig={sortConfig}
+                exportFilename={exportFilename}
               />
             )}
             {mode === 'text' && (

@@ -7,6 +7,11 @@ import { installAutoCapitalizeShim } from './lib/disableAutoCapitalize'
 
 installAutoCapitalizeShim()
 
+// Suppress the WebView's built-in context menu (Reload, Inspect Element, etc.).
+// Custom context menus in the app are React-managed and shown programmatically;
+// they don't rely on the browser's native contextmenu event at all.
+document.addEventListener('contextmenu', (e) => e.preventDefault())
+
 // Glide Data Grid (@glideapps/glide-data-grid v6) renders its cell-edit
 // overlay into a DOM node with id="portal" via ReactDOM.createPortal.
 // If this element is missing, double-clicking a cell silently fails

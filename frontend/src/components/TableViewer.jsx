@@ -2537,11 +2537,6 @@ export default function TableViewer({ tableName = 'users', dbName = 'db1', connI
           }
         />
         <TabBtn id="data" label="Data" badge="100 rows" />
-        {fromCache && (
-          <span className="ml-auto mr-3 text-[10px] text-success select-none">
-            ✓ SQLite cache
-          </span>
-        )}
       </div>
 
       {/* Tab content — BOTH panels stay mounted; only CSS visibility changes.

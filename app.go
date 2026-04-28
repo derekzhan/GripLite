@@ -1515,6 +1515,38 @@ func (a *App) FetchEvents(connectionID, dbName string) ([]driver.EventInfo, erro
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Generic file save
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SaveTextFile opens a native Save-File dialog with defaultFilename pre-filled,
+// writes content to the chosen path, and returns the saved path.
+// Returns an empty string (no error) when the user cancels the dialog.
+func (a *App) SaveTextFile(defaultFilename, content string) (string, error) {
+	ext := ""
+	if idx := strings.LastIndex(defaultFilename, "."); idx >= 0 {
+		ext = defaultFilename[idx+1:]
+	}
+	filters := []wailsruntime.FileFilter{
+		{DisplayName: ext + " files (*." + ext + ")", Pattern: "*." + ext},
+		{DisplayName: "All files (*.*)", Pattern: "*.*"},
+	}
+	savePath, err := wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
+		DefaultFilename: defaultFilename,
+		Title:           "Save File",
+		Filters:         filters,
+	})
+	if err != nil {
+		return "", fmt.Errorf("save dialog: %w", err)
+	}
+	if savePath == "" {
+		return "", nil
+	}
+	if err := os.WriteFile(savePath, []byte(content), 0o644); err != nil {
+		return "", fmt.Errorf("write file: %w", err)
+	}
+	return savePath, nil
+}
+
 // SQL dump export
 // ─────────────────────────────────────────────────────────────────────────────
 

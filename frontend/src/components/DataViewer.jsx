@@ -28,6 +28,7 @@ import { GridCellKind } from '@glideapps/glide-data-grid'
 import { PanelRightOpen } from 'lucide-react'
 import { AutoSizedGrid, deriveColumns, useRowOverrides } from './DataGrid'
 import ValuePanel from './ValuePanel'
+import { saveTextFile } from '../lib/bridge'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // INSERT SQL generator
@@ -74,15 +75,9 @@ export function exportCsv(columns, rows, filename = 'export.csv') {
 
   const header = columns.map((c) => quoteField(c.name)).join(',')
   const body   = rows.map((row) => row.map(quoteField).join(',')).join('\r\n')
-  const csv    = header + '\r\n' + body
+  const csv    = '\uFEFF' + header + '\r\n' + body  // BOM for Excel
 
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }) // BOM for Excel
-  const url  = URL.createObjectURL(blob)
-  const a    = Object.assign(document.createElement('a'), { href: url, download: filename })
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
+  return saveTextFile(filename, csv)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -995,22 +990,16 @@ export default function DataViewer({
     })
   }
 
-  const handleExportJson = () => {
+  const handleExportJson = async () => {
     if (!canExport) return
     const objs = rows.map(row => Object.fromEntries(columns.map((c, i) => [c.name, row[i] ?? null])))
     const json = JSON.stringify(objs, null, 2)
-    const blob = new Blob([json], { type: 'application/json;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = Object.assign(document.createElement('a'), {
-      href: url,
-      download: (exportFilename ?? 'export').replace(/\.csv$/, '') + '.json'
-    })
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-    setJsonFlash(true)
-    setTimeout(() => setJsonFlash(false), 2000)
+    const filename = (exportFilename ?? 'export').replace(/\.csv$/, '') + '.json'
+    const saved = await saveTextFile(filename, json)
+    if (saved) {
+      setJsonFlash(true)
+      setTimeout(() => setJsonFlash(false), 2000)
+    }
   }
 
   // Reset selected row when hidden columns change to avoid out-of-bounds.

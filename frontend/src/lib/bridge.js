@@ -1006,6 +1006,24 @@ export async function exportDump(connectionID, dbName, tableName) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Generic file save (native Save-As dialog)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function saveTextFile(defaultFilename, content) {
+  if (isWails()) {
+    const { SaveTextFile } = await import('../../wailsjs/go/main/App.js')
+    return SaveTextFile(defaultFilename, content)
+  }
+  // Dev/browser fallback: use blob download
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8;' })
+  const url  = URL.createObjectURL(blob)
+  const a    = Object.assign(document.createElement('a'), { href: url, download: defaultFilename })
+  document.body.appendChild(a); a.click(); document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  return defaultFilename
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Build info
 // ─────────────────────────────────────────────────────────────────────────────
 

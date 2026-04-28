@@ -1035,7 +1035,7 @@ export async function getBuildInfo() {
   await delay(10)
   return {
     name: 'GripLite',
-    version: 'v0.1.5',
+    version: 'v0.1.6',
     buildDate: new Date().toISOString().slice(0, 10),
     platform: 'Wails + React (browser preview)',
     goVersion: 'go (dev)',

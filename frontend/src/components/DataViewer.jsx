@@ -302,17 +302,20 @@ function GridCanvas({
   )
 
   // ── Right-click on a cell ─────────────────────────────────────────────
-  // Capture the native contextmenu position (clientX/Y) before Glide's callback fires.
+  // Capture the native contextmenu position (clientX/Y) before Glide handles it.
   // Glide's localEventX/Y are relative to cell bounds and cannot be used directly for
-  // fixed positioning — the native event's clientX/Y give the exact viewport coords.
+  // fixed positioning. Capture-phase DOM coords are the mouse's true viewport coords.
   const nativeCtxPos = useRef({ x: 0, y: 0 })
   const canvasWrapperRef = useRef(null)
 
   const handleCellContextMenu = useCallback(
     ([, displayRow], event) => {
-      event.preventDefault()
+      event?.preventDefault?.()
       const sourceRow = mapDisplayRow(displayRow)
-      onRowContextMenu?.(sourceRow, nativeCtxPos.current.x, nativeCtxPos.current.y)
+      const fallbackEvent = event?.nativeEvent ?? event
+      const x = nativeCtxPos.current.x || fallbackEvent?.clientX || 0
+      const y = nativeCtxPos.current.y || fallbackEvent?.clientY || 0
+      onRowContextMenu?.(sourceRow, x, y)
     },
     [mapDisplayRow, onRowContextMenu],
   )
@@ -355,7 +358,9 @@ function GridCanvas({
     <div
       ref={canvasWrapperRef}
       style={{ width: '100%', height: '100%' }}
-      onContextMenu={(e) => { nativeCtxPos.current = { x: e.clientX, y: e.clientY } }}
+      onContextMenuCapture={(e) => {
+        nativeCtxPos.current = { x: e.clientX, y: e.clientY }
+      }}
     >
       <AutoSizedGrid
         ref={gridRef}

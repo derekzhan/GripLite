@@ -82,6 +82,8 @@ export function RunQueryPage(arg1:string,arg2:string,arg3:string,arg4:number,arg
 
 export function SaveConnection(arg1:store.SavedConnection):Promise<void>;
 
+export function SaveTextFile(arg1:string,arg2:string):Promise<string>;
+
 export function SearchCompletions(arg1:string,arg2:string,arg3:string):Promise<Array<cache.CompletionItem>>;
 
 export function SetDataFilterHistory(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;

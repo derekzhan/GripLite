@@ -883,6 +883,47 @@ func (a *App) ExecuteTableAlter(connectionID string, req driver.SchemaChangeRequ
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Index Designer — CREATE / DROP / recreate indexes
+// ─────────────────────────────────────────────────────────────────────────────
+
+func (a *App) PreviewIndexAlter(connectionID string, req driver.IndexChangeRequest) (*driver.SchemaChangePreview, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	alt, ok := drv.(driver.IndexAlterDriver)
+	if !ok {
+		return nil, fmt.Errorf("PreviewIndexAlter: %w", driver.ErrUnsupported)
+	}
+	return alt.PreviewIndexAlter(req)
+}
+
+func (a *App) ExecuteIndexAlter(connectionID string, req driver.IndexChangeRequest) (*driver.SchemaChangeResult, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	alt, ok := drv.(driver.IndexAlterDriver)
+	if !ok {
+		return nil, fmt.Errorf("ExecuteIndexAlter: %w", driver.ErrUnsupported)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Minute)
+	defer cancel()
+
+	result, execErr := alt.ExecuteIndexAlter(ctx, req)
+	if result != nil && result.ExecutedCount > 0 && a.meta != nil {
+		refreshCtx, refreshCancel := context.WithTimeout(a.ctx, 10*time.Second)
+		defer refreshCancel()
+		if rErr := a.meta.RefreshTable(refreshCtx, connectionID, req.Schema, req.Table, drv); rErr != nil {
+			log.Printf("[app] ExecuteIndexAlter: cache refresh failed for %s.%s: %v",
+				req.Schema, req.Table, rErr)
+		}
+	}
+	return result, execErr
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 9: Connection Manager IPC methods
 // ─────────────────────────────────────────────────────────────────────────────

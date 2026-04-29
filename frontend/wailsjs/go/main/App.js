@@ -38,6 +38,10 @@ export function ExecDML(arg1, arg2) {
   return window['go']['main']['App']['ExecDML'](arg1, arg2);
 }
 
+export function ExecuteIndexAlter(arg1, arg2) {
+  return window['go']['main']['App']['ExecuteIndexAlter'](arg1, arg2);
+}
+
 export function ExecuteQuery(arg1, arg2, arg3) {
   return window['go']['main']['App']['ExecuteQuery'](arg1, arg2, arg3);
 }
@@ -132,6 +136,10 @@ export function ListSavedConnections() {
 
 export function OpenFileDialog(arg1) {
   return window['go']['main']['App']['OpenFileDialog'](arg1);
+}
+
+export function PreviewIndexAlter(arg1, arg2) {
+  return window['go']['main']['App']['PreviewIndexAlter'](arg1, arg2);
 }
 
 export function PreviewTableAlter(arg1, arg2) {

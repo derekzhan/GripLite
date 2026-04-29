@@ -642,6 +642,65 @@ export namespace driver {
 	    }
 	}
 	
+	export class IndexDraft {
+	    originalName: string;
+	    name: string;
+	    type: string;
+	    unique: boolean;
+	    columns: string[];
+	    comment: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new IndexDraft(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.originalName = source["originalName"];
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.unique = source["unique"];
+	        this.columns = source["columns"];
+	        this.comment = source["comment"];
+	    }
+	}
+	export class IndexChangeRequest {
+	    schema: string;
+	    table: string;
+	    oldIndexes: IndexDraft[];
+	    newIndexes: IndexDraft[];
+	
+	    static createFrom(source: any = {}) {
+	        return new IndexChangeRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schema = source["schema"];
+	        this.table = source["table"];
+	        this.oldIndexes = this.convertValues(source["oldIndexes"], IndexDraft);
+	        this.newIndexes = this.convertValues(source["newIndexes"], IndexDraft);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	
 	
 	export class RoutineInfo {

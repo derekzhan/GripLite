@@ -29,7 +29,7 @@ type BuildInfo struct {
 // The default values below are always safe to ship so development builds
 // still surface meaningful data in the About dialog.
 var (
-	buildVersion = "v0.1.6"
+	buildVersion = "v0.1.7"
 	buildDate    = time.Now().UTC().Format("2006-01-02") // overwritten at link time
 )
 

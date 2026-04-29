@@ -25,7 +25,7 @@
  */
 import { useState, useCallback, useRef, useEffect, useMemo, forwardRef } from 'react'
 import { GridCellKind } from '@glideapps/glide-data-grid'
-import { PanelRightOpen } from 'lucide-react'
+import { ArrowDown, ArrowUp, PanelRightOpen, Search, X } from 'lucide-react'
 import { AutoSizedGrid, deriveColumns, useRowOverrides } from './DataGrid'
 import ValuePanel from './ValuePanel'
 import { saveTextFile } from '../lib/bridge'
@@ -166,6 +166,22 @@ function compareValues(a, b) {
   return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
 }
 
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function buildSearchRegex(query, { caseSensitive, regex, wholeWord }) {
+  const q = String(query ?? '')
+  if (!q) return { re: null, error: '' }
+  try {
+    const source = regex ? q : escapeRegExp(q)
+    const wrapped = wholeWord ? `\\b(?:${source})\\b` : source
+    return { re: new RegExp(wrapped, caseSensitive ? '' : 'i'), error: '' }
+  } catch (err) {
+    return { re: null, error: err?.message || 'Invalid regular expression' }
+  }
+}
+
 /**
  * GridCanvas — canvas grid with integrated column-header sort.
  *
@@ -191,6 +207,9 @@ function GridCanvas({
   rowColors,
   // Right-click: (sourceRowIndex, x, y) => void
   onRowContextMenu,
+  searchMatchCells,
+  currentSearchMatch,
+  sourceRowOrder,
 }) {
   const rowOverrides = useRowOverrides()
   const { nullText } = rowOverrides
@@ -199,12 +218,13 @@ function GridCanvas({
   const isExternal = !!externalOnHeaderClicked
   const [internalSort, setInternalSort] = useState(null) // {colIdx, dir}
   const sortConfig = isExternal ? externalSortConfig : internalSort
-  const numRows = editState ? editState.totalDisplayRows : rows.length
+  const baseRowCount = editState ? editState.totalDisplayRows : rows.length
+  const numRows = sourceRowOrder ? sourceRowOrder.length : baseRowCount
 
   // Visual row order inside the grid. We keep selection/edit state keyed by
   // source-row index, then map display row -> source row after sorting.
   const rowOrder = useMemo(() => {
-    const order = Array.from({ length: numRows }, (_, i) => i)
+    const order = sourceRowOrder ? [...sourceRowOrder] : Array.from({ length: baseRowCount }, (_, i) => i)
     if (isExternal || !internalSort) return order
     const { colIdx, dir } = internalSort
     order.sort((a, b) => {
@@ -214,7 +234,7 @@ function GridCanvas({
       return dir === 'asc' ? cmp : -cmp
     })
     return order
-  }, [numRows, isExternal, internalSort, editState, rows])
+  }, [baseRowCount, sourceRowOrder, isExternal, internalSort, editState, rows])
 
   const mapDisplayRow = useCallback(
     (displayRow) => rowOrder[displayRow] ?? displayRow,
@@ -250,15 +270,25 @@ function GridCanvas({
       const cell = rows?.[sourceRow]?.[col]
       const isNull = cell === null || cell === undefined
       const display = isNull ? 'NULL' : String(cell)
+      const isCurrentMatch = currentSearchMatch?.row === sourceRow && currentSearchMatch?.col === col
+      const isSearchMatch = isCurrentMatch || searchMatchCells?.has(`${sourceRow}:${col}`)
+      const themeOverride = {
+        ...(isNull ? { textDark: nullText } : {}),
+        ...(isSearchMatch ? {
+          bgCell: isCurrentMatch ? '#facc15' : '#fef08a',
+          bgCellMedium: isCurrentMatch ? '#facc15' : '#fef08a',
+          textDark: '#1f2328',
+        } : {}),
+      }
       return {
         kind:        GridCellKind.Text,
         data:        display,
         displayData: display,
         allowOverlay: false,
-        ...(isNull ? { themeOverride: { textDark: nullText } } : {}),
+        ...(Object.keys(themeOverride).length ? { themeOverride } : {}),
       }
     },
-    [rows, mapDisplayRow, nullText],
+    [rows, mapDisplayRow, nullText, searchMatchCells, currentSearchMatch],
   )
 
   const editGetCellContent = useCallback(
@@ -269,6 +299,8 @@ function GridCanvas({
       const isSelected = sourceRow === selectedRow
       const raw  = editState.getCellValue(col, sourceRow)
       const text = raw === null || raw === undefined ? '' : String(raw)
+      const isCurrentMatch = currentSearchMatch?.row === sourceRow && currentSearchMatch?.col === col
+      const isSearchMatch = isCurrentMatch || searchMatchCells?.has(`${sourceRow}:${col}`)
       return {
         kind:         GridCellKind.Text,
         data:         text,
@@ -276,12 +308,18 @@ function GridCanvas({
         allowOverlay: !deleted,
         readonly:     deleted,
         style:        deleted ? 'faded' : 'normal',
-        themeOverride: (!isSelected && edited && !deleted)
-          ? rowOverrides.edited
-          : undefined,
+        themeOverride: isSearchMatch
+          ? {
+              bgCell: isCurrentMatch ? '#facc15' : '#fef08a',
+              bgCellMedium: isCurrentMatch ? '#facc15' : '#fef08a',
+              textDark: '#1f2328',
+            }
+          : (!isSelected && edited && !deleted)
+            ? rowOverrides.edited
+            : undefined,
       }
     },
-    [editState, selectedRow, rowOverrides, mapDisplayRow],
+    [editState, selectedRow, rowOverrides, mapDisplayRow, searchMatchCells, currentSearchMatch],
   )
 
   const getCellContent = editState ? editGetCellContent : stdGetCellContent
@@ -353,6 +391,21 @@ function GridCanvas({
   // Run whenever internalSort changes (covers both set and clear).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [internalSort])
+
+  useEffect(() => {
+    if (!gridRef.current || !currentSearchMatch) return
+    const displayRow = rowOrder.indexOf(currentSearchMatch.row)
+    if (displayRow < 0) return
+    gridRef.current.scrollTo(
+      currentSearchMatch.col,
+      displayRow,
+      'both',
+      40,
+      40,
+      { hAlign: 'center', vAlign: 'center' },
+    )
+    gridRef.current.updateCells([{ cell: [currentSearchMatch.col, displayRow] }])
+  }, [currentSearchMatch, rowOrder])
 
   return (
     <div
@@ -559,7 +612,19 @@ function CtxItem({ label, onClick, disabled }) {
   )
 }
 
-function GridWithPanel({ columns, rows, selectedRow, onSelectRow, editState, onHeaderClicked, sortConfig, exportFilename }) {
+function GridWithPanel({
+  columns,
+  rows,
+  selectedRow,
+  onSelectRow,
+  editState,
+  onHeaderClicked,
+  sortConfig,
+  exportFilename,
+  searchMatchCells,
+  currentSearchMatch,
+  sourceRowOrder,
+}) {
   const [panelOpen,  setPanelOpen]  = useState(false)
   const [panelWidth, setPanelWidth] = useState(340)
   const [panelCell,  setPanelCell]  = useState({ col: 0, row: 0, value: null, colName: '' })
@@ -653,6 +718,9 @@ function GridWithPanel({ columns, rows, selectedRow, onSelectRow, editState, onH
           sortConfig={sortConfig}
           rowColors={rowColors}
           onRowContextMenu={openContextMenu}
+          searchMatchCells={searchMatchCells}
+          currentSearchMatch={currentSearchMatch}
+          sourceRowOrder={sourceRowOrder}
         />
       </div>
 
@@ -1184,6 +1252,12 @@ export default function DataViewer({
   const [tblName,     setTblName]     = useState('table_name')
   const [hiddenCols,  setHiddenCols]  = useState(new Set())
   const [showColPicker, setShowColPicker] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchCaseSensitive, setSearchCaseSensitive] = useState(false)
+  const [searchRegex, setSearchRegex] = useState(false)
+  const [searchWholeWord, setSearchWholeWord] = useState(false)
+  const [searchFilterRows, setSearchFilterRows] = useState(false)
+  const [searchIndex, setSearchIndex] = useState(0)
   const colPickerRef = useRef(null)
   /**
    * selectedRow is the shared cursor between Grid and Record modes.
@@ -1260,8 +1334,77 @@ export default function DataViewer({
     return () => document.removeEventListener('mousedown', handle)
   }, [showColPicker])
 
+  const searchCompiled = useMemo(
+    () => buildSearchRegex(searchQuery, {
+      caseSensitive: searchCaseSensitive,
+      regex: searchRegex,
+      wholeWord: searchWholeWord,
+    }),
+    [searchQuery, searchCaseSensitive, searchRegex, searchWholeWord],
+  )
+
   const visibleColumns = columns.filter((_, i) => !hiddenCols.has(i))
-  const visibleRows    = rows.map(row => row.filter((_, i) => !hiddenCols.has(i)))
+  const allVisibleRows = rows.map(row => row.filter((_, i) => !hiddenCols.has(i)))
+
+  const filteredSourceRows = useMemo(() => {
+    if (!searchFilterRows || !searchCompiled.re) {
+      return rows.map((_, i) => i)
+    }
+    const out = []
+    for (let r = 0; r < rows.length; r++) {
+      const hasMatch = rows[r]?.some((value) => {
+        const text = value === null || value === undefined ? 'NULL' : String(value)
+        return searchCompiled.re.test(text)
+      })
+      if (hasMatch) out.push(r)
+    }
+    return out
+  }, [rows, searchFilterRows, searchCompiled])
+
+  const filteredSourceSet = useMemo(() => new Set(filteredSourceRows), [filteredSourceRows])
+  const displayRows = searchFilterRows
+    ? filteredSourceRows.map((sourceRow) => rows[sourceRow]).filter(Boolean)
+    : rows
+  const visibleRows = searchFilterRows
+    ? filteredSourceRows.map((sourceRow) => allVisibleRows[sourceRow]).filter(Boolean)
+    : allVisibleRows
+
+  const searchMatches = useMemo(() => {
+    if (!searchCompiled.re) return []
+    const out = []
+    for (let r = 0; r < allVisibleRows.length; r++) {
+      if (searchFilterRows && !filteredSourceSet.has(r)) continue
+      for (let c = 0; c < visibleColumns.length; c++) {
+        const value = allVisibleRows[r]?.[c]
+        const text = value === null || value === undefined ? 'NULL' : String(value)
+        if (searchCompiled.re.test(text)) out.push({ row: r, col: c })
+      }
+    }
+    return out
+  }, [allVisibleRows, visibleColumns, searchCompiled, searchFilterRows, filteredSourceSet])
+
+  const searchMatchCells = useMemo(
+    () => new Set(searchMatches.map((m) => `${m.row}:${m.col}`)),
+    [searchMatches],
+  )
+
+  const currentSearchMatch = searchMatches.length
+    ? searchMatches[Math.min(searchIndex, searchMatches.length - 1)]
+    : null
+
+  useEffect(() => {
+    setSearchIndex(0)
+  }, [searchQuery, searchCaseSensitive, searchRegex, searchWholeWord, searchFilterRows, visibleColumns.length, visibleRows.length])
+
+  useEffect(() => {
+    if (currentSearchMatch) setSelectedRow(currentSearchMatch.row)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSearchMatch?.row])
+
+  const goSearch = useCallback((delta) => {
+    if (!searchMatches.length) return
+    setSearchIndex((idx) => (idx + delta + searchMatches.length) % searchMatches.length)
+  }, [searchMatches.length])
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -1275,6 +1418,94 @@ export default function DataViewer({
         {/* Text format sub-toggle (only when in text mode) */}
         {mode === 'text' && !noColumns && (
           <ToggleGroup options={TEXT_FORMATS} value={textFormat} onChange={setTextFormat} />
+        )}
+
+        {/* Local result-set search */}
+        {!noColumns && (
+          <div className="flex items-center gap-1 h-7 px-1.5 rounded border border-line bg-panel text-[11px]">
+            <Search size={13} className="text-fg-muted flex-shrink-0" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  goSearch(e.shiftKey ? -1 : 1)
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setSearchQuery('')
+                }
+              }}
+              placeholder="Search result"
+              className="w-36 bg-transparent outline-none text-fg-primary placeholder:text-fg-muted"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                title="Clear search"
+                className="text-fg-muted hover:text-fg-primary"
+              >
+                <X size={12} />
+              </button>
+            )}
+            <span className={searchCompiled.error ? 'text-danger' : 'text-fg-muted'}>
+              {searchCompiled.error
+                ? 'Invalid regex'
+                : searchQuery
+                  ? `${searchMatches.length ? Math.min(searchIndex + 1, searchMatches.length) : 0}/${searchMatches.length}`
+                  : ''}
+            </span>
+            <button
+              onClick={() => goSearch(-1)}
+              disabled={!searchMatches.length}
+              title="Previous match (Shift+Enter)"
+              className="text-fg-muted hover:text-fg-primary disabled:opacity-30"
+            >
+              <ArrowUp size={13} />
+            </button>
+            <button
+              onClick={() => goSearch(1)}
+              disabled={!searchMatches.length}
+              title="Next match (Enter)"
+              className="text-fg-muted hover:text-fg-primary disabled:opacity-30"
+            >
+              <ArrowDown size={13} />
+            </button>
+            <button
+              onClick={() => setSearchCaseSensitive(v => !v)}
+              title="Match case"
+              className={searchCaseSensitive ? 'text-accent font-semibold' : 'text-fg-muted hover:text-fg-primary'}
+            >
+              Cc
+            </button>
+            <button
+              onClick={() => setSearchRegex(v => !v)}
+              title="Use regular expression"
+              className={searchRegex ? 'text-accent font-semibold' : 'text-fg-muted hover:text-fg-primary'}
+            >
+              .*
+            </button>
+            <button
+              onClick={() => setSearchWholeWord(v => !v)}
+              title="Whole word"
+              className={searchWholeWord ? 'text-accent font-semibold' : 'text-fg-muted hover:text-fg-primary'}
+            >
+              W
+            </button>
+            <label
+              title="Filter rows to only matching records"
+              className="ml-1 pl-2 border-l border-line-subtle flex items-center gap-1 text-fg-muted hover:text-fg-primary cursor-pointer select-none"
+            >
+              <input
+                type="checkbox"
+                checked={searchFilterRows}
+                onChange={(e) => setSearchFilterRows(e.target.checked)}
+                className="accent-accent"
+              />
+              <span>Filter rows</span>
+            </label>
+          </div>
         )}
 
         {/* Column visibility picker (grid mode only) */}
@@ -1336,11 +1567,15 @@ export default function DataViewer({
         {/* Stats */}
         <span className="text-[11px] text-fg-muted tabular-nums select-none flex items-center gap-2">
           {truncated && <span className="text-warn font-medium">⚠ capped</span>}
-          <span>{rows.length.toLocaleString()} rows</span>
+          <span>
+            {searchFilterRows
+              ? `${displayRows.length.toLocaleString()} / ${rows.length.toLocaleString()} rows`
+              : `${rows.length.toLocaleString()} rows`}
+          </span>
           {execMs !== undefined && <span>· {execMs} ms</span>}
           {mode === 'record' && !noColumns && !noRows && (
             <span className="text-fg-secondary">
-              · row {Math.min(selectedRow + 1, rows.length)} of {rows.length}
+              · row {Math.min((searchFilterRows ? Math.max(0, filteredSourceRows.indexOf(selectedRow)) : selectedRow) + 1, displayRows.length)} of {displayRows.length}
             </span>
           )}
         </span>
@@ -1422,25 +1657,28 @@ export default function DataViewer({
             {mode === 'grid' && (
               <GridWithPanel
                 columns={visibleColumns}
-                rows={visibleRows}
+                rows={allVisibleRows}
                 selectedRow={selectedRow}
                 onSelectRow={setSelectedRow}
                 editState={editState}
                 onHeaderClicked={onHeaderClicked}
                 sortConfig={sortConfig}
                 exportFilename={exportFilename}
+                searchMatchCells={searchMatchCells}
+                currentSearchMatch={currentSearchMatch}
+                sourceRowOrder={searchFilterRows ? filteredSourceRows : undefined}
               />
             )}
             {mode === 'text' && (
-              <TextView columns={columns} rows={rows} format={textFormat} />
+              <TextView columns={columns} rows={displayRows} format={textFormat} />
             )}
             {mode === 'record' && (
               <RecordView
                 columns={columns}
-                rows={rows}
-                selectedIdx={selectedRow}
-                onSelectIdx={setSelectedRow}
-                editState={editState}
+                rows={displayRows}
+                selectedIdx={searchFilterRows ? Math.max(0, filteredSourceRows.indexOf(selectedRow)) : selectedRow}
+                onSelectIdx={(idx) => setSelectedRow(searchFilterRows ? (filteredSourceRows[idx] ?? 0) : idx)}
+                editState={searchFilterRows ? null : editState}
               />
             )}
           </>

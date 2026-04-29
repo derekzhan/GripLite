@@ -130,9 +130,9 @@ type ConnectionConfig struct {
 type ObjectKind string
 
 const (
-	ObjectTable     ObjectKind = "table"
-	ObjectView      ObjectKind = "view"
-	ObjectRoutine   ObjectKind = "routine"  // stored procedures & functions
+	ObjectTable      ObjectKind = "table"
+	ObjectView       ObjectKind = "view"
+	ObjectRoutine    ObjectKind = "routine"    // stored procedures & functions
 	ObjectCollection ObjectKind = "collection" // MongoDB-specific
 )
 
@@ -258,7 +258,7 @@ type TableDetail struct {
 // Value types depend on the backend:
 //   - MySQL:   int64, float64, []byte, string, time.Time, nil
 //   - MongoDB: primitive.ObjectID, string, int32, int64, float64,
-//              bool, time.Time, primitive.M (sub-document), nil
+//     bool, time.Time, primitive.M (sub-document), nil
 //
 // Callers MUST type-assert defensively; they MUST NOT assume a specific
 // concrete type without first inspecting [ColumnInfo.DatabaseType].
@@ -506,10 +506,23 @@ type ExplainDriver interface {
 // algorithm and a free-text comment.
 type IndexDetail struct {
 	Name    string   `json:"name"`
-	Type    string   `json:"type"`    // BTREE / HASH / FULLTEXT / SPATIAL
+	Type    string   `json:"type"` // BTREE / HASH / FULLTEXT / SPATIAL
 	Unique  bool     `json:"unique"`
 	Columns []string `json:"columns"` // key columns in key order
 	Comment string   `json:"comment"`
+}
+
+// IndexDraft is the editable shape of a single index inside the Properties
+// panel.  OriginalName is empty for a newly-created index.  MySQL does not
+// support changing index columns/uniqueness in-place, so modifications are
+// represented as DROP old index + CREATE new index.
+type IndexDraft struct {
+	OriginalName string   `json:"originalName"`
+	Name         string   `json:"name"`
+	Type         string   `json:"type"` // BTREE / HASH / FULLTEXT / SPATIAL
+	Unique       bool     `json:"unique"`
+	Columns      []string `json:"columns"`
+	Comment      string   `json:"comment"`
 }
 
 // ConstraintDetail describes a named table constraint.  For MySQL the
@@ -680,12 +693,22 @@ type TableInfoDraft struct {
 // PreviewAlter / ExecuteAlter.  The server performs the diff; the client
 // merely supplies the before/after snapshots.
 type SchemaChangeRequest struct {
-	Schema    string         `json:"schema"`
-	Table     string         `json:"table"`
-	Original  TableInfoDraft `json:"originalInfo"`
-	Updated   TableInfoDraft `json:"updatedInfo"`
-	OldColumns []ColumnDraft `json:"oldColumns"` // as-loaded snapshot
-	NewColumns []ColumnDraft `json:"newColumns"` // edited
+	Schema     string         `json:"schema"`
+	Table      string         `json:"table"`
+	Original   TableInfoDraft `json:"originalInfo"`
+	Updated    TableInfoDraft `json:"updatedInfo"`
+	OldColumns []ColumnDraft  `json:"oldColumns"` // as-loaded snapshot
+	NewColumns []ColumnDraft  `json:"newColumns"` // edited
+}
+
+// IndexChangeRequest carries before/after index snapshots for the index
+// designer.  The server computes all SQL from these structured fields; client
+// supplied SQL strings are never executed.
+type IndexChangeRequest struct {
+	Schema     string       `json:"schema"`
+	Table      string       `json:"table"`
+	OldIndexes []IndexDraft `json:"oldIndexes"`
+	NewIndexes []IndexDraft `json:"newIndexes"`
 }
 
 // SchemaChangeStatement describes one generated ALTER statement together
@@ -736,6 +759,15 @@ type SchemaAlterDriver interface {
 	// to show a partial-failure notice.  MySQL DDL is auto-commit, so
 	// statements already executed remain in effect.
 	ExecuteAlter(ctx context.Context, req SchemaChangeRequest) (*SchemaChangeResult, error)
+}
+
+// IndexAlterDriver is the optional extension implemented by relational drivers
+// that can preview and apply index DDL.
+type IndexAlterDriver interface {
+	DatabaseDriver
+
+	PreviewIndexAlter(req IndexChangeRequest) (*SchemaChangePreview, error)
+	ExecuteIndexAlter(ctx context.Context, req IndexChangeRequest) (*SchemaChangeResult, error)
 }
 
 // MultiResultDriver is an optional extension for drivers that support

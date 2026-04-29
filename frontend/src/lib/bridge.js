@@ -442,6 +442,30 @@ export async function executeTableAlter(connectionID, req) {
   }
 }
 
+export async function previewIndexAlter(connectionID, req) {
+  if (isWails()) {
+    const { PreviewIndexAlter } = await import('../../wailsjs/go/main/App.js')
+    return PreviewIndexAlter(connectionID, req)
+  }
+  return buildMockIndexPreview(req)
+}
+
+export async function executeIndexAlter(connectionID, req) {
+  if (isWails()) {
+    const { ExecuteIndexAlter } = await import('../../wailsjs/go/main/App.js')
+    return ExecuteIndexAlter(connectionID, req)
+  }
+  const pv = await buildMockIndexPreview(req)
+  return {
+    success: true,
+    executedCount: pv.statements.length,
+    statements: pv.statements,
+    failedIndex: -1,
+    failedStatement: '',
+    error: '',
+  }
+}
+
 function buildMockAlterPreview(req) {
   const stmts = []
   const warnings = []
@@ -498,6 +522,69 @@ function buildMockAlterPreview(req) {
       parts.push(`COMMENT = '${(req.updatedInfo.comment || '').replace(/'/g, "''")}'`)
     stmts.push({ kind: 'table', summary: 'Update table options',
       sql: `ALTER TABLE ${q} ${parts.join(', ')};` })
+  }
+  return { statements: stmts, warnings }
+}
+
+function buildMockIndexPreview(req) {
+  const stmts = []
+  const warnings = []
+  const ident = (s) => '`' + String(s).replace(/`/g, '``') + '`'
+  const q = `${ident(req.schema)}.${ident(req.table)}`
+  const norm = (idx) => ({
+    ...idx,
+    originalName: (idx.originalName ?? '').trim(),
+    name: (idx.name ?? '').trim(),
+    type: (idx.type ?? 'BTREE').trim().toUpperCase() || 'BTREE',
+    columns: (idx.columns ?? []).map((c) => String(c).trim()).filter(Boolean),
+    comment: (idx.comment ?? '').trim(),
+  })
+  const oldByOrig = new Map((req.oldIndexes ?? [])
+    .map(norm)
+    .filter((idx) => idx.name.toUpperCase() !== 'PRIMARY')
+    .map((idx) => [idx.originalName || idx.name, idx]))
+  const newByOrig = new Map((req.newIndexes ?? [])
+    .map(norm)
+    .filter((idx) => idx.originalName && idx.originalName.toUpperCase() !== 'PRIMARY' && idx.name.toUpperCase() !== 'PRIMARY')
+    .map((idx) => [idx.originalName, idx]))
+  const eq = (a, b) =>
+    a.name === b.name && a.type === b.type && !!a.unique === !!b.unique &&
+    a.comment === b.comment && a.columns.join('\0') === b.columns.join('\0')
+  const drop = (name) => ({ kind: 'drop', summary: `Drop index \`${name}\``, sql: `DROP INDEX ${ident(name)} ON ${q};` })
+  const create = (idx) => {
+    const prefix = idx.type === 'FULLTEXT' ? 'FULLTEXT INDEX'
+      : idx.type === 'SPATIAL' ? 'SPATIAL INDEX'
+      : idx.unique ? 'UNIQUE INDEX'
+      : 'INDEX'
+    const using = idx.type === 'BTREE' || idx.type === 'HASH' ? ` USING ${idx.type}` : ''
+    const comment = idx.comment ? ` COMMENT '${idx.comment.replace(/'/g, "''")}'` : ''
+    return {
+      kind: 'add',
+      summary: `Create index \`${idx.name}\``,
+      sql: `CREATE ${prefix} ${ident(idx.name)} ON ${q} (${idx.columns.map(ident).join(', ')})${using}${comment};`,
+    }
+  }
+
+  for (const oldIdx of (req.oldIndexes ?? []).map(norm)) {
+    const orig = oldIdx.originalName || oldIdx.name
+    if (orig.toUpperCase() === 'PRIMARY') continue
+    const next = newByOrig.get(orig)
+    if (!next) {
+      stmts.push(drop(orig))
+      warnings.push(`Dropping index \`${orig}\` can affect query performance.`)
+    } else if (!eq(oldIdx, next)) {
+      stmts.push(drop(orig))
+      warnings.push(`Modifying index \`${orig}\` requires dropping and recreating it.`)
+    }
+  }
+  for (const newIdx of (req.newIndexes ?? []).map(norm)) {
+    if (newIdx.name.toUpperCase() === 'PRIMARY' || newIdx.originalName.toUpperCase() === 'PRIMARY') continue
+    if (!newIdx.originalName) {
+      stmts.push(create(newIdx))
+    } else {
+      const oldIdx = oldByOrig.get(newIdx.originalName)
+      if (oldIdx && !eq(oldIdx, newIdx)) stmts.push(create(newIdx))
+    }
   }
   return { statements: stmts, warnings }
 }
@@ -1035,7 +1122,7 @@ export async function getBuildInfo() {
   await delay(10)
   return {
     name: 'GripLite',
-    version: 'v0.1.6',
+    version: 'v0.1.7',
     buildDate: new Date().toISOString().slice(0, 10),
     platform: 'Wails + React (browser preview)',
     goVersion: 'go (dev)',

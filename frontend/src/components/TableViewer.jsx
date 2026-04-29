@@ -34,6 +34,7 @@ import { useTheme } from '../theme/ThemeProvider'
 import {
   runQuery, getTableSchema, getTableAdvancedProperties,
   previewTableAlter, executeTableAlter, applyChanges,
+  previewIndexAlter, executeIndexAlter,
   getDataFilterHistory, setDataFilterHistory,
 } from '../lib/bridge'
 import { useEditState } from '../hooks/useEditState'
@@ -694,27 +695,389 @@ function AsyncGate({ loading, error, isEmpty, emptyLabel, onRetry, children }) {
   return children
 }
 
-function IndexesView({ indexes, loading, error, onRetry }) {
+function toDraftIndex(idx) {
+  return {
+    _key: `${idx.name || 'idx'}_${Math.random().toString(36).slice(2)}`,
+    originalName: idx.originalName ?? idx.name ?? '',
+    name: idx.name ?? '',
+    type: (idx.type ?? 'BTREE').toUpperCase(),
+    unique: !!idx.unique,
+    columnsText: (idx.columns ?? []).join(', '),
+    comment: idx.comment ?? '',
+  }
+}
+
+function stripIndexDraft(idx) {
+  return {
+    originalName: idx.originalName ?? '',
+    name: idx.name.trim(),
+    type: (idx.type || 'BTREE').toUpperCase(),
+    unique: !!idx.unique,
+    columns: parseIndexColumns(idx.columnsText),
+    comment: idx.comment ?? '',
+  }
+}
+
+function parseIndexColumns(text) {
+  return String(text ?? '').split(',').map((c) => c.trim()).filter(Boolean)
+}
+
+function indexesEqual(a, b) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = stripIndexDraft(a[i])
+    const y = stripIndexDraft(b[i])
+    if (x.originalName !== y.originalName ||
+        x.name !== y.name ||
+        x.type !== y.type ||
+        x.unique !== y.unique ||
+        x.comment !== y.comment ||
+        x.columns.join('\0') !== y.columns.join('\0')) {
+      return false
+    }
+  }
+  return true
+}
+
+function IndexColumnsSelector({ value, tableColumns, disabled, onChange }) {
+  const [open, setOpen] = useState(false)
+  const wrapperRef = useRef(null)
+  const selected = useMemo(() => parseIndexColumns(value), [value])
+  const selectedSet = useMemo(() => new Set(selected), [selected])
+  const available = tableColumns ?? []
+
+  useEffect(() => {
+    if (!open) return
+    const handle = (e) => {
+      if (!wrapperRef.current?.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [open])
+
+  const toggleColumn = (name) => {
+    const next = selectedSet.has(name)
+      ? selected.filter((c) => c !== name)
+      : [...selected, name]
+    onChange(next.join(', '))
+  }
+
   return (
-    <AsyncGate loading={loading} error={error} onRetry={onRetry}
-      isEmpty={!indexes?.length} emptyLabel="indexes">
-      <div className="h-full overflow-auto">
+    <div ref={wrapperRef} className="relative" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+        className={[
+          'w-full min-h-[26px] flex items-center gap-1 px-1 py-0.5 rounded border text-left transition-colors',
+          disabled
+            ? 'border-transparent text-fg-muted cursor-not-allowed'
+            : open
+              ? 'border-accent bg-panel'
+              : 'border-transparent hover:border-line-subtle hover:bg-hover',
+        ].join(' ')}
+      >
+        <span className="flex-1 truncate font-mono text-syntax-string">
+          {selected.length ? selected.join(', ') : <span className="text-fg-muted italic">Select columns…</span>}
+        </span>
+        {!disabled && <ChevronDown size={12} className="text-fg-muted flex-shrink-0" />}
+      </button>
+
+      {open && !disabled && (
+        <div className="absolute left-0 top-full mt-1 z-50 w-[260px] max-h-[320px] overflow-hidden
+                        rounded border border-line bg-panel shadow-lg">
+          <div className="flex items-center justify-between px-2 py-1 border-b border-line-subtle bg-titlebar">
+            <span className="text-[10px] uppercase tracking-wider text-fg-muted">Select index columns</span>
+            <button
+              type="button"
+              onClick={() => onChange('')}
+              className="text-[10px] text-fg-muted hover:text-danger"
+            >
+              Clear
+            </button>
+          </div>
+          <div className="max-h-[250px] overflow-y-auto py-1">
+            {available.length === 0 ? (
+              <div className="px-2 py-3 text-[12px] text-fg-muted italic">No columns available.</div>
+            ) : available.map((col) => {
+              const name = col.name ?? String(col)
+              return (
+                <label
+                  key={name}
+                  className="flex items-center gap-2 px-2 py-1.5 hover:bg-hover cursor-pointer select-none"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedSet.has(name)}
+                    onChange={() => toggleColumn(name)}
+                    className="accent-accent"
+                  />
+                  <span className="font-mono text-[12px] text-fg-primary truncate">{name}</span>
+                  {col.type && <span className="ml-auto text-[10px] text-fg-muted">{col.type}</span>}
+                </label>
+              )
+            })}
+          </div>
+          {selected.length > 0 && (
+            <div className="px-2 py-1 border-t border-line-subtle text-[10px] text-fg-muted">
+              Order: {selected.join(' → ')}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function IndexesView({
+  indexes,
+  columns,
+  loading,
+  error,
+  onRetry,
+  connId,
+  dbName,
+  tableName,
+  onChanged,
+}) {
+  const [drafts, setDrafts] = useState([])
+  const [baseline, setBaseline] = useState([])
+  const [selectedIdx, setSelectedIdx] = useState(null)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [result, setResult] = useState(null)
+  const [running, setRunning] = useState(false)
+  const [previewError, setPreviewError] = useState('')
+
+  useEffect(() => {
+    const next = (indexes ?? []).map(toDraftIndex)
+    setDrafts(next)
+    setBaseline(next.map((d) => ({ ...d })))
+    setSelectedIdx(null)
+    setPreviewError('')
+  }, [indexes])
+
+  const isDirty = useMemo(() => !indexesEqual(drafts, baseline), [drafts, baseline])
+  const selected = selectedIdx === null ? null : drafts[selectedIdx]
+  const selectedIsPrimary = selected?.originalName === 'PRIMARY' || selected?.name === 'PRIMARY'
+
+  const patchDraft = (idx, patch) => {
+    setDrafts((prev) => prev.map((d, i) => (i === idx ? { ...d, ...patch } : d)))
+  }
+
+  const addIndex = () => {
+    const firstCol = columns?.[0]?.name ?? ''
+    setDrafts((prev) => {
+      const next = [
+        ...prev,
+        {
+          _key: `new_${Date.now()}`,
+          originalName: '',
+          name: firstCol ? `idx_${firstCol}` : 'idx_new',
+          type: 'BTREE',
+          unique: false,
+          columnsText: firstCol,
+          comment: '',
+        },
+      ]
+      setSelectedIdx(next.length - 1)
+      return next
+    })
+  }
+
+  const removeSelected = () => {
+    if (selectedIdx === null || selectedIsPrimary) return
+    setDrafts((prev) => prev.filter((_, i) => i !== selectedIdx))
+    setSelectedIdx(null)
+  }
+
+  const buildRequest = () => ({
+    schema: dbName,
+    table: tableName,
+    oldIndexes: baseline.map(stripIndexDraft),
+    newIndexes: drafts.map(stripIndexDraft),
+  })
+
+  const openPreview = async () => {
+    setPreviewError('')
+    setResult(null)
+    try {
+      const pv = await previewIndexAlter(connId, buildRequest())
+      setPreview(pv)
+      setModalOpen(true)
+    } catch (err) {
+      const msg = normalizeError(err)
+      setPreviewError(msg)
+      toast.error(`Index preview failed: ${msg}`)
+    }
+  }
+
+  const execute = async () => {
+    setRunning(true)
+    setResult(null)
+    try {
+      const res = await executeIndexAlter(connId, buildRequest())
+      setResult(res)
+      if (res?.success) {
+        toast.success(`Indexes updated · ${res.executedCount} statement${res.executedCount === 1 ? '' : 's'} executed`)
+        setTimeout(() => {
+          setModalOpen(false)
+          setResult(null)
+          onChanged?.()
+        }, 800)
+      } else if (res && !res.success) {
+        toast.error(`Index update failed: ${normalizeError(res.error) || 'Unknown error'}`)
+      }
+    } catch (err) {
+      const msg = normalizeError(err)
+      setResult({ success: false, executedCount: 0, failedIndex: 0, failedStatement: '', error: msg, statements: [] })
+      toast.error(`Index update failed: ${msg}`)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  if (loading || error) {
+    return (
+      <AsyncGate loading={loading} error={error} onRetry={onRetry}
+        isEmpty={false} emptyLabel="indexes">
+        <div />
+      </AsyncGate>
+    )
+  }
+
+  return (
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-line-subtle bg-titlebar text-[11px]">
+        <button
+          onClick={addIndex}
+          className="flex items-center gap-1 px-2 py-0.5 rounded border border-line-subtle text-success hover:bg-hover transition-colors"
+        >
+          <Plus size={11} /> Index
+        </button>
+        <button
+          onClick={removeSelected}
+          disabled={selectedIdx === null || selectedIsPrimary}
+          title={selectedIsPrimary ? 'PRIMARY index cannot be removed here' : 'Remove selected index'}
+          className="flex items-center gap-1 px-2 py-0.5 rounded border border-line-subtle text-danger hover:bg-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <Minus size={11} /> Remove
+        </button>
+        {isDirty && (
+          <span className="ml-2 text-warn">Unsaved index changes</span>
+        )}
+        {previewError && <span className="text-danger">{previewError}</span>}
+        <div className="ml-auto flex items-center gap-2">
+          {isDirty && (
+            <>
+              <button
+                onClick={() => {
+                  setDrafts(baseline.map((d) => ({ ...d, _key: `${d._key}_reset_${Date.now()}` })))
+                  setSelectedIdx(null)
+                  setPreviewError('')
+                }}
+                className="flex items-center gap-1 px-2 py-0.5 rounded border border-line text-fg-secondary hover:bg-hover transition-colors"
+              >
+                <XCircle size={11} /> Cancel
+              </button>
+              <button
+                onClick={openPreview}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-accent hover:bg-accent-hover text-fg-on-accent font-medium transition-colors"
+              >
+                <Save size={11} /> Review & Save
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="flex-1 overflow-auto">
         <table className="w-full border-collapse text-[13px]">
           <thead><tr><TH>Name</TH><TH>Type</TH><TH center>Unique</TH><TH>Columns</TH><TH>Comment</TH></tr></thead>
           <tbody>
-            {(indexes ?? []).map((idx) => (
-              <tr key={idx.name} className="hover:bg-hover transition-colors">
-                <TD className="font-medium text-fg-primary">{idx.name}</TD>
-                <TD className="text-fg-muted">{idx.type}</TD>
-                <TD center><BoolCell value={idx.unique} /></TD>
-                <TD mono>{(idx.columns ?? []).join(', ')}</TD>
-                <TD className="text-fg-muted text-[12px]">{idx.comment}</TD>
+            {drafts.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-3 py-6 text-center text-fg-muted italic border-b border-line-subtle">
+                  No indexes. Click + Index to add one.
+                </td>
               </tr>
-            ))}
+            )}
+            {drafts.map((idx, i) => {
+              const isSelected = i === selectedIdx
+              const isPrimary = idx.originalName === 'PRIMARY' || idx.name === 'PRIMARY'
+              return (
+              <tr
+                key={idx._key}
+                onClick={() => setSelectedIdx(i)}
+                className={[
+                  'transition-colors cursor-pointer',
+                  isSelected ? 'bg-active/30' : 'hover:bg-hover',
+                  isPrimary ? 'opacity-80' : '',
+                ].join(' ')}
+              >
+                <TD className="font-medium text-fg-primary">
+                  <input
+                    value={idx.name}
+                    disabled={isPrimary}
+                    onChange={(e) => patchDraft(i, { name: e.target.value })}
+                    className="w-full bg-transparent border border-transparent focus:border-accent rounded px-1 py-0.5 outline-none disabled:text-fg-muted"
+                  />
+                </TD>
+                <TD>
+                  <select
+                    value={idx.type || 'BTREE'}
+                    disabled={isPrimary}
+                    onChange={(e) => patchDraft(i, { type: e.target.value })}
+                    className="w-full bg-transparent border border-line-subtle focus:border-accent rounded px-1 py-0.5 outline-none disabled:text-fg-muted"
+                  >
+                    <option value="BTREE">BTREE</option>
+                    <option value="HASH">HASH</option>
+                    <option value="FULLTEXT">FULLTEXT</option>
+                    <option value="SPATIAL">SPATIAL</option>
+                  </select>
+                </TD>
+                <TD center>
+                  <input
+                    type="checkbox"
+                    checked={!!idx.unique}
+                    disabled={isPrimary || idx.type === 'FULLTEXT' || idx.type === 'SPATIAL'}
+                    onChange={(e) => patchDraft(i, { unique: e.target.checked })}
+                  />
+                </TD>
+                <TD mono>
+                  <IndexColumnsSelector
+                    value={idx.columnsText}
+                    tableColumns={columns}
+                    disabled={isPrimary}
+                    onChange={(columnsText) => patchDraft(i, { columnsText })}
+                  />
+                </TD>
+                <TD className="text-fg-muted text-[12px]">
+                  <input
+                    value={idx.comment}
+                    disabled={isPrimary}
+                    onChange={(e) => patchDraft(i, { comment: e.target.value })}
+                    className="w-full bg-transparent border border-transparent focus:border-accent rounded px-1 py-0.5 outline-none disabled:text-fg-muted"
+                  />
+                </TD>
+              </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
-    </AsyncGate>
+      <ReviewSqlModal
+        isOpen={modalOpen}
+        preview={preview}
+        result={result}
+        running={running}
+        onClose={() => {
+          if (running) return
+          setModalOpen(false)
+          setResult(null)
+        }}
+        onExecute={execute}
+      />
+    </div>
   )
 }
 
@@ -1192,7 +1555,13 @@ function PropertiesView({ schema, connId, dbName, tableName, onSchemaChanged }) 
       case 'indexes':
         return <IndexesView
           indexes={adv.data?.indexes}
-          loading={adv.loading} error={adv.error} onRetry={adv.load} />
+          columns={schema.columns}
+          loading={adv.loading} error={adv.error} onRetry={adv.load}
+          connId={connId} dbName={dbName} tableName={tableName}
+          onChanged={() => {
+            adv.load()
+            onSchemaChanged?.()
+          }} />
       case 'constraints':
         return <ConstraintsView
           constraints={adv.data?.constraints}

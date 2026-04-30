@@ -52,10 +52,17 @@ export default function AboutModal({ isOpen, onClose }) {
 
   if (!isOpen) return null
 
-  const openExternal = (href) => {
-    // Wails webview respects target=_blank + noopener by opening the user's
-    // default browser.  In plain browser dev it's a plain navigation.
-    try { window.open(href, '_blank', 'noopener,noreferrer') } catch { /* ignore */ }
+  const openExternal = async (href) => {
+    try {
+      if (window?.runtime?.BrowserOpenURL) {
+        const { BrowserOpenURL } = await import('../../wailsjs/runtime/runtime')
+        BrowserOpenURL(href)
+        return
+      }
+      window.open(href, '_blank', 'noopener,noreferrer')
+    } catch {
+      try { window.location.href = href } catch { /* ignore */ }
+    }
   }
 
   return (

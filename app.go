@@ -924,6 +924,84 @@ func (a *App) ExecuteIndexAlter(connectionID string, req driver.IndexChangeReque
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Constraint / Partition Designers
+// ─────────────────────────────────────────────────────────────────────────────
+
+func (a *App) PreviewConstraintAlter(connectionID string, req driver.ConstraintChangeRequest) (*driver.SchemaChangePreview, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	alt, ok := drv.(driver.ConstraintAlterDriver)
+	if !ok {
+		return nil, fmt.Errorf("PreviewConstraintAlter: %w", driver.ErrUnsupported)
+	}
+	return alt.PreviewConstraintAlter(req)
+}
+
+func (a *App) ExecuteConstraintAlter(connectionID string, req driver.ConstraintChangeRequest) (*driver.SchemaChangeResult, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	alt, ok := drv.(driver.ConstraintAlterDriver)
+	if !ok {
+		return nil, fmt.Errorf("ExecuteConstraintAlter: %w", driver.ErrUnsupported)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Minute)
+	defer cancel()
+
+	result, execErr := alt.ExecuteConstraintAlter(ctx, req)
+	if result != nil && result.ExecutedCount > 0 && a.meta != nil {
+		refreshCtx, refreshCancel := context.WithTimeout(a.ctx, 10*time.Second)
+		defer refreshCancel()
+		if rErr := a.meta.RefreshTable(refreshCtx, connectionID, req.Schema, req.Table, drv); rErr != nil {
+			log.Printf("[app] ExecuteConstraintAlter: cache refresh failed for %s.%s: %v",
+				req.Schema, req.Table, rErr)
+		}
+	}
+	return result, execErr
+}
+
+func (a *App) PreviewPartitionAlter(connectionID string, req driver.PartitionChangeRequest) (*driver.SchemaChangePreview, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	alt, ok := drv.(driver.PartitionAlterDriver)
+	if !ok {
+		return nil, fmt.Errorf("PreviewPartitionAlter: %w", driver.ErrUnsupported)
+	}
+	return alt.PreviewPartitionAlter(req)
+}
+
+func (a *App) ExecutePartitionAlter(connectionID string, req driver.PartitionChangeRequest) (*driver.SchemaChangeResult, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	alt, ok := drv.(driver.PartitionAlterDriver)
+	if !ok {
+		return nil, fmt.Errorf("ExecutePartitionAlter: %w", driver.ErrUnsupported)
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Minute)
+	defer cancel()
+
+	result, execErr := alt.ExecutePartitionAlter(ctx, req)
+	if result != nil && result.ExecutedCount > 0 && a.meta != nil {
+		refreshCtx, refreshCancel := context.WithTimeout(a.ctx, 10*time.Second)
+		defer refreshCancel()
+		if rErr := a.meta.RefreshTable(refreshCtx, connectionID, req.Schema, req.Table, drv); rErr != nil {
+			log.Printf("[app] ExecutePartitionAlter: cache refresh failed for %s.%s: %v",
+				req.Schema, req.Table, rErr)
+		}
+	}
+	return result, execErr
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 9: Connection Manager IPC methods
 // ─────────────────────────────────────────────────────────────────────────────

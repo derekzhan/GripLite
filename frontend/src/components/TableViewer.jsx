@@ -35,6 +35,8 @@ import {
   runQuery, getTableSchema, getTableAdvancedProperties,
   previewTableAlter, executeTableAlter, applyChanges,
   previewIndexAlter, executeIndexAlter,
+  previewConstraintAlter, executeConstraintAlter,
+  previewPartitionAlter, executePartitionAlter,
   getDataFilterHistory, setDataFilterHistory,
 } from '../lib/bridge'
 import { useEditState } from '../hooks/useEditState'
@@ -739,7 +741,78 @@ function indexesEqual(a, b) {
   return true
 }
 
-function IndexColumnsSelector({ value, tableColumns, disabled, onChange }) {
+function toDraftConstraint(c = {}) {
+  const type = (c.type || 'UNIQUE').toUpperCase()
+  return {
+    _key: `${c.name || 'new'}_${type}_${Math.random().toString(36).slice(2)}`,
+    originalName: c.originalName ?? c.name ?? '',
+    name: c.name ?? '',
+    type,
+    columnsText: (c.columns ?? []).join(', '),
+    expression: c.expression ?? '',
+  }
+}
+
+function stripConstraintDraft(c) {
+  return {
+    originalName: c.originalName ?? '',
+    name: (c.name ?? '').trim(),
+    type: (c.type ?? 'UNIQUE').trim().toUpperCase(),
+    columns: parseIndexColumns(c.columnsText),
+    expression: (c.expression ?? '').trim(),
+  }
+}
+
+function constraintsEqual(a, b) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = stripConstraintDraft(a[i])
+    const y = stripConstraintDraft(b[i])
+    if (x.originalName !== y.originalName ||
+        x.name !== y.name ||
+        x.type !== y.type ||
+        x.expression !== y.expression ||
+        x.columns.join('\0') !== y.columns.join('\0')) {
+      return false
+    }
+  }
+  return true
+}
+
+function toDraftPartition(p = {}) {
+  return {
+    _key: `${p.name || 'new'}_${Math.random().toString(36).slice(2)}`,
+    originalName: p.originalName ?? p.name ?? '',
+    name: p.name ?? '',
+    definition: p.definition ?? '',
+    method: p.method ?? '',
+    expression: p.expression ?? '',
+    description: p.description ?? '',
+    rows: p.rows ?? 0,
+  }
+}
+
+function stripPartitionDraft(p) {
+  return {
+    originalName: p.originalName ?? '',
+    name: (p.name ?? '').trim(),
+    definition: (p.definition ?? '').trim(),
+  }
+}
+
+function partitionsEqual(a, b) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = stripPartitionDraft(a[i])
+    const y = stripPartitionDraft(b[i])
+    if (x.originalName !== y.originalName || x.name !== y.name || x.definition !== y.definition) {
+      return false
+    }
+  }
+  return true
+}
+
+function IndexColumnsSelector({ value, tableColumns, disabled, onChange, label = 'Select index columns' }) {
   const [open, setOpen] = useState(false)
   const wrapperRef = useRef(null)
   const selected = useMemo(() => parseIndexColumns(value), [value])
@@ -787,7 +860,7 @@ function IndexColumnsSelector({ value, tableColumns, disabled, onChange }) {
         <div className="absolute left-0 top-full mt-1 z-50 w-[260px] max-h-[320px] overflow-hidden
                         rounded border border-line bg-panel shadow-lg">
           <div className="flex items-center justify-between px-2 py-1 border-b border-line-subtle bg-titlebar">
-            <span className="text-[10px] uppercase tracking-wider text-fg-muted">Select index columns</span>
+            <span className="text-[10px] uppercase tracking-wider text-fg-muted">{label}</span>
             <button
               type="button"
               onClick={() => onChange('')}
@@ -1081,25 +1154,476 @@ function IndexesView({
   )
 }
 
-function ConstraintsView({ constraints, loading, error, onRetry }) {
+function ConstraintsView({
+  constraints,
+  columns,
+  loading,
+  error,
+  onRetry,
+  connId,
+  dbName,
+  tableName,
+  onChanged,
+}) {
+  const [drafts, setDrafts] = useState([])
+  const [baseline, setBaseline] = useState([])
+  const [selectedIdx, setSelectedIdx] = useState(null)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [result, setResult] = useState(null)
+  const [running, setRunning] = useState(false)
+  const [previewError, setPreviewError] = useState('')
+
+  useEffect(() => {
+    const next = (constraints ?? []).map(toDraftConstraint)
+    setDrafts(next)
+    setBaseline(next.map((d) => ({ ...d })))
+    setSelectedIdx(null)
+    setPreviewError('')
+  }, [constraints])
+
+  const isDirty = useMemo(() => !constraintsEqual(drafts, baseline), [drafts, baseline])
+  const selected = selectedIdx === null ? null : drafts[selectedIdx]
+  const selectedReadOnly = selected && !['UNIQUE', 'CHECK'].includes(selected.type)
+
+  const patchDraft = (idx, patch) => {
+    setDrafts((prev) => prev.map((d, i) => (i === idx ? { ...d, ...patch } : d)))
+  }
+
+  const addConstraint = (type = 'UNIQUE') => {
+    const firstCol = columns?.[0]?.name ?? ''
+    setDrafts((prev) => {
+      const next = [
+        ...prev,
+        {
+          _key: `new_constraint_${Date.now()}`,
+          originalName: '',
+          name: type === 'CHECK' ? 'chk_new' : (firstCol ? `uq_${firstCol}` : 'uq_new'),
+          type,
+          columnsText: type === 'UNIQUE' ? firstCol : '',
+          expression: type === 'CHECK' ? `${firstCol || 'column_name'} IS NOT NULL` : '',
+        },
+      ]
+      setSelectedIdx(next.length - 1)
+      return next
+    })
+  }
+
+  const removeSelected = () => {
+    if (selectedIdx === null || selectedReadOnly) return
+    setDrafts((prev) => prev.filter((_, i) => i !== selectedIdx))
+    setSelectedIdx(null)
+  }
+
+  const buildRequest = () => ({
+    schema: dbName,
+    table: tableName,
+    oldConstraints: baseline.map(stripConstraintDraft),
+    newConstraints: drafts.map(stripConstraintDraft),
+  })
+
+  const openPreview = async () => {
+    setPreviewError('')
+    setResult(null)
+    try {
+      const pv = await previewConstraintAlter(connId, buildRequest())
+      setPreview(pv)
+      setModalOpen(true)
+    } catch (err) {
+      const msg = normalizeError(err)
+      setPreviewError(msg)
+      toast.error(`Constraint preview failed: ${msg}`)
+    }
+  }
+
+  const execute = async () => {
+    setRunning(true)
+    setResult(null)
+    try {
+      const res = await executeConstraintAlter(connId, buildRequest())
+      setResult(res)
+      if (res?.success) {
+        toast.success(`Constraints updated · ${res.executedCount} statement${res.executedCount === 1 ? '' : 's'} executed`)
+        setTimeout(() => {
+          setModalOpen(false)
+          setResult(null)
+          onChanged?.()
+        }, 800)
+      } else if (res && !res.success) {
+        toast.error(`Constraint update failed: ${normalizeError(res.error) || 'Unknown error'}`)
+      }
+    } catch (err) {
+      const msg = normalizeError(err)
+      setResult({ success: false, executedCount: 0, failedIndex: 0, failedStatement: '', error: msg, statements: [] })
+      toast.error(`Constraint update failed: ${msg}`)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  if (loading || error) {
+    return (
+      <AsyncGate loading={loading} error={error} onRetry={onRetry}
+        isEmpty={false} emptyLabel="constraints">
+        <div />
+      </AsyncGate>
+    )
+  }
+
   return (
-    <AsyncGate loading={loading} error={error} onRetry={onRetry}
-      isEmpty={!constraints?.length} emptyLabel="constraints">
-      <div className="h-full overflow-auto">
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-line-subtle bg-titlebar text-[11px]">
+        <button
+          onClick={() => addConstraint('UNIQUE')}
+          className="flex items-center gap-1 px-2 py-0.5 rounded border border-line-subtle text-success hover:bg-hover transition-colors"
+        >
+          <Plus size={11} /> Unique
+        </button>
+        <button
+          onClick={() => addConstraint('CHECK')}
+          className="flex items-center gap-1 px-2 py-0.5 rounded border border-line-subtle text-success hover:bg-hover transition-colors"
+        >
+          <Plus size={11} /> Check
+        </button>
+        <button
+          onClick={removeSelected}
+          disabled={selectedIdx === null || selectedReadOnly}
+          title={selectedReadOnly ? 'PRIMARY KEY and foreign keys are read-only here' : 'Remove selected constraint'}
+          className="flex items-center gap-1 px-2 py-0.5 rounded border border-line-subtle text-danger hover:bg-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <Minus size={11} /> Remove
+        </button>
+        {isDirty && <span className="ml-2 text-warn">Unsaved constraint changes</span>}
+        {previewError && <span className="text-danger">{previewError}</span>}
+        <div className="ml-auto flex items-center gap-2">
+          {isDirty && (
+            <>
+              <button
+                onClick={() => {
+                  setDrafts(baseline.map((d) => ({ ...d, _key: `${d._key}_reset_${Date.now()}` })))
+                  setSelectedIdx(null)
+                  setPreviewError('')
+                }}
+                className="flex items-center gap-1 px-2 py-0.5 rounded border border-line text-fg-secondary hover:bg-hover transition-colors"
+              >
+                <XCircle size={11} /> Cancel
+              </button>
+              <button
+                onClick={openPreview}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-accent hover:bg-accent-hover text-fg-on-accent font-medium transition-colors"
+              >
+                <Save size={11} /> Review & Save
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="flex-1 overflow-auto">
         <table className="w-full border-collapse text-[13px]">
-          <thead><tr><TH>Name</TH><TH>Type</TH><TH>Columns</TH></tr></thead>
+          <thead><tr><TH>Name</TH><TH>Type</TH><TH>Columns / Expression</TH></tr></thead>
           <tbody>
-            {(constraints ?? []).map((c) => (
-              <tr key={c.name} className="hover:bg-hover transition-colors">
-                <TD className="font-medium text-fg-primary">{c.name}</TD>
-                <TD className="text-success">{c.type}</TD>
-                <TD mono>{(c.columns ?? []).join(', ')}</TD>
+            {drafts.length === 0 && (
+              <tr>
+                <td colSpan={3} className="px-3 py-6 text-center text-fg-muted italic border-b border-line-subtle">
+                  No constraints. Click + Unique or + Check to add one.
+                </td>
               </tr>
-            ))}
+            )}
+            {drafts.map((c, i) => {
+              const isSelected = i === selectedIdx
+              const readOnly = !['UNIQUE', 'CHECK'].includes(c.type)
+              return (
+                <tr
+                  key={c._key}
+                  onClick={() => setSelectedIdx(i)}
+                  className={[
+                    'transition-colors cursor-pointer',
+                    isSelected ? 'bg-active/30' : 'hover:bg-hover',
+                    readOnly ? 'opacity-80' : '',
+                  ].join(' ')}
+                >
+                  <TD className="font-medium text-fg-primary">
+                    <input
+                      value={c.name}
+                      disabled={readOnly}
+                      onChange={(e) => patchDraft(i, { name: e.target.value })}
+                      className="w-full bg-transparent border border-transparent focus:border-accent rounded px-1 py-0.5 outline-none disabled:text-fg-muted"
+                    />
+                  </TD>
+                  <TD>
+                    <select
+                      value={c.type}
+                      disabled={readOnly}
+                      onChange={(e) => patchDraft(i, { type: e.target.value, columnsText: '', expression: e.target.value === 'CHECK' ? c.expression : '' })}
+                      className="w-full bg-transparent border border-line-subtle focus:border-accent rounded px-1 py-0.5 outline-none disabled:text-fg-muted"
+                    >
+                      <option value="PRIMARY KEY">PRIMARY KEY</option>
+                      <option value="UNIQUE">UNIQUE</option>
+                      <option value="CHECK">CHECK</option>
+                    </select>
+                  </TD>
+                  <TD mono>
+                    {c.type === 'CHECK' ? (
+                      <input
+                        value={c.expression}
+                        disabled={readOnly}
+                        onChange={(e) => patchDraft(i, { expression: e.target.value })}
+                        placeholder="price >= 0"
+                        className="w-full bg-transparent border border-transparent focus:border-accent rounded px-1 py-0.5 outline-none disabled:text-fg-muted"
+                      />
+                    ) : (
+                      <IndexColumnsSelector
+                        value={c.columnsText}
+                        tableColumns={columns}
+                        disabled={readOnly}
+                        label="Select constraint columns"
+                        onChange={(columnsText) => patchDraft(i, { columnsText })}
+                      />
+                    )}
+                  </TD>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
-    </AsyncGate>
+      <ReviewSqlModal
+        isOpen={modalOpen}
+        preview={preview}
+        result={result}
+        running={running}
+        onClose={() => {
+          if (running) return
+          setModalOpen(false)
+          setResult(null)
+        }}
+        onExecute={execute}
+      />
+    </div>
+  )
+}
+
+function PartitionsView({
+  partitions,
+  loading,
+  error,
+  onRetry,
+  connId,
+  dbName,
+  tableName,
+  onChanged,
+}) {
+  const [drafts, setDrafts] = useState([])
+  const [baseline, setBaseline] = useState([])
+  const [selectedIdx, setSelectedIdx] = useState(null)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [result, setResult] = useState(null)
+  const [running, setRunning] = useState(false)
+  const [previewError, setPreviewError] = useState('')
+
+  useEffect(() => {
+    const next = (partitions ?? []).map(toDraftPartition)
+    setDrafts(next)
+    setBaseline(next.map((d) => ({ ...d })))
+    setSelectedIdx(null)
+    setPreviewError('')
+  }, [partitions])
+
+  const isDirty = useMemo(() => !partitionsEqual(drafts, baseline), [drafts, baseline])
+  const selected = selectedIdx === null ? null : drafts[selectedIdx]
+
+  const patchDraft = (idx, patch) => {
+    setDrafts((prev) => prev.map((d, i) => (i === idx ? { ...d, ...patch } : d)))
+  }
+
+  const addPartition = () => {
+    setDrafts((prev) => {
+      const next = [
+        ...prev,
+        {
+          _key: `new_partition_${Date.now()}`,
+          originalName: '',
+          name: 'p_new',
+          definition: 'VALUES LESS THAN (MAXVALUE)',
+          method: '',
+          expression: '',
+          description: '',
+          rows: 0,
+        },
+      ]
+      setSelectedIdx(next.length - 1)
+      return next
+    })
+  }
+
+  const removeSelected = () => {
+    if (selectedIdx === null) return
+    setDrafts((prev) => prev.filter((_, i) => i !== selectedIdx))
+    setSelectedIdx(null)
+  }
+
+  const buildRequest = () => ({
+    schema: dbName,
+    table: tableName,
+    oldPartitions: baseline.map(stripPartitionDraft),
+    newPartitions: drafts.map(stripPartitionDraft),
+  })
+
+  const openPreview = async () => {
+    setPreviewError('')
+    setResult(null)
+    try {
+      const pv = await previewPartitionAlter(connId, buildRequest())
+      setPreview(pv)
+      setModalOpen(true)
+    } catch (err) {
+      const msg = normalizeError(err)
+      setPreviewError(msg)
+      toast.error(`Partition preview failed: ${msg}`)
+    }
+  }
+
+  const execute = async () => {
+    setRunning(true)
+    setResult(null)
+    try {
+      const res = await executePartitionAlter(connId, buildRequest())
+      setResult(res)
+      if (res?.success) {
+        toast.success(`Partitions updated · ${res.executedCount} statement${res.executedCount === 1 ? '' : 's'} executed`)
+        setTimeout(() => {
+          setModalOpen(false)
+          setResult(null)
+          onChanged?.()
+        }, 800)
+      } else if (res && !res.success) {
+        toast.error(`Partition update failed: ${normalizeError(res.error) || 'Unknown error'}`)
+      }
+    } catch (err) {
+      const msg = normalizeError(err)
+      setResult({ success: false, executedCount: 0, failedIndex: 0, failedStatement: '', error: msg, statements: [] })
+      toast.error(`Partition update failed: ${msg}`)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  if (loading || error) {
+    return (
+      <AsyncGate loading={loading} error={error} onRetry={onRetry}
+        isEmpty={false} emptyLabel="partitions">
+        <div />
+      </AsyncGate>
+    )
+  }
+
+  return (
+    <div className="h-full flex flex-col overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-line-subtle bg-titlebar text-[11px]">
+        <button
+          onClick={addPartition}
+          className="flex items-center gap-1 px-2 py-0.5 rounded border border-line-subtle text-success hover:bg-hover transition-colors"
+        >
+          <Plus size={11} /> Partition
+        </button>
+        <button
+          onClick={removeSelected}
+          disabled={selectedIdx === null}
+          className="flex items-center gap-1 px-2 py-0.5 rounded border border-line-subtle text-danger hover:bg-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <Minus size={11} /> Remove
+        </button>
+        {selected?.originalName && (
+          <span className="text-warn">Drop partition deletes data in that partition</span>
+        )}
+        {isDirty && <span className="ml-2 text-warn">Unsaved partition changes</span>}
+        {previewError && <span className="text-danger">{previewError}</span>}
+        <div className="ml-auto flex items-center gap-2">
+          {isDirty && (
+            <>
+              <button
+                onClick={() => {
+                  setDrafts(baseline.map((d) => ({ ...d, _key: `${d._key}_reset_${Date.now()}` })))
+                  setSelectedIdx(null)
+                  setPreviewError('')
+                }}
+                className="flex items-center gap-1 px-2 py-0.5 rounded border border-line text-fg-secondary hover:bg-hover transition-colors"
+              >
+                <XCircle size={11} /> Cancel
+              </button>
+              <button
+                onClick={openPreview}
+                className="flex items-center gap-1 px-2 py-0.5 rounded bg-accent hover:bg-accent-hover text-fg-on-accent font-medium transition-colors"
+              >
+                <Save size={11} /> Review & Save
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="flex-1 overflow-auto">
+        <table className="w-full border-collapse text-[13px]">
+          <thead><tr><TH>Name</TH><TH>Method</TH><TH>Expression</TH><TH>Description / Definition</TH><TH center>Rows</TH></tr></thead>
+          <tbody>
+            {drafts.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-3 py-6 text-center text-fg-muted italic border-b border-line-subtle">
+                  No partitions. Click + Partition to add one.
+                </td>
+              </tr>
+            )}
+            {drafts.map((p, i) => {
+              const isSelected = i === selectedIdx
+              const isExisting = !!p.originalName
+              return (
+                <tr
+                  key={p._key}
+                  onClick={() => setSelectedIdx(i)}
+                  className={`transition-colors cursor-pointer ${isSelected ? 'bg-active/30' : 'hover:bg-hover'}`}
+                >
+                  <TD className="font-medium text-fg-primary">
+                    <input
+                      value={p.name}
+                      disabled={isExisting}
+                      onChange={(e) => patchDraft(i, { name: e.target.value })}
+                      className="w-full bg-transparent border border-transparent focus:border-accent rounded px-1 py-0.5 outline-none disabled:text-fg-muted"
+                    />
+                  </TD>
+                  <TD className="text-success">{p.method || (isExisting ? '–' : 'NEW')}</TD>
+                  <TD mono>{p.expression || <span className="text-fg-muted">–</span>}</TD>
+                  <TD mono>
+                    {isExisting ? (
+                      p.description || <span className="text-fg-muted">–</span>
+                    ) : (
+                      <input
+                        value={p.definition}
+                        onChange={(e) => patchDraft(i, { definition: e.target.value })}
+                        placeholder="VALUES LESS THAN (MAXVALUE)"
+                        className="w-full bg-transparent border border-transparent focus:border-accent rounded px-1 py-0.5 outline-none"
+                      />
+                    )}
+                  </TD>
+                  <TD center>{Number.isFinite(Number(p.rows)) ? Number(p.rows).toLocaleString() : '–'}</TD>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      <ReviewSqlModal
+        isOpen={modalOpen}
+        preview={preview}
+        result={result}
+        running={running}
+        onClose={() => {
+          if (running) return
+          setModalOpen(false)
+          setResult(null)
+        }}
+        onExecute={execute}
+      />
+    </div>
   )
 }
 
@@ -1259,7 +1783,7 @@ function DDLView({ ddl, loading, error, onRetry }) {
 // clicks DDL we don't pay for a second round-trip — all six derived views
 // come from the same payload.
 // ─────────────────────────────────────────────────────────────────────────────
-const ADVANCED_SECTIONS = new Set(['indexes', 'constraints', 'foreignkeys', 'references', 'triggers', 'ddl'])
+const ADVANCED_SECTIONS = new Set(['indexes', 'constraints', 'partitions', 'foreignkeys', 'references', 'triggers', 'ddl'])
 
 function useAdvancedProperties(connId, dbName, tableName) {
   const [state, setState] = useState({ data: null, loading: false, error: '' })
@@ -1565,7 +2089,22 @@ function PropertiesView({ schema, connId, dbName, tableName, onSchemaChanged }) 
       case 'constraints':
         return <ConstraintsView
           constraints={adv.data?.constraints}
-          loading={adv.loading} error={adv.error} onRetry={adv.load} />
+          columns={schema.columns}
+          loading={adv.loading} error={adv.error} onRetry={adv.load}
+          connId={connId} dbName={dbName} tableName={tableName}
+          onChanged={() => {
+            adv.load()
+            onSchemaChanged?.()
+          }} />
+      case 'partitions':
+        return <PartitionsView
+          partitions={adv.data?.partitions}
+          loading={adv.loading} error={adv.error} onRetry={adv.load}
+          connId={connId} dbName={dbName} tableName={tableName}
+          onChanged={() => {
+            adv.load()
+            onSchemaChanged?.()
+          }} />
       case 'foreignkeys':
         return <ForeignKeysView
           foreignKeys={adv.data?.foreignKeys}
@@ -1594,6 +2133,7 @@ function PropertiesView({ schema, connId, dbName, tableName, onSchemaChanged }) 
       case 'columns':     return columnsCount
       case 'indexes':     return adv.data?.indexes?.length     ?? null
       case 'constraints': return adv.data?.constraints?.length ?? null
+      case 'partitions':  return adv.data?.partitions?.length  ?? null
       case 'foreignkeys': return adv.data?.foreignKeys?.length ?? null
       case 'references':  return adv.data?.references?.length  ?? null
       case 'triggers':    return adv.data?.triggers?.length    ?? null
@@ -2636,46 +3176,8 @@ function DataView({ tableName, dbName, connId, schema }) {
     }
   }, [whereClause])
 
-  // ── Loading state ──────────────────────────────────────────────────────
-  if (isLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-3 text-fg-muted">
-        <div className="w-6 h-6 rounded-full border-2 border-accent border-t-transparent animate-spin" />
-        <span className="text-[13px]">
-          Loading{' '}
-          <code className="text-syntax-keyword font-mono">{dbName ? `${dbName}.` : ''}{tableName}</code>
-          {' '}…
-        </span>
-        <span className="text-[11px] text-fg-muted">{selectSql}</span>
-      </div>
-    )
-  }
-
-  // ── Error state ────────────────────────────────────────────────────────
-  if (loadError) {
-    return (
-      <div className="flex flex-col p-6 gap-3">
-        <div className="text-danger font-semibold text-[14px]">Failed to load data</div>
-        <pre className="text-fg-primary text-[12px] font-mono whitespace-pre-wrap bg-elevated rounded p-3 border border-line-subtle">
-          {loadError}
-        </pre>
-        <div className="text-fg-muted text-[12px]">
-          Query: <code className="text-syntax-string">{selectSql}</code>
-        </div>
-        <button
-          onClick={() => load(pageSize, currentPage)}
-          className="self-start px-3 py-1.5 text-[12px] rounded border border-line
-                     text-fg-secondary hover:bg-hover transition-colors"
-        >
-          Retry
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex flex-col h-full overflow-hidden">
-      {/* DBeaver-style filter toolbar (Phase 24) */}
+  const filterToolbar = (
+    <>
       <FilterBar
         draft={whereDraft}
         onDraftChange={setWhereDraft}
@@ -2700,14 +3202,61 @@ function DataView({ tableName, dbName, connId, schema }) {
         columns={schema?.columns ?? []}
       />
 
-      {/* Collapsible full-SQL strip — keeps the "what is being executed"
-          readout from the old info bar, toggled via FilterBar's SQL button. */}
       {showSqlBar && (
         <div className="flex items-center gap-3 px-3 py-1 bg-elevated border-b border-line-subtle
                         flex-shrink-0 text-[11px] text-fg-muted">
           <code className="text-syntax-string truncate flex-1">{selectSql}</code>
         </div>
       )}
+    </>
+  )
+
+  // ── Loading state ──────────────────────────────────────────────────────
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-3 text-fg-muted">
+        <div className="w-6 h-6 rounded-full border-2 border-accent border-t-transparent animate-spin" />
+        <span className="text-[13px]">
+          Loading{' '}
+          <code className="text-syntax-keyword font-mono">{dbName ? `${dbName}.` : ''}{tableName}</code>
+          {' '}…
+        </span>
+        <span className="text-[11px] text-fg-muted">{selectSql}</span>
+      </div>
+    )
+  }
+
+  // ── Error state ────────────────────────────────────────────────────────
+  if (loadError) {
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        {filterToolbar}
+        <div className="flex-1 overflow-auto p-6">
+          <div className="flex flex-col gap-3">
+            <div className="text-danger font-semibold text-[14px]">Failed to load data</div>
+            <pre className="text-fg-primary text-[12px] font-mono whitespace-pre-wrap bg-elevated rounded p-3 border border-line-subtle">
+              {loadError}
+            </pre>
+            <div className="text-fg-muted text-[12px]">
+              Query: <code className="text-syntax-string">{selectSql}</code>
+            </div>
+            <button
+              onClick={() => load(pageSize, currentPage)}
+              className="self-start px-3 py-1.5 text-[12px] rounded border border-line
+                         text-fg-secondary hover:bg-hover transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      {/* DBeaver-style filter toolbar (Phase 24) */}
+      {filterToolbar}
 
       {/* DataViewer: grid / text / record mode switching + inline editing */}
       <div className="flex-1 overflow-hidden min-h-0">

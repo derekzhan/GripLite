@@ -319,7 +319,8 @@ export async function getTableSchema(connectionID, dbName, tableName) {
  *     schema, table,
  *     ddl: string,
  *     indexes:     [{ name, type, unique, columns: string[], comment }],
- *     constraints: [{ name, type, columns: string[] }],
+ *     constraints: [{ name, type, columns: string[], expression }],
+ *     partitions:  [{ name, method, expression, description, rows }],
  *     foreignKeys: [{ name, columns, refSchema, refTable, refColumns, onDelete, onUpdate }],
  *     references:  [{ name, fromSchema, fromTable, fromCols, toCols, onDelete, onUpdate }],
  *     triggers:    [{ name, event, timing, statement }],
@@ -350,6 +351,7 @@ function buildMockAdvancedProps(dbName, tableName) {
     ddl:    `-- DDL not available in browser dev mode\nCREATE TABLE \`${tableName}\` (/* run inside Wails to see live DDL */);`,
     indexes:     [],
     constraints: [],
+    partitions:  [],
     foreignKeys: [],
     references:  [],
     triggers:    [],
@@ -362,9 +364,10 @@ function buildMockAdvancedProps(dbName, tableName) {
       { name: 'idx_email',    type: 'BTREE', unique: true,  columns: ['email'],    comment: '' },
     ]
     base.constraints = [
-      { name: 'PRIMARY',     type: 'PRIMARY KEY', columns: ['id'] },
-      { name: 'idx_username', type: 'UNIQUE',     columns: ['username'] },
-      { name: 'idx_email',    type: 'UNIQUE',     columns: ['email'] },
+      { name: 'PRIMARY',     type: 'PRIMARY KEY', columns: ['id'],       expression: '' },
+      { name: 'idx_username', type: 'UNIQUE',     columns: ['username'], expression: '' },
+      { name: 'idx_email',    type: 'UNIQUE',     columns: ['email'],    expression: '' },
+      { name: 'chk_status',   type: 'CHECK',      columns: [],           expression: "`status` in ('active','inactive','banned')" },
     ]
     base.references = [
       { name: 'fk_orders_user', fromSchema: dbName || 'db1', fromTable: 'orders',
@@ -377,7 +380,11 @@ function buildMockAdvancedProps(dbName, tableName) {
       { name: 'idx_user_id', type: 'BTREE', unique: false, columns: ['user_id'], comment: '' },
     ]
     base.constraints = [
-      { name: 'PRIMARY', type: 'PRIMARY KEY', columns: ['id'] },
+      { name: 'PRIMARY', type: 'PRIMARY KEY', columns: ['id'], expression: '' },
+    ]
+    base.partitions = [
+      { name: 'p_2024', method: 'RANGE', expression: 'TO_DAYS(created_at)', description: '739617', rows: 12000 },
+      { name: 'p_max',  method: 'RANGE', expression: 'TO_DAYS(created_at)', description: 'MAXVALUE', rows: 3400 },
     ]
     base.foreignKeys = [
       { name: 'fk_orders_user', columns: ['user_id'], refSchema: dbName || 'db1',
@@ -456,6 +463,54 @@ export async function executeIndexAlter(connectionID, req) {
     return ExecuteIndexAlter(connectionID, req)
   }
   const pv = await buildMockIndexPreview(req)
+  return {
+    success: true,
+    executedCount: pv.statements.length,
+    statements: pv.statements,
+    failedIndex: -1,
+    failedStatement: '',
+    error: '',
+  }
+}
+
+export async function previewConstraintAlter(connectionID, req) {
+  if (isWails()) {
+    const { PreviewConstraintAlter } = await import('../../wailsjs/go/main/App.js')
+    return PreviewConstraintAlter(connectionID, req)
+  }
+  return buildMockConstraintPreview(req)
+}
+
+export async function executeConstraintAlter(connectionID, req) {
+  if (isWails()) {
+    const { ExecuteConstraintAlter } = await import('../../wailsjs/go/main/App.js')
+    return ExecuteConstraintAlter(connectionID, req)
+  }
+  const pv = await buildMockConstraintPreview(req)
+  return {
+    success: true,
+    executedCount: pv.statements.length,
+    statements: pv.statements,
+    failedIndex: -1,
+    failedStatement: '',
+    error: '',
+  }
+}
+
+export async function previewPartitionAlter(connectionID, req) {
+  if (isWails()) {
+    const { PreviewPartitionAlter } = await import('../../wailsjs/go/main/App.js')
+    return PreviewPartitionAlter(connectionID, req)
+  }
+  return buildMockPartitionPreview(req)
+}
+
+export async function executePartitionAlter(connectionID, req) {
+  if (isWails()) {
+    const { ExecutePartitionAlter } = await import('../../wailsjs/go/main/App.js')
+    return ExecutePartitionAlter(connectionID, req)
+  }
+  const pv = await buildMockPartitionPreview(req)
   return {
     success: true,
     executedCount: pv.statements.length,
@@ -585,6 +640,80 @@ function buildMockIndexPreview(req) {
       const oldIdx = oldByOrig.get(newIdx.originalName)
       if (oldIdx && !eq(oldIdx, newIdx)) stmts.push(create(newIdx))
     }
+  }
+  return { statements: stmts, warnings }
+}
+
+function buildMockConstraintPreview(req) {
+  const stmts = []
+  const warnings = []
+  const ident = (s) => '`' + String(s).replace(/`/g, '``') + '`'
+  const q = `${ident(req.schema)}.${ident(req.table)}`
+  const norm = (c) => ({
+    ...c,
+    originalName: (c.originalName ?? '').trim(),
+    name: (c.name ?? '').trim(),
+    type: (c.type ?? '').trim().toUpperCase(),
+    columns: (c.columns ?? []).map((col) => String(col).trim()).filter(Boolean),
+    expression: (c.expression ?? '').trim(),
+  })
+  const editable = (c) => c.type === 'UNIQUE' || c.type === 'CHECK'
+  const eq = (a, b) => a.name === b.name && a.type === b.type &&
+    a.expression === b.expression && a.columns.join('\0') === b.columns.join('\0')
+  const drop = (c, name = c.originalName || c.name) => ({
+    kind: 'drop',
+    summary: `Drop ${c.type.toLowerCase()} constraint \`${name}\``,
+    sql: `ALTER TABLE ${q} ${c.type === 'UNIQUE' ? 'DROP INDEX' : 'DROP CHECK'} ${ident(name)};`,
+  })
+  const add = (c) => ({
+    kind: 'add',
+    summary: `Add ${c.type.toLowerCase()} constraint \`${c.name}\``,
+    sql: c.type === 'UNIQUE'
+      ? `ALTER TABLE ${q} ADD CONSTRAINT ${ident(c.name)} UNIQUE (${c.columns.map(ident).join(', ')});`
+      : `ALTER TABLE ${q} ADD CONSTRAINT ${ident(c.name)} CHECK (${c.expression});`,
+  })
+  const newByOrig = new Map((req.newConstraints ?? []).map(norm).filter((c) => editable(c) && c.originalName).map((c) => [c.originalName, c]))
+  for (const oldC of (req.oldConstraints ?? []).map(norm).filter(editable)) {
+    const orig = oldC.originalName || oldC.name
+    const next = newByOrig.get(orig)
+    if (!next) {
+      stmts.push(drop(oldC, orig))
+      warnings.push(`Dropping constraint \`${orig}\` changes validation rules.`)
+    } else if (!eq(oldC, next)) {
+      stmts.push(drop(oldC, orig), add(next))
+      warnings.push(`Modifying constraint \`${orig}\` requires dropping and recreating it.`)
+    }
+  }
+  for (const newC of (req.newConstraints ?? []).map(norm).filter(editable)) {
+    if (!newC.originalName) stmts.push(add(newC))
+  }
+  return { statements: stmts, warnings }
+}
+
+function buildMockPartitionPreview(req) {
+  const stmts = []
+  const warnings = []
+  const ident = (s) => '`' + String(s).replace(/`/g, '``') + '`'
+  const q = `${ident(req.schema)}.${ident(req.table)}`
+  const norm = (p) => ({
+    ...p,
+    originalName: (p.originalName ?? '').trim(),
+    name: (p.name ?? '').trim(),
+    definition: (p.definition ?? '').trim(),
+  })
+  const newByOrig = new Map((req.newPartitions ?? []).map(norm).filter((p) => p.originalName).map((p) => [p.originalName, p]))
+  for (const oldP of (req.oldPartitions ?? []).map(norm)) {
+    const orig = oldP.originalName || oldP.name
+    if (!newByOrig.has(orig)) {
+      stmts.push({ kind: 'drop', summary: `Drop partition \`${orig}\``, sql: `ALTER TABLE ${q} DROP PARTITION ${ident(orig)};` })
+      warnings.push(`Dropping partition \`${orig}\` deletes the data stored in that partition.`)
+    }
+  }
+  for (const newP of (req.newPartitions ?? []).map(norm)) {
+    if (newP.originalName) continue
+    const upper = newP.definition.toUpperCase()
+    const def = upper.startsWith('PARTITION ') ? newP.definition : `PARTITION ${ident(newP.name)} ${newP.definition}`
+    stmts.push({ kind: 'add', summary: `Add partition \`${newP.name}\``, sql: `ALTER TABLE ${q} ADD PARTITION (${def});` })
   }
   return { statements: stmts, warnings }
 }
@@ -1122,13 +1251,13 @@ export async function getBuildInfo() {
   await delay(10)
   return {
     name: 'GripLite',
-    version: 'v0.1.7',
+    version: 'v0.1.8',
     buildDate: new Date().toISOString().slice(0, 10),
     platform: 'Wails + React (browser preview)',
     goVersion: 'go (dev)',
     license: 'MIT',
     author: 'derek',
     email: 'zhanweichun@gmail.com',
-    homepage: 'https://github.com/derek-zhanweichun/GripLite',
+    homepage: 'https://github.com/derekzhan',
   }
 }

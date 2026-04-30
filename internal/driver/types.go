@@ -530,9 +530,40 @@ type IndexDraft struct {
 // — FOREIGN KEY constraints are exposed via [ForeignKeyDetail] instead so
 // the UI can split them into their own tab.
 type ConstraintDetail struct {
-	Name    string   `json:"name"`
-	Type    string   `json:"type"`    // PRIMARY KEY / UNIQUE / CHECK
-	Columns []string `json:"columns"` // empty for CHECK constraints
+	Name       string   `json:"name"`
+	Type       string   `json:"type"`    // PRIMARY KEY / UNIQUE / CHECK
+	Columns    []string `json:"columns"` // empty for CHECK constraints
+	Expression string   `json:"expression"`
+}
+
+// ConstraintDraft is the editable shape of a UNIQUE/CHECK constraint.
+// PRIMARY KEY remains read-only in the UI because changing it is more safely
+// handled together with column/index design.
+type ConstraintDraft struct {
+	OriginalName string   `json:"originalName"`
+	Name         string   `json:"name"`
+	Type         string   `json:"type"` // UNIQUE / CHECK
+	Columns      []string `json:"columns"`
+	Expression   string   `json:"expression"`
+}
+
+// PartitionDetail describes one MySQL table partition as reported by
+// information_schema.PARTITIONS.
+type PartitionDetail struct {
+	Name        string `json:"name"`
+	Method      string `json:"method"`
+	Expression  string `json:"expression"`
+	Description string `json:"description"`
+	Rows        int64  `json:"rows"`
+}
+
+// PartitionDraft carries user-supplied partition DDL fragments.  For ADD
+// PARTITION the Definition field is the content inside ALTER TABLE ... ADD
+// PARTITION (...).  For existing partitions Definition is display-only.
+type PartitionDraft struct {
+	OriginalName string `json:"originalName"`
+	Name         string `json:"name"`
+	Definition   string `json:"definition"`
 }
 
 // ForeignKeyDetail describes one foreign key relationship.  Multi-column
@@ -596,6 +627,7 @@ type AdvancedTableProperties struct {
 	DDL         string             `json:"ddl"`
 	Indexes     []IndexDetail      `json:"indexes"`
 	Constraints []ConstraintDetail `json:"constraints"`
+	Partitions  []PartitionDetail  `json:"partitions"`
 	ForeignKeys []ForeignKeyDetail `json:"foreignKeys"`
 	References  []ReferenceDetail  `json:"references"`
 	Triggers    []TriggerDetail    `json:"triggers"`
@@ -711,6 +743,25 @@ type IndexChangeRequest struct {
 	NewIndexes []IndexDraft `json:"newIndexes"`
 }
 
+// ConstraintChangeRequest carries before/after constraint snapshots for the
+// constraints designer.  The server computes all executable SQL.
+type ConstraintChangeRequest struct {
+	Schema         string            `json:"schema"`
+	Table          string            `json:"table"`
+	OldConstraints []ConstraintDraft `json:"oldConstraints"`
+	NewConstraints []ConstraintDraft `json:"newConstraints"`
+}
+
+// PartitionChangeRequest carries before/after partition snapshots for the
+// partition designer.  Existing partitions can be dropped; new partitions are
+// added from a constrained ALTER TABLE wrapper around Definition.
+type PartitionChangeRequest struct {
+	Schema        string           `json:"schema"`
+	Table         string           `json:"table"`
+	OldPartitions []PartitionDraft `json:"oldPartitions"`
+	NewPartitions []PartitionDraft `json:"newPartitions"`
+}
+
 // SchemaChangeStatement describes one generated ALTER statement together
 // with a human-readable summary ("Add column `email`", "Drop column `bio`")
 // so the Review SQL dialog can render each line with a label.
@@ -768,6 +819,22 @@ type IndexAlterDriver interface {
 
 	PreviewIndexAlter(req IndexChangeRequest) (*SchemaChangePreview, error)
 	ExecuteIndexAlter(ctx context.Context, req IndexChangeRequest) (*SchemaChangeResult, error)
+}
+
+// ConstraintAlterDriver can preview and apply UNIQUE/CHECK constraint DDL.
+type ConstraintAlterDriver interface {
+	DatabaseDriver
+
+	PreviewConstraintAlter(req ConstraintChangeRequest) (*SchemaChangePreview, error)
+	ExecuteConstraintAlter(ctx context.Context, req ConstraintChangeRequest) (*SchemaChangeResult, error)
+}
+
+// PartitionAlterDriver can preview and apply simple partition ADD/DROP DDL.
+type PartitionAlterDriver interface {
+	DatabaseDriver
+
+	PreviewPartitionAlter(req PartitionChangeRequest) (*SchemaChangePreview, error)
+	ExecutePartitionAlter(ctx context.Context, req PartitionChangeRequest) (*SchemaChangeResult, error)
 }
 
 // MultiResultDriver is an optional extension for drivers that support

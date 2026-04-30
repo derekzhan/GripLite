@@ -26,6 +26,10 @@ export function ExecDML(arg1:string,arg2:string):Promise<database.ExecResult>;
 
 export function ExecuteIndexAlter(arg1:string,arg2:driver.IndexChangeRequest):Promise<driver.SchemaChangeResult>;
 
+export function ExecuteConstraintAlter(arg1:string,arg2:driver.ConstraintChangeRequest):Promise<driver.SchemaChangeResult>;
+
+export function ExecutePartitionAlter(arg1:string,arg2:driver.PartitionChangeRequest):Promise<driver.SchemaChangeResult>;
+
 export function ExecuteQuery(arg1:string,arg2:string,arg3:number):Promise<database.ExecResult>;
 
 export function ExecuteTableAlter(arg1:string,arg2:driver.SchemaChangeRequest):Promise<driver.SchemaChangeResult>;
@@ -75,6 +79,10 @@ export function ListSavedConnections():Promise<Array<store.SavedConnection>>;
 export function OpenFileDialog(arg1:string):Promise<string>;
 
 export function PreviewIndexAlter(arg1:string,arg2:driver.IndexChangeRequest):Promise<driver.SchemaChangePreview>;
+
+export function PreviewConstraintAlter(arg1:string,arg2:driver.ConstraintChangeRequest):Promise<driver.SchemaChangePreview>;
+
+export function PreviewPartitionAlter(arg1:string,arg2:driver.PartitionChangeRequest):Promise<driver.SchemaChangePreview>;
 
 export function PreviewTableAlter(arg1:string,arg2:driver.SchemaChangeRequest):Promise<driver.SchemaChangePreview>;
 

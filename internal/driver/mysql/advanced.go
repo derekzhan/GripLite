@@ -47,6 +47,7 @@ func (d *mysqlDriver) FetchAdvancedTableProperties(ctx context.Context, dbName, 
 		Table:       tableName,
 		Indexes:     []driver.IndexDetail{},
 		Constraints: []driver.ConstraintDetail{},
+		Partitions:  []driver.PartitionDetail{},
 		ForeignKeys: []driver.ForeignKeyDetail{},
 		References:  []driver.ReferenceDetail{},
 		Triggers:    []driver.TriggerDetail{},
@@ -70,6 +71,9 @@ func (d *mysqlDriver) FetchAdvancedTableProperties(ctx context.Context, dbName, 
 	}
 	if cons, e := fetchConstraints(ctx, d.db, dbName, tableName); e == nil {
 		out.Constraints = cons
+	}
+	if parts, e := fetchPartitions(ctx, d.db, dbName, tableName); e == nil {
+		out.Partitions = parts
 	}
 	if fks, e := fetchForeignKeys(ctx, d.db, dbName, tableName); e == nil {
 		out.ForeignKeys = fks
@@ -222,16 +226,20 @@ func fetchConstraints(ctx context.Context, db *sql.DB, dbName, tableName string)
 	const q = `
 		SELECT tc.CONSTRAINT_NAME,
 		       tc.CONSTRAINT_TYPE,
-		       COALESCE(GROUP_CONCAT(kcu.COLUMN_NAME ORDER BY kcu.ORDINAL_POSITION SEPARATOR ','), '') AS cols
+		       COALESCE(GROUP_CONCAT(kcu.COLUMN_NAME ORDER BY kcu.ORDINAL_POSITION SEPARATOR ','), '') AS cols,
+		       COALESCE(cc.CHECK_CLAUSE, '') AS check_clause
 		FROM   information_schema.TABLE_CONSTRAINTS tc
 		LEFT JOIN information_schema.KEY_COLUMN_USAGE kcu
 		       ON  kcu.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
 		       AND kcu.CONSTRAINT_NAME   = tc.CONSTRAINT_NAME
 		       AND kcu.TABLE_NAME        = tc.TABLE_NAME
+		LEFT JOIN information_schema.CHECK_CONSTRAINTS cc
+		       ON  cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+		       AND cc.CONSTRAINT_NAME   = tc.CONSTRAINT_NAME
 		WHERE tc.TABLE_SCHEMA = ?
 		  AND tc.TABLE_NAME   = ?
 		  AND tc.CONSTRAINT_TYPE IN ('PRIMARY KEY', 'UNIQUE', 'CHECK')
-		GROUP BY tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE
+		GROUP BY tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE, cc.CHECK_CLAUSE
 		ORDER BY FIELD(tc.CONSTRAINT_TYPE, 'PRIMARY KEY', 'UNIQUE', 'CHECK'),
 		         tc.CONSTRAINT_NAME`
 
@@ -243,17 +251,51 @@ func fetchConstraints(ctx context.Context, db *sql.DB, dbName, tableName string)
 
 	out := []driver.ConstraintDetail{}
 	for rows.Next() {
-		var name, typ, cols string
-		if err := rows.Scan(&name, &typ, &cols); err != nil {
+		var name, typ, cols, expr string
+		if err := rows.Scan(&name, &typ, &cols, &expr); err != nil {
 			return nil, err
 		}
-		detail := driver.ConstraintDetail{Name: name, Type: typ}
+		detail := driver.ConstraintDetail{Name: name, Type: typ, Expression: expr}
 		if cols != "" {
 			detail.Columns = strings.Split(cols, ",")
 		} else {
 			detail.Columns = []string{}
 		}
 		out = append(out, detail)
+	}
+	return out, rows.Err()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Section 3b — Partitions
+// ─────────────────────────────────────────────────────────────────────────────
+
+func fetchPartitions(ctx context.Context, db *sql.DB, dbName, tableName string) ([]driver.PartitionDetail, error) {
+	const q = `
+		SELECT PARTITION_NAME,
+		       COALESCE(PARTITION_METHOD, ''),
+		       COALESCE(PARTITION_EXPRESSION, ''),
+		       COALESCE(PARTITION_DESCRIPTION, ''),
+		       COALESCE(TABLE_ROWS, 0)
+		FROM information_schema.PARTITIONS
+		WHERE TABLE_SCHEMA = ?
+		  AND TABLE_NAME = ?
+		  AND PARTITION_NAME IS NOT NULL
+		ORDER BY PARTITION_ORDINAL_POSITION`
+
+	rows, err := db.QueryContext(ctx, q, dbName, tableName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []driver.PartitionDetail{}
+	for rows.Next() {
+		var p driver.PartitionDetail
+		if err := rows.Scan(&p.Name, &p.Method, &p.Expression, &p.Description, &p.Rows); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }
@@ -396,7 +438,7 @@ func fetchTriggers(ctx context.Context, db *sql.DB, dbName, tableName string) ([
 // ─────────────────────────────────────────────────────────────────────────────
 
 // quoteIdent wraps a MySQL identifier in backticks, doubling any embedded
-// backticks so exotic table names (`my``table`) survive unharmed.  The
+// backticks so exotic table names (`my“table`) survive unharmed.  The
 // helper is duplicated here to avoid coupling advanced.go to the driver
 // file's unexported state.
 func quoteIdent(s string) string {

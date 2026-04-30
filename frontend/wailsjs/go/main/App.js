@@ -38,12 +38,12 @@ export function ExecDML(arg1, arg2) {
   return window['go']['main']['App']['ExecDML'](arg1, arg2);
 }
 
-export function ExecuteIndexAlter(arg1, arg2) {
-  return window['go']['main']['App']['ExecuteIndexAlter'](arg1, arg2);
-}
-
 export function ExecuteConstraintAlter(arg1, arg2) {
   return window['go']['main']['App']['ExecuteConstraintAlter'](arg1, arg2);
+}
+
+export function ExecuteIndexAlter(arg1, arg2) {
+  return window['go']['main']['App']['ExecuteIndexAlter'](arg1, arg2);
 }
 
 export function ExecutePartitionAlter(arg1, arg2) {
@@ -146,12 +146,12 @@ export function OpenFileDialog(arg1) {
   return window['go']['main']['App']['OpenFileDialog'](arg1);
 }
 
-export function PreviewIndexAlter(arg1, arg2) {
-  return window['go']['main']['App']['PreviewIndexAlter'](arg1, arg2);
-}
-
 export function PreviewConstraintAlter(arg1, arg2) {
   return window['go']['main']['App']['PreviewConstraintAlter'](arg1, arg2);
+}
+
+export function PreviewIndexAlter(arg1, arg2) {
+  return window['go']['main']['App']['PreviewIndexAlter'](arg1, arg2);
 }
 
 export function PreviewPartitionAlter(arg1, arg2) {

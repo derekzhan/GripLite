@@ -16,6 +16,60 @@ const TABS_INIT = [
 
 let nextTabId = 2
 
+function loadEditorState(storageKey, initialSql, defaultDb) {
+  if (storageKey) {
+    try {
+      const raw = localStorage.getItem(storageKey)
+      const parsed = raw ? JSON.parse(raw) : null
+      const tabs = Array.isArray(parsed?.tabs)
+        ? parsed.tabs
+            .filter((tab) => tab && Number.isFinite(Number(tab.id)))
+            .map((tab) => ({
+              id: Number(tab.id),
+              label: String(tab.label ?? `Console ${tab.id}`),
+              content: String(tab.content ?? ''),
+            }))
+        : []
+      if (tabs.length > 0) {
+        nextTabId = Math.max(nextTabId, ...tabs.map((tab) => tab.id)) + 1
+        const activeTab = tabs.some((tab) => tab.id === parsed?.activeTab)
+          ? parsed.activeTab
+          : tabs[0].id
+        return {
+          tabs,
+          activeTab,
+          selectedDb: parsed?.selectedDb ?? defaultDb ?? '',
+        }
+      }
+    } catch {
+      // Ignore corrupt localStorage and fall back to the requested seed.
+    }
+  }
+
+  const seed = initialSql && initialSql.trim()
+    ? [{ id: 1, label: 'Console 1', content: initialSql }]
+    : TABS_INIT
+  return { tabs: seed, activeTab: seed[0].id, selectedDb: defaultDb ?? '' }
+}
+
+function saveEditorState(storageKey, state) {
+  if (!storageKey) return
+  try {
+    localStorage.setItem(storageKey, JSON.stringify({
+      version: 1,
+      tabs: state.tabs.map((tab) => ({
+        id: tab.id,
+        label: tab.label,
+        content: tab.content,
+      })),
+      activeTab: state.activeTab,
+      selectedDb: state.selectedDb,
+    }))
+  } catch {
+    // Persistence is best-effort; editing must keep working even if storage fails.
+  }
+}
+
 // ── MySQL keyword data ───────────────────────────────────────────────────────
 //
 // SHOW_SUBCMDS: completions offered when the cursor is inside a SHOW statement.
@@ -291,18 +345,18 @@ export default function SqlEditor({
   initialSql,
   defaultDb = '',
   connectionLabel = '',
+  storageKey = '',
 }) {
   const { resolvedTheme } = useTheme()
+  const initialStateRef = useRef(null)
+  if (initialStateRef.current === null) {
+    initialStateRef.current = loadEditorState(storageKey, initialSql, defaultDb)
+  }
   // initialSql is captured ONCE at mount; subsequent prop changes are
   // ignored because the editor's tab list is owned internally and re-seeding
   // it would overwrite anything the user has typed.
-  const [tabs, setTabs] = useState(() => {
-    if (initialSql && initialSql.trim()) {
-      return [{ id: 1, label: 'Console 1', content: initialSql }]
-    }
-    return TABS_INIT
-  })
-  const [activeTab, setActiveTab] = useState(1)
+  const [tabs, setTabs] = useState(() => initialStateRef.current.tabs)
+  const [activeTab, setActiveTab] = useState(() => initialStateRef.current.activeTab)
   const editorRef             = useRef(null)
   const monacoRef             = useRef(null)
   const completionProviderRef = useRef(null)
@@ -323,9 +377,10 @@ export default function SqlEditor({
   // ── Database selector state ─────────────────────────────────────────────
   const [databases,     setDatabases]     = useState([])
   const [dbsLoading,    setDbsLoading]    = useState(false)
-  const [selectedDb,    setSelectedDb]    = useState(defaultDb)
+  const [selectedDb,    setSelectedDb]    = useState(() => initialStateRef.current.selectedDb)
   const [dbDropdownOpen, setDbDropdownOpen] = useState(false)
   const dbDropdownRef  = useRef(null)
+  const lastConnectionIdRef = useRef(connectionId)
   // Stable ref so the Monaco completion provider (created once) always reads
   // the latest selected database without being recreated on every change.
   const selectedDbRef  = useRef(defaultDb)
@@ -333,9 +388,18 @@ export default function SqlEditor({
   // Keep selectedDbRef in sync so the Monaco provider always has the latest value.
   useEffect(() => { selectedDbRef.current = selectedDb }, [selectedDb])
 
+  useEffect(() => {
+    saveEditorState(storageKey, { tabs, activeTab, selectedDb })
+  }, [storageKey, tabs, activeTab, selectedDb])
+
   // Fetch databases whenever the active connection changes.
   useEffect(() => {
-    setSelectedDb(defaultDb)
+    if (lastConnectionIdRef.current !== connectionId) {
+      lastConnectionIdRef.current = connectionId
+      setSelectedDb(defaultDb)
+    } else {
+      setSelectedDb((prev) => prev || defaultDb)
+    }
     if (!connectionId) return
     let cancelled = false
     setDbsLoading(true)

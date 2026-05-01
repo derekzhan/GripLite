@@ -1,19 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
-import DataViewer from './DataViewer'
-import ActionFooter from './ActionFooter'
-import { exportCsv } from './DataViewer'
+import PagedResultViewer from './PagedResultViewer'
 import { useEditState } from '../hooks/useEditState'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pagination helpers
 // ─────────────────────────────────────────────────────────────────────────────
-const DEFAULT_PAGE_SIZE = 200
-
-function pageSlice(rows, pageSize, currentPage) {
-  if (pageSize === 'all') return rows
-  const start = (currentPage - 1) * pageSize
-  return rows.slice(start, start + pageSize)
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ResultPanel
@@ -42,12 +33,9 @@ export default function ResultPanel({
   resultSets     = null,
   activeResultId = null,
   onSelectResult,
-  onLoadMore,       // async () => void — fetches next page and appends rows
-  loadingMore = false,
+  onLoadMore,
 }) {
   const [activeTab,    setActiveTab]    = useState('Result')
-  const [pageSize,     setPageSize]     = useState(DEFAULT_PAGE_SIZE)
-  const [currentPage,  setCurrentPage]  = useState(1)
   const [fetchStats,   setFetchStats]   = useState(null)
 
   // ── Timing tracking ────────────────────────────────────────────────────
@@ -78,13 +66,6 @@ export default function ResultPanel({
     }
   }, [queryResult, isRunning])
 
-  // ── Reset page when new data arrives ──────────────────────────────────
-  const prevResultRef = useRef(null)
-  if (prevResultRef.current !== queryResult) {
-    prevResultRef.current = queryResult
-    if (currentPage !== 1) setCurrentPage(1)
-  }
-
   const hasResult = queryResult !== null
   const hasError  = hasResult && !!queryResult.error
   // Wails marshals Go's nil slices as JSON `null`.  Statements that have no
@@ -99,17 +80,11 @@ export default function ResultPanel({
   // panel instead of an empty DataViewer so the user gets confirmation.
   const isEmptyResultSet = hasResult && !hasError && cols.length === 0
 
-  const pageRows  = pageSlice(allRows, pageSize, currentPage)
   const execMs    = hasResult ? queryResult.execMs : 0
 
   // ── Edit state (Phase 6.8) ─────────────────────────────────────────────
   // queryResult is used as resetKey: every new query clears all pending edits.
-  const editState = useEditState(cols, pageRows, queryResult)
-
-  const handleExportCsv = () => {
-    if (!cols.length) return
-    exportCsv(cols, pageRows, 'query_result.csv')
-  }
+  const editState = useEditState(cols, allRows, queryResult)
 
   return (
     <div className="flex flex-col h-full bg-app border-t border-line">
@@ -133,21 +108,10 @@ export default function ResultPanel({
 
         <div className="ml-auto flex items-center gap-3 px-3 text-[11px] text-fg-muted">
           {isRunning && <span className="text-accent animate-pulse">Running…</span>}
-          {!isRunning && queryResult?.truncated && onLoadMore && (
-            <button
-              onClick={onLoadMore}
-              disabled={loadingMore}
-              className="text-[11px] px-2 py-0.5 rounded border border-line text-fg-secondary
-                         hover:border-accent hover:text-fg-primary transition-colors select-none
-                         disabled:opacity-40"
-            >
-              {loadingMore ? '…Loading' : '↓ Load More'}
-            </button>
-          )}
           {activeTab === 'Result' && hasResult && !hasError && !isEmptyResultSet && (
-            <span className={queryResult.truncated ? 'text-warn' : ''}>
-              {totalRows.toLocaleString()} total
-              {queryResult.truncated ? ' ⚠' : ''}
+            <span className={queryResult.truncated && !queryResult.hasMore ? 'text-warn' : ''}>
+              {totalRows.toLocaleString()} rows shown
+              {queryResult.hasMore ? ' · scroll to load more' : queryResult.truncated ? ' · limit reached' : ''}
               {' · '}{cols.length} cols
             </span>
           )}
@@ -234,38 +198,29 @@ export default function ResultPanel({
               </div>
             )}
             {!isRunning && hasResult && !hasError && !isEmptyResultSet && (
-              <>
-                {/* DataViewer: receives the current page slice + editState */}
-                <div className="flex-1 overflow-hidden min-h-0">
-                  <DataViewer
-                    columns={cols}
-                    rows={pageRows}
-                    execMs={execMs}
-                    truncated={queryResult.truncated}
-                    exportFilename="query_result.csv"
-                    editState={editState}
-                  />
-                </div>
-                {/* ActionFooter: pagination + tools + edit actions + status strip */}
-                <ActionFooter
-                  pageSize={pageSize}       setPageSize={setPageSize}
-                  currentPage={currentPage} setCurrentPage={setCurrentPage}
-                  totalRows={editState.isDirty ? editState.totalDisplayRows : totalRows}
-                  onExportCsv={handleExportCsv}
-                  exportFilename="query_result.csv"
-                  fetchStats={fetchStats}
-                  isDirty={editState.isDirty}
-                  hasSelection={editState.selectedRow !== null}
-                  onAddRow={editState.addRow}
-                  onDuplicateRow={() => editState.duplicateRow()}
-                  onDeleteRow={() => editState.deleteRow()}
-                  // Ad-hoc query results (possibly joins / aliases) lack a
-                  // single owning table, so inline-save is disabled here.
-                  // Open the table via the Explorer to get an editable grid.
-                  onSave={undefined}
-                  onCancel={editState.cancel}
-                />
-              </>
+              <PagedResultViewer
+                columns={cols}
+                rows={allRows}
+                execMs={execMs}
+                truncated={queryResult.truncated}
+                hasMore={!!queryResult.hasMore}
+                loadingMore={!!queryResult.loadingMore}
+                capped={queryResult.truncated && !queryResult.hasMore}
+                onLoadMore={onLoadMore}
+                exportFilename="query_result.csv"
+                fetchStats={fetchStats}
+                editState={editState}
+                isDirty={editState.isDirty}
+                hasSelection={editState.selectedRow !== null}
+                onAddRow={editState.addRow}
+                onDuplicateRow={() => editState.duplicateRow()}
+                onDeleteRow={() => editState.deleteRow()}
+                // Ad-hoc query results (possibly joins / aliases) lack a
+                // single owning table, so inline-save is disabled here.
+                // Open the table via the Explorer to get an editable grid.
+                onSave={undefined}
+                onCancel={editState.cancel}
+              />
             )}
           </>
         )}
@@ -287,7 +242,8 @@ export default function ResultPanel({
                     <div className="text-success">✓ Query executed successfully</div>
                     <div className="text-fg-primary">
                       {totalRows.toLocaleString()} row(s) in {execMs} ms
-                      {queryResult.truncated && <span className="text-warn"> — capped at {totalRows} rows</span>}
+                      {queryResult.hasMore && <span className="text-fg-muted"> — scroll to load more</span>}
+                      {queryResult.truncated && !queryResult.hasMore && <span className="text-warn"> — result limited to {totalRows.toLocaleString()} rows</span>}
                     </div>
                     {queryResult.rowsAffected > 0 && (
                       <div className="text-fg-primary">{queryResult.rowsAffected.toLocaleString()} row(s) affected</div>

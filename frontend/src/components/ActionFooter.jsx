@@ -269,6 +269,8 @@ export default function ActionFooter({
   currentPage,
   setCurrentPage,
   totalRows,
+  mode = 'paged',
+  statusLabel = '',
   onRefresh,
   isRefreshing = false,
   onExportCsv,
@@ -286,6 +288,7 @@ export default function ActionFooter({
   const [jumpValue, setJumpValue] = useState('')
   const total = totalPages(pageSize, totalRows)
   const { first: firstRow, last: lastRow } = rowRange(pageSize, currentPage, totalRows)
+  const isInfinite = mode === 'infinite'
 
   const goTo = useCallback((p) => {
     setCurrentPage(Math.max(1, Math.min(total, p)))
@@ -363,35 +366,39 @@ export default function ActionFooter({
         <Sep />
 
         {/* Pagination navigation */}
-        <IconBtn icon={ChevronsLeft}  label="First page" onClick={() => goTo(1)}                disabled={atFirst} />
-        <IconBtn icon={ChevronLeft}   label="Previous page" onClick={() => goTo(currentPage - 1)} disabled={atFirst} />
+        {!isInfinite && (
+          <>
+            <IconBtn icon={ChevronsLeft}  label="First page" onClick={() => goTo(1)}                disabled={atFirst} />
+            <IconBtn icon={ChevronLeft}   label="Previous page" onClick={() => goTo(currentPage - 1)} disabled={atFirst} />
 
-        {/* Page indicator */}
-        {pageSize !== 'all' && (
-          <div className="flex items-center gap-1 px-1">
-            <input
-              type="text"
-              inputMode="numeric"
-              value={jumpValue !== '' ? jumpValue : currentPage}
-              onChange={(e) => setJumpValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key !== 'Enter') return
-                const n = parseInt(jumpValue, 10)
-                if (!isNaN(n)) goTo(n)
-                setJumpValue('')
-              }}
-              onBlur={() => setJumpValue('')}
-              className="w-10 text-center bg-elevated text-fg-primary border border-line
-                         rounded px-1 py-0.5 text-[11px] tabular-nums outline-none
-                         focus:border-accent transition-colors"
-            />
-            <span className="text-[11px] text-fg-muted tabular-nums">/</span>
-            <span className="text-[11px] text-fg-secondary tabular-nums">{total.toLocaleString()}</span>
-          </div>
+            {/* Page indicator */}
+            {pageSize !== 'all' && (
+              <div className="flex items-center gap-1 px-1">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={jumpValue !== '' ? jumpValue : currentPage}
+                  onChange={(e) => setJumpValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return
+                    const n = parseInt(jumpValue, 10)
+                    if (!isNaN(n)) goTo(n)
+                    setJumpValue('')
+                  }}
+                  onBlur={() => setJumpValue('')}
+                  className="w-10 text-center bg-elevated text-fg-primary border border-line
+                             rounded px-1 py-0.5 text-[11px] tabular-nums outline-none
+                             focus:border-accent transition-colors"
+                />
+                <span className="text-[11px] text-fg-muted tabular-nums">/</span>
+                <span className="text-[11px] text-fg-secondary tabular-nums">{total.toLocaleString()}</span>
+              </div>
+            )}
+
+            <IconBtn icon={ChevronRight}  label="Next page" onClick={() => goTo(currentPage + 1)} disabled={atLast} />
+            <IconBtn icon={ChevronsRight} label="Last page" onClick={() => goTo(total)}            disabled={atLast} />
+          </>
         )}
-
-        <IconBtn icon={ChevronRight}  label="Next page" onClick={() => goTo(currentPage + 1)} disabled={atLast} />
-        <IconBtn icon={ChevronsRight} label="Last page" onClick={() => goTo(total)}            disabled={atLast} />
 
         {/* ── Spacer ────────────────────────────────────────────────── */}
         <div className="flex-1" />
@@ -403,24 +410,28 @@ export default function ActionFooter({
 
         <Sep />
 
-        {/* Fetch-size input */}
-        <div className="flex items-center gap-1">
-          <span className="text-[10px] text-fg-muted uppercase tracking-wider">Fetch</span>
-          <input
-            type="number"
-            min={1}
-            max={100000}
-            defaultValue={typeof pageSize === 'number' ? pageSize : 200}
-            onBlur={onFetchSizeChange}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur() } }}
-            className="w-16 text-center bg-elevated text-fg-primary border border-line
-                       rounded px-1 py-0.5 text-[11px] tabular-nums outline-none
-                       focus:border-accent transition-colors
-                       [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-          />
-        </div>
+        {!isInfinite && (
+          <>
+            {/* Fetch-size input */}
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] text-fg-muted uppercase tracking-wider">Fetch</span>
+              <input
+                type="number"
+                min={1}
+                max={100000}
+                defaultValue={typeof pageSize === 'number' ? pageSize : 200}
+                onBlur={onFetchSizeChange}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur() } }}
+                className="w-16 text-center bg-elevated text-fg-primary border border-line
+                           rounded px-1 py-0.5 text-[11px] tabular-nums outline-none
+                           focus:border-accent transition-colors
+                           [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+              />
+            </div>
 
-        <Sep />
+            <Sep />
+          </>
+        )}
 
         {/* Row range indicator */}
         <span className="text-[11px] text-fg-secondary tabular-nums px-1 whitespace-nowrap">
@@ -428,11 +439,17 @@ export default function ActionFooter({
             <span className="text-fg-muted">No data</span>
           ) : (
             <>
-              <span className="text-fg-primary">{firstRow.toLocaleString()}</span>
-              {' – '}
-              <span className="text-fg-primary">{lastRow.toLocaleString()}</span>
-              {' of '}
-              <span>{totalRows.toLocaleString()}</span>
+              {isInfinite ? (
+                <span>{statusLabel || `${totalRows.toLocaleString()} rows shown`}</span>
+              ) : (
+                <>
+                  <span className="text-fg-primary">{firstRow.toLocaleString()}</span>
+                  {' – '}
+                  <span className="text-fg-primary">{lastRow.toLocaleString()}</span>
+                  {' of '}
+                  <span>{totalRows.toLocaleString()}</span>
+                </>
+              )}
             </>
           )}
         </span>

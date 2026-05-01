@@ -27,8 +27,7 @@ import {
   ArrowUp, ArrowDown, ArrowUpDown, Plus, Minus, Save, XCircle,
   ChevronDown, Play, Code2, Maximize2, X,
 } from 'lucide-react'
-import DataViewer, { exportCsv } from './DataViewer'
-import ActionFooter from './ActionFooter'
+import PagedResultViewer from './PagedResultViewer'
 import ReviewSqlModal from './ReviewSqlModal'
 import { useTheme } from '../theme/ThemeProvider'
 import {
@@ -42,6 +41,7 @@ import {
 import { useEditState } from '../hooks/useEditState'
 import { normalizeError } from '../lib/errors'
 import { toast } from '../lib/toast'
+import { getWhereFilterSuggestions, getWordBeforeCursor } from '../lib/filterAutocomplete'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock schema metadata (Properties tab)
@@ -2457,42 +2457,31 @@ function FilterBar({
 }) {
   const inputRef    = useRef(null)
   const dropdownRef = useRef(null)
+  const [inputFocused, setInputFocused] = useState(false)
 
   // ── Autocomplete state ──────────────────────────────────────────────────
   const [acSuggestions, setAcSuggestions] = useState([])
   const [acOpen,        setAcOpen]        = useState(false)
   const [acIdx,         setAcIdx]         = useState(-1)
 
-  // Identifier-like word immediately before the cursor.
-  const getWordBeforeCursor = (value, cursorPos) => {
-    const before = value.slice(0, cursorPos)
-    const m = before.match(/`?[\w.]+$/)
-    return m ? m[0].replace(/^`/, '') : ''
-  }
-
   // Rebuild the suggestion list every time input value / cursor moves.
   const rebuildAc = useCallback((value, cursorPos) => {
-    const word = getWordBeforeCursor(value, cursorPos)
-    if (!word) { setAcOpen(false); setAcSuggestions([]); return }
-
-    const lower      = word.toLowerCase()
-    const colNames   = (columns ?? []).map((c) => c.name)
-    const sqlKw      = ['AND', 'OR', 'NOT', 'LIKE', 'IN', 'IS', 'NULL',
-                        'BETWEEN', 'TRUE', 'FALSE', 'EXISTS']
-
-    const colMatches = colNames
-      .filter((n) => n.toLowerCase().startsWith(lower) && n.toLowerCase() !== lower)
-      .map((n) => ({ text: n, kind: 'column' }))
-    const kwMatches  = sqlKw
-      .filter((k) => k.toLowerCase().startsWith(lower) && k.toLowerCase() !== lower)
-      .map((k) => ({ text: k, kind: 'keyword' }))
-
-    const all = [...colMatches, ...kwMatches]
+    const all = getWhereFilterSuggestions({ value, cursorPos, columns })
     if (all.length === 0) { setAcOpen(false); setAcSuggestions([]); return }
     setAcSuggestions(all)
     setAcOpen(true)
     setAcIdx(-1)
   }, [columns])
+
+  // If table metadata arrives after the user starts typing (common while a
+  // large-table COUNT(*) is still running), refresh suggestions from the
+  // current cursor instead of waiting for another keystroke.
+  useEffect(() => {
+    if (!inputFocused) return
+    const input = inputRef.current
+    if (!input) return
+    rebuildAc(input.value, input.selectionStart ?? input.value.length)
+  }, [columns, draft, inputFocused, rebuildAc])
 
   // Insert a suggestion, replacing the word before the cursor.
   const applySuggestion = useCallback((sugg) => {
@@ -2609,8 +2598,14 @@ function FilterBar({
               rebuildAc(val, cursor)
             }}
             onKeyDown={handleKeyDown}
-            onFocus={(e) => rebuildAc(e.target.value, e.target.selectionStart ?? e.target.value.length)}
-            onBlur={() => setTimeout(() => setAcOpen(false), 150)}
+            onFocus={(e) => {
+              setInputFocused(true)
+              rebuildAc(e.target.value, e.target.selectionStart ?? e.target.value.length)
+            }}
+            onBlur={() => setTimeout(() => {
+              setInputFocused(false)
+              setAcOpen(false)
+            }, 150)}
             onSelect={(e) => {
               if (acOpen) rebuildAc(e.target.value, e.target.selectionStart ?? e.target.value.length)
             }}
@@ -2775,11 +2770,10 @@ function FilterBar({
 function DataView({ tableName, dbName, connId, schema }) {
   const [dataResult,   setDataResult]   = useState(null)
   const [isLoading,    setIsLoading]    = useState(true)
+  const [isLoadingMore,setIsLoadingMore]= useState(false)
   const [loadError,    setLoadError]    = useState('')
-  // pageSize: rows per page ('all' clamps to BACKEND_HARD_CAP).
-  // currentPage: 1-based; changing it refetches the corresponding slice.
-  const [pageSize,     setPageSize]     = useState(100)
-  const [currentPage,  setCurrentPage]  = useState(1)
+  const [hasMore,      setHasMore]      = useState(false)
+  const pageSize = 200
   // Real table row count from SELECT COUNT(*) — the authoritative total for
   // pagination maths.  `null` while still loading / on error.
   const [totalRows,    setTotalRows]    = useState(null)
@@ -2823,12 +2817,13 @@ function DataView({ tableName, dbName, connId, schema }) {
   // SQL surfaced to the thin info bar: always reflects the next planned
   // fetch so operators can see exactly which WHERE / LIMIT / OFFSET is in
   // flight.  Uses the COMMITTED whereClause, not the unsaved draft.
-  const selectSql = buildSelectSql(dbName, tableName, pageSize, currentPage, whereClause, sortConfig)
+  const loadedRows = dataResult?.rows?.length ?? 0
+  const nextPage = Math.floor(loadedRows / pageSize) + 1
+  const selectSql = buildSelectSql(dbName, tableName, pageSize, Math.max(1, nextPage), whereClause, sortConfig)
 
   // ── Count(*) — runs once per (connId, dbName, tableName) + on Refresh.
   // The count is the authoritative pagination total; we keep it separate
-  // from the page fetch so the footer updates immediately when the user
-  // changes pageSize/currentPage without re-counting. ─────────────────────
+  // from page fetching so the footer can tell when infinite loading is done.
   const loadCount = useCallback(() => {
     let cancelled = false
     setIsCounting(true)
@@ -2883,15 +2878,21 @@ function DataView({ tableName, dbName, connId, schema }) {
     return () => { cancelled = true }
   }, [connId, dbName, tableName])
 
-  // ── Core load function: fetches a single page slice. ───────────────────
-  const load = useCallback((size, page) => {
+  // ── Core load function: fetches one slice and appends it when offset > 0.
+  const load = useCallback((offset = 0) => {
     let cancelled = false
+    const append = offset > 0
 
-    setIsLoading(true)
+    if (append) setIsLoadingMore(true)
+    else setIsLoading(true)
     setLoadError('')
-    setDataResult(null)
+    if (!append) {
+      setDataResult(null)
+      setHasMore(false)
+    }
 
-    const sql = buildSelectSql(dbName, tableName, size, page, whereClause, sortConfig)
+    const page = Math.floor(offset / pageSize) + 1
+    const sql = buildSelectSql(dbName, tableName, pageSize, page, whereClause, sortConfig)
     const fetchStart = performance.now()
 
     runQuery(connId, dbName, sql)
@@ -2901,9 +2902,22 @@ function DataView({ tableName, dbName, connId, schema }) {
         if (result.error) {
           setLoadError(result.error)
         } else {
-          setDataResult(result)
+          const pageRows = Array.isArray(result.rows) ? result.rows : []
+          setDataResult((prev) => {
+            if (!append) {
+              return { ...result, rowCount: pageRows.length }
+            }
+            const rows = [...(prev?.rows ?? []), ...pageRows]
+            return {
+              ...result,
+              columns: prev?.columns?.length ? prev.columns : result.columns,
+              rows,
+              rowCount: rows.length,
+            }
+          })
+          setHasMore(pageRows.length >= pageSize)
           setFetchStats({
-            rowCount:  result.rows?.length ?? 0,
+            rowCount:  offset + pageRows.length,
             execMs:    result.execMs ?? 0,
             fetchMs,
             timestamp: new Date(),
@@ -2915,7 +2929,10 @@ function DataView({ tableName, dbName, connId, schema }) {
         setLoadError(String(err))
       })
       .finally(() => {
-        if (!cancelled) setIsLoading(false)
+        if (!cancelled) {
+          if (append) setIsLoadingMore(false)
+          else setIsLoading(false)
+        }
       })
 
     return () => { cancelled = true }
@@ -2932,7 +2949,8 @@ function DataView({ tableName, dbName, connId, schema }) {
   // `loadColumnMeta` callbacks — those also depend on `whereClause` and
   // would re-trigger spuriously if listed here.
   useEffect(() => {
-    setCurrentPage(1)
+    setDataResult(null)
+    setHasMore(false)
     setWhereClause('')
     setWhereDraft('')
     setHistory([])
@@ -2954,18 +2972,18 @@ function DataView({ tableName, dbName, connId, schema }) {
   // whereClause changes.  `load` / `loadCount` are memoised with those same
   // inputs so referential identity follows semantics.
   useEffect(() => {
-    loadCount()
+    return loadCount()
   }, [loadCount])
 
   useEffect(() => {
-    load(pageSize, currentPage)
-  }, [load, pageSize, currentPage])
+    return load(0)
+  }, [load])
 
   // ── Refresh handler: re-query count AND re-fetch current page. ─────────
   const handleRefresh = useCallback(() => {
     loadCount()
-    load(pageSize, currentPage)
-  }, [load, loadCount, pageSize, currentPage])
+    load(0)
+  }, [load, loadCount])
 
   // ── Filter commit (▶ button / Enter) ───────────────────────────────────
   // Pushes the draft into the live whereClause, resets to page 1, and
@@ -2993,16 +3011,15 @@ function DataView({ tableName, dbName, connId, schema }) {
       setHistory(nextHistory)
       void setDataFilterHistory(connId, dbName, tableName, nextHistory).catch(() => {})
     }
-    setCurrentPage(1)
     if (next === whereClause) {
       // Committing the same clause — force a refetch since neither the
       // load effect nor loadCount will fire (their deps didn't change).
       loadCount()
-      load(pageSize, 1)
+      load(0)
     } else {
       setWhereClause(next) // triggers load effect + loadCount via deps
     }
-  }, [whereDraft, whereClause, load, loadCount, pageSize, history, connId, dbName, tableName])
+  }, [whereDraft, whereClause, load, loadCount, history, connId, dbName, tableName])
 
   const handleFilterKeyDown = useCallback((e) => {
     if (e.key === 'Enter') {
@@ -3028,35 +3045,12 @@ function DataView({ tableName, dbName, connId, schema }) {
     void setDataFilterHistory(connId, dbName, tableName, []).catch(() => {})
   }, [connId, dbName, tableName])
 
-  // ── pageSize change (footer dropdown / manual input). ──────────────────
-  // 'all' clamps to the backend's hard cap so we don't silently truncate.
-  // Any numeric value above the cap is also clamped with a console warning.
-  // If there are unsaved edits we ask before triggering a reload that would
-  // otherwise wipe them, matching the page-navigation guard.
-  const handleSetPageSize = useCallback((size) => {
-    let next = size
-    if (size !== 'all' && size > BACKEND_HARD_CAP) {
-      console.warn(
-        `[TableViewer] page size ${size} exceeds backend cap ${BACKEND_HARD_CAP}; clamping.`,
-      )
-      next = BACKEND_HARD_CAP
-    }
-    if (editStateRef.current?.isDirty) {
-      const ok = typeof window !== 'undefined' && window.confirm
-        ? window.confirm(
-            'Changing page size will reload the grid and discard your ' +
-            'unsaved changes.\n\nContinue?',
-          )
-        : true
-      if (!ok) return
-      editStateRef.current.cancel()
-    }
-    setPageSize(next)
-    setCurrentPage(1)
-  }, [])
-
   const cols = dataResult?.columns ?? []
   const rows = dataResult?.rows    ?? []
+
+  useEffect(() => {
+    if (totalRows !== null && rows.length >= totalRows) setHasMore(false)
+  }, [rows.length, totalRows])
 
   // ── Column-header click → server-side ORDER BY ─────────────────────────
   // Cycling: first click → ASC, second → DESC, third → clear.
@@ -3064,12 +3058,20 @@ function DataView({ tableName, dbName, connId, schema }) {
   const handleHeaderClicked = useCallback((colIndex) => {
     const colName = cols[colIndex]?.name
     if (!colName) return
+    if (editStateRef.current?.isDirty) {
+      const ok = typeof window !== 'undefined' && window.confirm
+        ? window.confirm(
+            'Sorting will reload the grid and discard your unsaved changes.\n\nContinue?',
+          )
+        : true
+      if (!ok) return
+      editStateRef.current.cancel()
+    }
     setSortConfig((prev) => {
       if (prev?.col !== colName) return { colIdx: colIndex, col: colName, dir: 'asc' }
       if (prev.dir === 'asc')    return { colIdx: colIndex, col: colName, dir: 'desc' }
       return null
     })
-    setCurrentPage(1)
   }, [cols])
 
   // Expose sortConfig in the form GridCanvas expects ({ colIdx, dir } | null)
@@ -3087,28 +3089,6 @@ function DataView({ tableName, dbName, connId, schema }) {
   // causing the guarded-setter to be recreated every keystroke.
   const editStateRef = useRef(editState)
   useEffect(() => { editStateRef.current = editState }, [editState])
-
-  // ── Guarded page change: ask before discarding unsaved edits. ──────────
-  // We wrap setCurrentPage so the footer's navigation arrows and jump input
-  // route through the same confirmation logic.
-  const guardedSetCurrentPage = useCallback((nextPage) => {
-    // Accept both direct values and updater functions, mirroring useState.
-    setCurrentPage((prev) => {
-      const target = typeof nextPage === 'function' ? nextPage(prev) : nextPage
-      if (target === prev) return prev
-      if (editStateRef.current?.isDirty) {
-        const ok = typeof window !== 'undefined' && window.confirm
-          ? window.confirm(
-              'You have unsaved changes on this page.\n' +
-              'Navigating will discard them.\n\nContinue?',
-            )
-          : true
-        if (!ok) return prev
-        editStateRef.current.cancel()
-      }
-      return target
-    })
-  }, [])
 
   // ── Save handler — commit the grid diff via the Go applier ─────────────
   // We build the ChangeSet here (not inside useEditState) because the
@@ -3142,22 +3122,23 @@ function DataView({ tableName, dbName, connId, schema }) {
       }
       editState.clear()
       loadCount()
-      load(pageSize, currentPage)
+      load(0)
     } catch (err) {
       setSaveError(String(err?.message ?? err))
     } finally {
       setIsSaving(false)
     }
-  }, [connId, dbName, tableName, pkName, editState, load, loadCount, pageSize, currentPage])
+  }, [connId, dbName, tableName, pkName, editState, load, loadCount])
 
   const handleCancel = useCallback(() => {
     setSaveError('')
     editState.cancel()
   }, [editState])
 
-  // Footer total + filter tooltips — MUST stay above loading/error early returns
-  // so hook order is identical every render (Rules of Hooks).
-  const effectiveTotal = totalRows ?? rows.length
+  const handleLoadMore = useCallback(() => {
+    if (!hasMore || isLoading || isLoadingMore || editStateRef.current?.isDirty) return
+    return load(rows.length)
+  }, [hasMore, isLoading, isLoadingMore, load, rows.length])
 
   const sqlForWhere = useCallback(
     (clause) => buildSelectSql(dbName, tableName, pageSize, 1, clause),
@@ -3171,7 +3152,6 @@ function DataView({ tableName, dbName, connId, schema }) {
   const clearFilter = useCallback(() => {
     setWhereDraft('')
     if (whereClause !== '') {
-      setCurrentPage(1)
       setWhereClause('')
     }
   }, [whereClause])
@@ -3241,7 +3221,7 @@ function DataView({ tableName, dbName, connId, schema }) {
               Query: <code className="text-syntax-string">{selectSql}</code>
             </div>
             <button
-              onClick={() => load(pageSize, currentPage)}
+              onClick={() => load(0)}
               className="self-start px-3 py-1.5 text-[12px] rounded border border-line
                          text-fg-secondary hover:bg-hover transition-colors"
             >
@@ -3258,19 +3238,6 @@ function DataView({ tableName, dbName, connId, schema }) {
       {/* DBeaver-style filter toolbar (Phase 24) */}
       {filterToolbar}
 
-      {/* DataViewer: grid / text / record mode switching + inline editing */}
-      <div className="flex-1 overflow-hidden min-h-0">
-        <DataViewer
-          columns={cols}
-          rows={rows}
-          execMs={dataResult?.execMs}
-          exportFilename={`${tableName}.csv`}
-          editState={editState}
-          onHeaderClicked={handleHeaderClicked}
-          sortConfig={gridSortConfig}
-        />
-      </div>
-
       {/* Save-error banner (shown only while an error is present). */}
       {saveError && (
         <div className="flex items-start gap-2 px-3 py-1.5 bg-danger-bg border-t border-danger
@@ -3285,15 +3252,19 @@ function DataView({ tableName, dbName, connId, schema }) {
         </div>
       )}
 
-      {/* ActionFooter: tools + edit actions + status strip */}
-      <ActionFooter
-        pageSize={pageSize}           setPageSize={handleSetPageSize}
-        currentPage={currentPage}     setCurrentPage={guardedSetCurrentPage}
-        totalRows={effectiveTotal}
+      <PagedResultViewer
+        columns={cols}
+        rows={rows}
+        execMs={dataResult?.execMs}
+        exportFilename={`${tableName}.csv`}
+        editState={editState}
+        onHeaderClicked={handleHeaderClicked}
+        sortConfig={gridSortConfig}
+        hasMore={hasMore && (totalRows === null || rows.length < totalRows)}
+        loadingMore={isLoadingMore}
+        onLoadMore={handleLoadMore}
         onRefresh={handleRefresh}
         isRefreshing={isLoading || isSaving || isCounting}
-        onExportCsv={() => cols.length && exportCsv(cols, rows, `${tableName}.csv`)}
-        exportFilename={`${tableName}.csv`}
         fetchStats={fetchStats}
         isDirty={editState.isDirty}
         hasSelection={editState.selectedRow !== null}

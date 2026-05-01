@@ -29,6 +29,7 @@ import { ArrowDown, ArrowUp, PanelRightOpen, Search, X } from 'lucide-react'
 import { AutoSizedGrid, deriveColumns, useRowOverrides } from './DataGrid'
 import ValuePanel from './ValuePanel'
 import { saveTextFile } from '../lib/bridge'
+import { shouldLoadMore } from '../lib/queryPaging'
 import { useTheme } from '../theme/ThemeProvider'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -210,6 +211,7 @@ function GridCanvas({
   searchMatchCells,
   currentSearchMatch,
   sourceRowOrder,
+  onNearBottom,
 }) {
   const rowOverrides = useRowOverrides()
   const { nullText } = rowOverrides
@@ -379,6 +381,7 @@ function GridCanvas({
   // We keep a ref to the DataEditor and call updateCells() after every
   // internal sort change to force Glide to repaint every data cell.
   const gridRef = useRef(null)
+  const lastNearBottomRowRef = useRef(-1)
   useEffect(() => {
     if (isExternal || !gridRef.current || numRows === 0 || !glideCols.length) return
     const damage = []
@@ -407,6 +410,22 @@ function GridCanvas({
     gridRef.current.updateCells([{ cell: [currentSearchMatch.col, displayRow] }])
   }, [currentSearchMatch, rowOrder])
 
+  const handleVisibleRegionChanged = useCallback((region) => {
+    if (!onNearBottom || numRows <= 0) return
+    const y = Number(region?.y ?? 0)
+    const height = Number(region?.height ?? 0)
+    const lastVisibleRow = Math.max(0, Math.floor(y + height))
+    if (!shouldLoadMore({
+      lastVisibleRow,
+      loadedRows: numRows,
+      hasMore: true,
+      loadingMore: false,
+    })) return
+    if (lastNearBottomRowRef.current === numRows) return
+    lastNearBottomRowRef.current = numRows
+    onNearBottom()
+  }, [numRows, onNearBottom])
+
   return (
     <div
       ref={canvasWrapperRef}
@@ -425,6 +444,7 @@ function GridCanvas({
         onHeaderClicked={handleHeaderClicked}
         onCellEdited={editState ? handleCellEdited : undefined}
         onCellContextMenu={onRowContextMenu ? handleCellContextMenu : undefined}
+        onVisibleRegionChanged={onNearBottom ? handleVisibleRegionChanged : undefined}
         {...(editState ? { getCellsForSelection: true } : {})}
       />
     </div>
@@ -624,6 +644,7 @@ function GridWithPanel({
   searchMatchCells,
   currentSearchMatch,
   sourceRowOrder,
+  onNearBottom,
 }) {
   const [panelOpen,  setPanelOpen]  = useState(false)
   const [panelWidth, setPanelWidth] = useState(340)
@@ -721,6 +742,7 @@ function GridWithPanel({
           searchMatchCells={searchMatchCells}
           currentSearchMatch={currentSearchMatch}
           sourceRowOrder={sourceRowOrder}
+          onNearBottom={onNearBottom}
         />
       </div>
 
@@ -1243,6 +1265,7 @@ export default function DataViewer({
    */
   onHeaderClicked,
   sortConfig,
+  onNearBottom,
 }) {
   const [mode,        setMode]        = useState('grid')
   const [textFormat,  setTextFormat]  = useState('table')
@@ -1667,6 +1690,7 @@ export default function DataViewer({
                 searchMatchCells={searchMatchCells}
                 currentSearchMatch={currentSearchMatch}
                 sourceRowOrder={searchFilterRows ? filteredSourceRows : undefined}
+                onNearBottom={searchFilterRows ? undefined : onNearBottom}
               />
             )}
             {mode === 'text' && (

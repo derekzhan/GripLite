@@ -78,6 +78,40 @@ type ConnectionInfo struct {
 // Large result sets should be paginated at the SQL level (LIMIT / OFFSET).
 const maxQueryRows = 1000
 
+func stripTrailingSemicolons(sqlText string) string {
+	s := strings.TrimSpace(sqlText)
+	for strings.HasSuffix(s, ";") {
+		s = strings.TrimSpace(strings.TrimSuffix(s, ";"))
+	}
+	return s
+}
+
+func isPageableQuery(sqlText string) bool {
+	s := strings.TrimSpace(sqlText)
+	if s == "" || strings.Contains(s, ";") {
+		return false
+	}
+	upper := strings.ToUpper(s)
+	return strings.HasPrefix(upper, "SELECT") || strings.HasPrefix(upper, "WITH")
+}
+
+func buildPagedQuery(sqlText string, limit, offset int) (string, error) {
+	inner := stripTrailingSemicolons(sqlText)
+	if !isPageableQuery(inner) {
+		return "", fmt.Errorf("only single SELECT/WITH queries support paged loading")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > maxQueryRows {
+		limit = maxQueryRows
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return fmt.Sprintf("SELECT * FROM (%s) _griplite_page LIMIT %d OFFSET %d", inner, limit, offset), nil
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // App — the Wails application struct, bound to the frontend
 // ─────────────────────────────────────────────────────────────────────────────
@@ -659,6 +693,82 @@ func (a *App) RunQuery(connectionID, dbName, sql string) (*QueryResult, error) {
 				 VALUES (?, ?, ?, ?, ?)`,
 				connectionID, dbName, sql, execMs, "")
 		}()
+	}
+
+	return &QueryResult{
+		Columns:      cols,
+		Rows:         rows,
+		RowCount:     len(rows),
+		Truncated:    truncated,
+		RowsAffected: rs.RowsAffected,
+		ExecMs:       rs.ExecutionTime.Milliseconds(),
+	}, nil
+}
+
+// RunQueryPage executes one page of a single SELECT/WITH query.
+//
+// The user SQL remains the inner query, so an explicit LIMIT/OFFSET written by
+// the user is preserved while GripLite adds an outer paging window.
+func (a *App) RunQueryPage(connectionID, dbName, sqlText string, offset, limit int) (*QueryResult, error) {
+	pageLimit := limit
+	if pageLimit <= 0 {
+		pageLimit = 200
+	}
+	if pageLimit > maxQueryRows {
+		pageLimit = maxQueryRows
+	}
+	pagedSQL, err := buildPagedQuery(sqlText, pageLimit+1, offset)
+	if err != nil {
+		return &QueryResult{Error: err.Error()}, nil
+	}
+
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+
+	baseCtx, baseCancel := context.WithTimeout(a.ctx, 60*time.Second)
+	defer baseCancel()
+	cancelCtx, cancelFn := context.WithCancel(baseCtx)
+	defer cancelFn()
+	a.queryMu.Lock()
+	a.queryCancels[connectionID] = cancelFn
+	a.queryMu.Unlock()
+	defer func() {
+		a.queryMu.Lock()
+		delete(a.queryCancels, connectionID)
+		a.queryMu.Unlock()
+	}()
+
+	rs, err := drv.ExecuteQueryOnDB(cancelCtx, dbName, pagedSQL)
+	if err != nil {
+		return &QueryResult{Error: err.Error()}, nil
+	}
+	defer rs.Rows.Close()
+
+	cols := make([]ColumnMeta, len(rs.Columns))
+	for i, c := range rs.Columns {
+		cols[i] = ColumnMeta{Name: c.Name, Type: c.DatabaseType, Nullable: c.Nullable}
+	}
+
+	rows := make([][]any, 0, pageLimit)
+	truncated := false
+	for rs.Rows.Next() {
+		row := rs.Rows.Row()
+		if row == nil {
+			if err := rs.Rows.Err(); err != nil {
+				return &QueryResult{Columns: cols, Rows: rows, Error: fmt.Sprintf("read row: %v", err), ExecMs: rs.ExecutionTime.Milliseconds()}, nil
+			}
+			break
+		}
+		if len(rows) >= pageLimit {
+			truncated = true
+			break
+		}
+		rows = append(rows, row)
+	}
+	if err := rs.Rows.Err(); err != nil {
+		return &QueryResult{Columns: cols, Rows: rows, Error: fmt.Sprintf("row iteration: %v", err), ExecMs: rs.ExecutionTime.Milliseconds()}, nil
 	}
 
 	return &QueryResult{
@@ -1516,54 +1626,6 @@ func (a *App) CancelQuery(connectionID string) error {
 	}
 	fn()
 	return nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Paginated query (Load More)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// RunQueryPage executes a SQL statement and returns a page of rows starting at
-// offset. Used for "Load More" in the result grid.
-func (a *App) RunQueryPage(connectionID, dbName, sqlStr string, offset, limit int) (*QueryResult, error) {
-	drv, err := a.ensureLive(connectionID)
-	if err != nil {
-		return nil, err
-	}
-	if limit <= 0 {
-		limit = maxQueryRows
-	}
-	pagedSQL := fmt.Sprintf("SELECT * FROM (%s) _page LIMIT %d OFFSET %d", sqlStr, limit, offset)
-	ctx, cancel := context.WithTimeout(a.ctx, 60*time.Second)
-	defer cancel()
-	rs, err := drv.ExecuteQueryOnDB(ctx, dbName, pagedSQL)
-	if err != nil {
-		return &QueryResult{Error: err.Error()}, nil
-	}
-	defer rs.Rows.Close()
-	cols := make([]ColumnMeta, len(rs.Columns))
-	for i, c := range rs.Columns {
-		cols[i] = ColumnMeta{Name: c.Name, Type: c.DatabaseType, Nullable: c.Nullable}
-	}
-	var rows [][]any
-	truncated := false
-	for rs.Rows.Next() {
-		if len(rows) >= limit {
-			truncated = true
-			break
-		}
-		row := rs.Rows.Row()
-		if row == nil {
-			break
-		}
-		rows = append(rows, row)
-	}
-	return &QueryResult{
-		Columns:   cols,
-		Rows:      rows,
-		RowCount:  len(rows),
-		Truncated: truncated,
-		ExecMs:    rs.ExecutionTime.Milliseconds(),
-	}, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

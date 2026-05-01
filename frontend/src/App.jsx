@@ -37,12 +37,26 @@ import ErrorBoundary      from './components/ErrorBoundary'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
 import { runQuery, runQueryPage, listConnections, getBuildInfo } from './lib/bridge'
+import { appendResultPage } from './lib/queryPaging'
+import {
+  getNextConsoleSeqFromTabs,
+  loadWorkspaceState,
+  makeWorkspaceSnapshot,
+  saveWorkspaceState,
+} from './lib/workspaceState'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 const DEFAULT_CONN_ID = 'mock-conn'
+const DEFAULT_RESULT_PAGE_SIZE = 200
 let   nextConsoleSeq  = 1
+
+function isPageableSql(sql) {
+  const trimmed = String(sql ?? '').trim().replace(/;+$/g, '').trim()
+  if (!trimmed || trimmed.includes(';')) return false
+  return /^(select|with)\b/i.test(trimmed)
+}
 
 function makeConsoleTab() {
   const seq = nextConsoleSeq++
@@ -57,6 +71,15 @@ function makeConsoleTab() {
 // App
 // ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
+  const initialWorkspaceRef = useRef(null)
+  if (initialWorkspaceRef.current === null) {
+    const restored = loadWorkspaceState()
+    if (restored?.tabs?.length) {
+      nextConsoleSeq = Math.max(nextConsoleSeq, getNextConsoleSeqFromTabs(restored.tabs))
+    }
+    initialWorkspaceRef.current = restored
+  }
+
   // ── Connection state (Phase 13) ──────────────────────────────────────────
   //
   // The whole app shares one list of connections so that saving a new
@@ -71,9 +94,11 @@ export default function App() {
   //   connectionsReloadKey — opaque int that bumps whenever the list should
   //                        be re-fetched; DatabaseExplorer listens to it.
   const [connections,          setConnections]          = useState([])
-  const [activeConnId,         setActiveConnId]         = useState(DEFAULT_CONN_ID)
+  const [activeConnId,         setActiveConnId]         = useState(
+    () => initialWorkspaceRef.current?.activeConnId || DEFAULT_CONN_ID,
+  )
   const [connectionsReloadKey, setConnectionsReloadKey] = useState(0)
-  const connIdRef = useRef(DEFAULT_CONN_ID)
+  const connIdRef = useRef(initialWorkspaceRef.current?.activeConnId || DEFAULT_CONN_ID)
 
   /** Trigger Explorer + local connection list refresh. */
   const reloadConnections = useCallback(() => {
@@ -109,8 +134,8 @@ export default function App() {
   // Phase 13 / Task 1: No demo tab on cold start.  The workspace opens on the
   // WelcomePane (see below) until the user explicitly opens a console, table,
   // or database tab.
-  const [tabs,        setTabs]        = useState([])
-  const [activeTabId, setActiveTabId] = useState('')
+  const [tabs,        setTabs]        = useState(() => initialWorkspaceRef.current?.tabs ?? [])
+  const [activeTabId, setActiveTabId] = useState(() => initialWorkspaceRef.current?.activeTabId ?? '')
 
   /**
    * consolesData: {
@@ -125,9 +150,22 @@ export default function App() {
    * one resultSet per statement and lets the ResultPanel render sub-tabs.
    * Keeping the list per-console means switching tabs never loses results.
    */
-  const [consolesData, setConsolesData] = useState({})
+  const [consolesData, setConsolesData] = useState(() => {
+    const restored = initialWorkspaceRef.current?.tabs ?? []
+    const out = {}
+    for (const tab of restored) {
+      if (tab.type === 'console') {
+        out[tab.id] = { resultSets: [], activeResultId: null, isRunning: false }
+      }
+    }
+    return out
+  })
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
+
+  useEffect(() => {
+    saveWorkspaceState(undefined, makeWorkspaceSnapshot({ tabs, activeTabId, activeConnId }))
+  }, [tabs, activeTabId, activeConnId])
 
   // Monotonic id generator for result-set sub-tabs.  Module-level counter is
   // fine — we only need uniqueness within a single session.
@@ -175,7 +213,16 @@ export default function App() {
       const rid = nextResultId()
       let queryResult
       try {
-        queryResult = await runQuery(connIdRef.current, opts.dbName ?? '', sql)
+        if (!opts.multi && isPageableSql(sql)) {
+          const page = await runQueryPage(connIdRef.current, opts.dbName ?? '', sql, 0, DEFAULT_RESULT_PAGE_SIZE)
+          queryResult = appendResultPage(null, page, {
+            offset: 0,
+            pageSize: DEFAULT_RESULT_PAGE_SIZE,
+            source: { sql, dbName: opts.dbName ?? '', pageSize: DEFAULT_RESULT_PAGE_SIZE },
+          })
+        } else {
+          queryResult = await runQuery(connIdRef.current, opts.dbName ?? '', sql)
+        }
       } catch (err) {
         // Two separate hardening steps here:
         //   1. normalizeError() guarantees a string → React cannot crash
@@ -190,7 +237,12 @@ export default function App() {
           rowsAffected: 0, execMs: 0, error: msg,
         }
       }
-      const entry = { id: rid, label: labelForSql(sql), sql, queryResult }
+      const entry = {
+        id: rid,
+        label: labelForSql(sql),
+        sql,
+        queryResult: { ...queryResult, dbName: opts.dbName ?? '' },
+      }
 
       setConsolesData((prev) => {
         const prevTab = prev[tabId] ?? { resultSets: [], activeResultId: null, isRunning: true }
@@ -221,56 +273,70 @@ export default function App() {
     })
   }, [])
 
-  // ── Load More (offset pagination) ─────────────────────────────────────────
-  const handleLoadMore = useCallback(async (consoleId, resultId) => {
-    const data   = consolesData[consoleId]
-    if (!data) return
-    const entry  = data.resultSets?.find((r) => r.id === resultId)
-    if (!entry || !entry.queryResult?.truncated) return
-    const offset = entry.queryResult.rows?.length ?? 0
-    if (offset === 0) return
-
-    // Mark loading state
-    setConsolesData((prev) => ({
-      ...prev,
-      [consoleId]: { ...prev[consoleId], loadingMore: true },
-    }))
-
-    try {
-      const pageResult = await runQueryPage(
-        connIdRef.current,
-        entry.queryResult.dbName ?? '',
-        entry.sql,
-        offset,
-        1000,
-      )
-      if (!pageResult?.error && Array.isArray(pageResult?.rows)) {
-        setConsolesData((prev) => {
-          const d = prev[consoleId]
-          if (!d) return prev
-          const nextSets = d.resultSets.map((r) => {
-            if (r.id !== resultId) return r
-            const merged = {
-              ...r.queryResult,
-              rows:      [...(r.queryResult.rows ?? []), ...pageResult.rows],
-              rowCount:  (r.queryResult.rows?.length ?? 0) + pageResult.rows.length,
-              truncated: pageResult.truncated,
-            }
-            return { ...r, queryResult: merged }
-          })
-          return { ...d, resultSets: nextSets, loadingMore: false }
-        })
+  const handleLoadNextResultPage = useCallback(async (consoleId, resultId) => {
+    let target = null
+    setConsolesData((prev) => {
+      const d = prev[consoleId]
+      const entry = d?.resultSets?.find((r) => r.id === resultId)
+      const qr = entry?.queryResult
+      if (!d || !entry || !qr?.hasMore || qr.loadingMore || !qr.source) return prev
+      target = { entry, queryResult: qr }
+      return {
+        ...prev,
+        [consoleId]: {
+          ...d,
+          resultSets: d.resultSets.map((r) => r.id === resultId
+            ? { ...r, queryResult: { ...qr, loadingMore: true } }
+            : r),
+        },
       }
-    } catch {
-      // ignore load-more errors
-    } finally {
+    })
+    if (!target) return
+
+    const qr = target.queryResult
+    const source = qr.source
+    const offset = qr.nextOffset ?? qr.rows?.length ?? 0
+    try {
+      const page = await runQueryPage(connIdRef.current, source.dbName ?? '', source.sql, offset, source.pageSize ?? DEFAULT_RESULT_PAGE_SIZE)
       setConsolesData((prev) => {
         const d = prev[consoleId]
         if (!d) return prev
-        return { ...prev, [consoleId]: { ...d, loadingMore: false } }
+        return {
+          ...prev,
+          [consoleId]: {
+            ...d,
+            resultSets: d.resultSets.map((r) => {
+              if (r.id !== resultId) return r
+              return {
+                ...r,
+                queryResult: appendResultPage(r.queryResult, page, {
+                  offset,
+                  pageSize: source.pageSize ?? DEFAULT_RESULT_PAGE_SIZE,
+                  source,
+                }),
+              }
+            }),
+          },
+        }
+      })
+    } catch (err) {
+      const msg = normalizeError(err)
+      toast.error(`Load next page failed: ${msg}`)
+      setConsolesData((prev) => {
+        const d = prev[consoleId]
+        if (!d) return prev
+        return {
+          ...prev,
+          [consoleId]: {
+            ...d,
+            resultSets: d.resultSets.map((r) => r.id === resultId
+              ? { ...r, queryResult: { ...r.queryResult, loadingMore: false, error: msg } }
+              : r),
+          },
+        }
       })
     }
-  }, [consolesData])
+  }, [])
 
   // ── Table open ────────────────────────────────────────────────────────────
   /**
@@ -369,6 +435,9 @@ export default function App() {
   // user to the WelcomePane instead of spawning a replacement console.
   const handleTabClose = useCallback((e, tabId) => {
     e.stopPropagation()
+    try {
+      localStorage.removeItem(`griplite_sql_editor_${tabId}_v1`)
+    } catch { /* ignore */ }
     setTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId)
       setActiveTabId((cur) => {
@@ -550,6 +619,7 @@ export default function App() {
                           connectionLabel={connInfo
                             ? (connInfo.name || `${connInfo.host}:${connInfo.port}`)
                             : ''}
+                          storageKey={`griplite_sql_editor_${tab.id}_v1`}
                         />
                         <ResultPanel
                           queryResult={activeResult?.queryResult ?? null}
@@ -557,10 +627,7 @@ export default function App() {
                           resultSets={data.resultSets}
                           activeResultId={activeResult?.id ?? null}
                           onSelectResult={(rid) => handleSelectResult(tab.id, rid)}
-                          onLoadMore={activeResult
-                            ? () => handleLoadMore(tab.id, activeResult.id)
-                            : undefined}
-                          loadingMore={!!data.loadingMore}
+                          onLoadMore={() => activeResult?.id && handleLoadNextResultPage(tab.id, activeResult.id)}
                         />
                       </SplitPane>
                     </ErrorBoundary>

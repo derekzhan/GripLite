@@ -30,7 +30,7 @@ function mockQueryResult(sql) {
     { name: 'created_at', type: 'DATETIME',      nullable: false },
   ]
   const statuses = ['active', 'inactive', 'banned']
-  const rows = Array.from({ length: 50 }, (_, i) => [
+  const rows = Array.from({ length: 600 }, (_, i) => [
     i + 1,
     `user_${i + 1}`,
     i % 7 === 0 ? null : `user${i + 1}@example.com`,
@@ -70,6 +70,22 @@ export async function runQuery(connectionID, dbName, sql) {
   // Browser dev mock
   await delay(150 + Math.random() * 200)
   return mockQueryResult(sql)
+}
+
+export async function runQueryPage(connectionID, dbName, sql, offset = 0, limit = 200) {
+  if (isWails()) {
+    const { RunQueryPage } = await import('../../wailsjs/go/main/App.js')
+    return RunQueryPage(connectionID, dbName ?? '', sql, offset, limit)
+  }
+  await delay(120 + Math.random() * 120)
+  const mock = mockQueryResult(sql)
+  const rows = mock.rows.slice(offset, offset + limit)
+  return {
+    ...mock,
+    rows,
+    rowCount: rows.length,
+    truncated: offset + rows.length < mock.rows.length,
+  }
 }
 
 // ─── Data tab WHERE filter history (persisted in griplite.db) ─────────────
@@ -1157,19 +1173,6 @@ export async function cancelQuery(connectionID) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Load More (offset pagination)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export async function runQueryPage(connectionID, dbName, sql, offset, limit = 1000) {
-  if (isWails()) {
-    const { RunQueryPage } = await import('../../wailsjs/go/main/App.js')
-    return RunQueryPage(connectionID, dbName ?? '', sql, offset, limit)
-  }
-  await delay(100)
-  return { columns: [], rows: [], rowCount: 0, truncated: false, execMs: 0, error: '' }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Kill Query
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1251,7 +1254,7 @@ export async function getBuildInfo() {
   await delay(10)
   return {
     name: 'GripLite',
-    version: 'v0.1.8',
+    version: 'v0.1.9',
     buildDate: new Date().toISOString().slice(0, 10),
     platform: 'Wails + React (browser preview)',
     goVersion: 'go (dev)',

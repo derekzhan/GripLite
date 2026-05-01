@@ -839,12 +839,10 @@ export default function DatabaseExplorer({
       toggleExpand(node)
     }
 
-    // Right-click on a database node pops a DBeaver-style context menu
-    // (Create New Table / View Tables / Browse from here / Refresh).
-    // Right-click on the Tables folder is intentionally left unhandled so
-    // actions are discoverable in one consistent place: the database row.
+    // Right-click on a database node or its Tables folder pops the same
+    // DBeaver-style menu (Create New Table / View Tables / Browse / Refresh).
     const handleContextMenu = (e) => {
-      if (node.type === 'database') {
+      if (node.type === 'database' || (isFolder && node.folderKind === 'tables')) {
         e.preventDefault()
         e.stopPropagation()
         setSelected(node.id)
@@ -927,8 +925,9 @@ export default function DatabaseExplorer({
             (rather than utility class) lets a single var() switch the colour
             cleanly under both light and dark themes. */}
         <span
-          className="truncate text-[12px] flex-1"
+          className="truncate text-[12px] flex-1 min-w-0"
           style={{ color: labelColorFor(node) }}
+          title={node.label}
         >
           {node.label}
         </span>

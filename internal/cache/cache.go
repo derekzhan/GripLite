@@ -627,22 +627,31 @@ func (c *MetadataCache) RefreshTable(
 		aiArg = *detail.AutoIncrement
 	}
 	if _, err = tx.ExecContext(ctx,
-		`UPDATE metadata_tables
-		    SET comment        = ?,
-		        engine         = CASE WHEN ? = '' THEN engine    ELSE ? END,
-		        charset        = CASE WHEN ? = '' THEN charset   ELSE ? END,
-		        collation      = CASE WHEN ? = '' THEN collation ELSE ? END,
-		        auto_increment = COALESCE(?, auto_increment),
-		        synced_at      = ?
-		  WHERE conn_id = ? AND db_name = ? AND table_name = ?`,
+		`INSERT INTO metadata_tables
+		    (conn_id, db_name, table_name, kind, row_count, size_bytes,
+		     comment, engine, charset, collation, auto_increment, synced_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(conn_id, db_name, table_name) DO UPDATE SET
+		     kind           = excluded.kind,
+		     row_count      = CASE WHEN excluded.row_count  < 0 THEN metadata_tables.row_count  ELSE excluded.row_count  END,
+		     size_bytes     = CASE WHEN excluded.size_bytes < 0 THEN metadata_tables.size_bytes ELSE excluded.size_bytes END,
+		     comment        = excluded.comment,
+		     engine         = CASE WHEN excluded.engine    = '' THEN metadata_tables.engine    ELSE excluded.engine    END,
+		     charset        = CASE WHEN excluded.charset   = '' THEN metadata_tables.charset   ELSE excluded.charset   END,
+		     collation      = CASE WHEN excluded.collation = '' THEN metadata_tables.collation ELSE excluded.collation END,
+		     auto_increment = COALESCE(excluded.auto_increment, metadata_tables.auto_increment),
+		     synced_at      = excluded.synced_at`,
+		connID, dbName, tableName,
+		string(detail.Kind),
+		detail.RowCount,
+		detail.SizeBytes,
 		detail.Comment,
-		detail.Engine, detail.Engine,
-		detail.Charset, detail.Charset,
-		detail.Collation, detail.Collation,
+		detail.Engine,
+		detail.Charset,
+		detail.Collation,
 		aiArg,
-		now,
-		connID, dbName, tableName); err != nil {
-		return fmt.Errorf("update table row: %w", err)
+		now); err != nil {
+		return fmt.Errorf("upsert table row: %w", err)
 	}
 
 	stmtCol, err := tx.PrepareContext(ctx, `
@@ -766,9 +775,9 @@ func (c *MetadataCache) GetTableSchema(
 		if err := rows.Scan(&col.Name, &col.Type, &nullable, &isPK, &col.Comment); err != nil {
 			return nil, fmt.Errorf("cache: scan column: %w", err)
 		}
-		col.Ordinal  = ordinal
+		col.Ordinal = ordinal
 		col.Nullable = nullable == 1
-		col.IsPK     = isPK == 1
+		col.IsPK = isPK == 1
 		schema.Columns = append(schema.Columns, col)
 	}
 	if err := rows.Err(); err != nil {

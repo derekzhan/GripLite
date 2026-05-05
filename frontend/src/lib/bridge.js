@@ -72,7 +72,7 @@ export async function runQuery(connectionID, dbName, sql) {
   return mockQueryResult(sql)
 }
 
-export async function runQueryPage(connectionID, dbName, sql, offset = 0, limit = 200) {
+export async function runQueryPage(connectionID, dbName, sql, offset = 0, limit = 100) {
   if (isWails()) {
     const { RunQueryPage } = await import('../../wailsjs/go/main/App.js')
     return RunQueryPage(connectionID, dbName ?? '', sql, offset, limit)
@@ -316,6 +316,13 @@ export async function getTableSchema(connectionID, dbName, tableName) {
     return { ...mock, connId: connectionID, dbName, tableName }
   }
   return { found: false, connId: connectionID, dbName, tableName, columns: [], kind: '', rowCount: -1, syncedAt: '' }
+}
+
+export async function refreshTableMetadata(connectionID, dbName, tableName) {
+  if (isWails()) {
+    const { RefreshTableMetadata } = await import('../../wailsjs/go/main/App.js')
+    return RefreshTableMetadata(connectionID, dbName, tableName)
+  }
 }
 
 /**
@@ -1210,6 +1217,61 @@ export async function fetchEvents(connectionID, dbName) {
     return (await FetchEvents(connectionID, dbName)) ?? []
   }
   return []
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Copy data jobs
+// ─────────────────────────────────────────────────────────────────────────────
+
+const mockCopyProgressListeners = new Set()
+
+function emitMockCopyProgress(payload) {
+  for (const listener of mockCopyProgressListeners) {
+    try { listener(payload) } catch { /* keep other listeners alive */ }
+  }
+}
+
+export async function copyDatabase(config) {
+  if (isWails()) {
+    const { CopyDatabase } = await import('../../wailsjs/go/main/App.js')
+    return CopyDatabase(config)
+  }
+
+  const totalRows = 1000
+  emitMockCopyProgress({ status: 'Preparing copy job...', processedRows: 0, totalRows })
+  for (const processedRows of [120, 280, 460, 650, 820, 1000]) {
+    await delay(180)
+    emitMockCopyProgress({ status: 'Copying data...', processedRows, totalRows })
+  }
+  emitMockCopyProgress({ status: 'Copy complete', processedRows: totalRows, totalRows })
+}
+
+export async function cancelCopy() {
+  if (isWails()) {
+    const { CancelCopy } = await import('../../wailsjs/go/main/App.js')
+    return CancelCopy()
+  }
+  emitMockCopyProgress({ status: 'Copy cancelled', processedRows: 0, totalRows: 0 })
+}
+
+export async function copyTable(config) {
+  if (isWails()) {
+    const { CopyTable } = await import('../../wailsjs/go/main/App.js')
+    return CopyTable(config)
+  }
+
+  await copyDatabase(config)
+  return { success: true, timeMs: 0, error: '' }
+}
+
+export async function onCopyProgress(callback) {
+  if (isWails()) {
+    const { EventsOn } = await import('../../wailsjs/runtime/runtime.js')
+    return EventsOn('copy_progress', callback)
+  }
+
+  mockCopyProgressListeners.add(callback)
+  return () => mockCopyProgressListeners.delete(callback)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

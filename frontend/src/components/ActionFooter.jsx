@@ -46,6 +46,7 @@ import {
   ChevronsLeft, ChevronLeft, ChevronRight, ChevronsRight,
   Download,
 } from 'lucide-react'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, normalizePageSize } from '../lib/queryPaging'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -130,15 +131,15 @@ function Sep() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Refresh button — plain button + tiny dropdown for quick-size presets
 // ─────────────────────────────────────────────────────────────────────────────
-function RefreshBtn({ onRefresh, isRefreshing, pageSize, setPageSize, setCurrentPage }) {
+function RefreshBtn({ onRefresh, isRefreshing, pageSize, setPageSize, setCurrentPage, allowAllPageSize }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
   const pick = (size) => {
-    setPageSize(size)
+    const applied = setPageSize(size)
+    if (applied === false) return
     setCurrentPage(1)
     setOpen(false)
-    onRefresh?.()
   }
 
   // Close on outside click
@@ -196,17 +197,19 @@ function RefreshBtn({ onRefresh, isRefreshing, pageSize, setPageSize, setCurrent
               {n} rows
             </button>
           ))}
-          <button
-            onClick={() => pick('all')}
-            className={[
-              'flex items-center w-full px-3 py-1.5 text-[12px] transition-colors text-left border-t border-line-subtle',
-              pageSize === 'all'
-                ? 'bg-accent text-fg-on-accent'
-                : 'text-fg-secondary hover:bg-hover',
-            ].join(' ')}
-          >
-            All rows
-          </button>
+          {allowAllPageSize && (
+            <button
+              onClick={() => pick('all')}
+              className={[
+                'flex items-center w-full px-3 py-1.5 text-[12px] transition-colors text-left border-t border-line-subtle',
+                pageSize === 'all'
+                  ? 'bg-accent text-fg-on-accent'
+                  : 'text-fg-secondary hover:bg-hover',
+              ].join(' ')}
+            >
+              All rows
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -284,11 +287,14 @@ export default function ActionFooter({
   onDeleteRow,
   onSave,
   onCancel,
+  showFetchSize,
+  allowAllPageSize = true,
 }) {
   const [jumpValue, setJumpValue] = useState('')
   const total = totalPages(pageSize, totalRows)
   const { first: firstRow, last: lastRow } = rowRange(pageSize, currentPage, totalRows)
   const isInfinite = mode === 'infinite'
+  const showFetchInput = !isInfinite || showFetchSize
 
   const goTo = useCallback((p) => {
     setCurrentPage(Math.max(1, Math.min(total, p)))
@@ -297,10 +303,15 @@ export default function ActionFooter({
   // Fetch-size number input → update pageSize
   const onFetchSizeChange = (e) => {
     const raw = e.target.value.trim()
-    if (raw === '' || raw === '0') return
-    const n = parseInt(raw, 10)
-    if (!isNaN(n) && n > 0) {
-      setPageSize(n)
+    const fallback = typeof pageSize === 'number' ? pageSize : DEFAULT_PAGE_SIZE
+    const n = normalizePageSize(raw, fallback)
+    e.target.value = n
+    if (n !== pageSize) {
+      const applied = setPageSize(n)
+      if (applied === false) {
+        e.target.value = pageSize
+        return
+      }
       setCurrentPage(1)
     }
   }
@@ -324,6 +335,7 @@ export default function ActionFooter({
           pageSize={pageSize}
           setPageSize={setPageSize}
           setCurrentPage={setCurrentPage}
+          allowAllPageSize={allowAllPageSize}
         />
 
         <Sep />
@@ -410,16 +422,17 @@ export default function ActionFooter({
 
         <Sep />
 
-        {!isInfinite && (
+        {showFetchInput && (
           <>
             {/* Fetch-size input */}
             <div className="flex items-center gap-1">
               <span className="text-[10px] text-fg-muted uppercase tracking-wider">Fetch</span>
               <input
+                key={pageSize}
                 type="number"
                 min={1}
-                max={100000}
-                defaultValue={typeof pageSize === 'number' ? pageSize : 200}
+                max={MAX_PAGE_SIZE}
+                defaultValue={typeof pageSize === 'number' ? pageSize : DEFAULT_PAGE_SIZE}
                 onBlur={onFetchSizeChange}
                 onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur() } }}
                 className="w-16 text-center bg-elevated text-fg-primary border border-line

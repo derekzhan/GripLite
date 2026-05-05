@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict'
 
-import { getWhereFilterSuggestions } from '../src/lib/filterAutocomplete.js'
-import { appendResultPage, pageSlice, shouldLoadMore } from '../src/lib/queryPaging.js'
+import { buildCopyDatabaseConfig, copyProgressPercent, tableNamesForCopySelection } from '../src/lib/copyData.js'
+import {
+  MYSQL_COLUMN_TYPE_OPTIONS,
+  buildCreateDatabaseSql,
+  buildCreateTableSql,
+  buildDropTableSql,
+  buildRenameTableSql,
+} from '../src/lib/databaseTemplates.js'
+import { getVisibleColumnIndices, projectVisibleRows } from '../src/lib/dataSearch.js'
+import { buildFilterSuggestionColumns, getWhereFilterSuggestions } from '../src/lib/filterAutocomplete.js'
+import { appendResultPage, normalizePageSize, pageSlice, shouldLoadMore } from '../src/lib/queryPaging.js'
 import {
   getNextConsoleSeqFromTabs,
   loadWorkspaceState,
@@ -48,6 +57,24 @@ function testFilterAutocompleteUsesLateColumns() {
   assert.deepEqual(
     suggestions.map((s) => [s.text, s.kind]),
     [['status', 'column'], ['started_at', 'column']],
+  )
+}
+
+function testFilterAutocompleteFallsBackToResultColumns() {
+  const columns = buildFilterSuggestionColumns([], [
+    { name: 'created_at', type: 'datetime' },
+    { name: 'customer_id', type: 'bigint' },
+  ])
+
+  const suggestions = getWhereFilterSuggestions({
+    value: 'cre',
+    cursorPos: 3,
+    columns,
+  })
+
+  assert.deepEqual(
+    suggestions.map((s) => [s.text, s.kind]),
+    [['created_at', 'column']],
   )
 }
 
@@ -110,11 +137,127 @@ function testNearBottomTrigger() {
   assert.equal(shouldLoadMore({ lastVisibleRow: 199, loadedRows: 200, hasMore: false, loadingMore: false }), false)
 }
 
+function testNormalizePageSize() {
+  assert.equal(normalizePageSize('100', 200), 100)
+  assert.equal(normalizePageSize('0', 200), 200)
+  assert.equal(normalizePageSize('', 200), 200)
+  assert.equal(normalizePageSize('abc', 200), 200)
+  assert.equal(normalizePageSize('200000', 200), 100000)
+}
+
+function testVisibleRowsPreserveSourceColumnMapping() {
+  const rows = [['hidden-a', 'shown-b', 'hidden-c', '107002']]
+  const hiddenCols = new Set([0, 2])
+
+  assert.deepEqual(getVisibleColumnIndices(4, hiddenCols), [1, 3])
+  assert.deepEqual(projectVisibleRows(rows, [1, 3]), [['shown-b', '107002']])
+}
+
+function testCopyDatabaseConfigDefaults() {
+  const cfg = buildCopyDatabaseConfig({
+    source: { connId: 'src', dbName: 'shop' },
+    target: { connId: 'dst', dbName: 'shop_copy' },
+  })
+
+  assert.deepEqual(cfg, {
+    sourceConnId: 'src',
+    sourceDb: 'shop',
+    targetConnId: 'dst',
+    targetDb: 'shop_copy',
+    copyStructure: true,
+    copyData: true,
+    dropTargetIfExists: false,
+    batchSize: 1000,
+    scope: 'database',
+    tables: [],
+  })
+}
+
+function testCopyTableSelectionExtractsNames() {
+  assert.deepEqual(
+    tableNamesForCopySelection([
+      { name: 'users' },
+      { tableName: 'orders' },
+      'products',
+      { name: '' },
+      null,
+    ]),
+    ['users', 'orders', 'products'],
+  )
+}
+
+function testCopyProgressPercent() {
+  assert.equal(copyProgressPercent({ processedRows: 25, totalRows: 100 }), 25)
+  assert.equal(copyProgressPercent({ processedRows: 150, totalRows: 100 }), 100)
+  assert.equal(copyProgressPercent({ processedRows: 10, totalRows: 0 }), 0)
+}
+
+function testCreateDatabaseTemplateQuotesIdentifiers() {
+  const sql = buildCreateDatabaseSql({
+    databaseName: 'new`db',
+    charset: 'utf8mb4',
+    collation: 'utf8mb4_general_ci',
+  })
+
+  assert.equal(sql, 'CREATE DATABASE IF NOT EXISTS `new``db` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;')
+}
+
+function testCreateTableSqlBuildsColumnsAndOptions() {
+  const sql = buildCreateTableSql({
+    dbName: 'shop',
+    tableName: 'New`Table',
+    engine: 'InnoDB',
+    charset: 'utf8mb4',
+    collation: 'utf8mb4_general_ci',
+    comment: 'demo table',
+    columns: [
+      { name: 'id', type: 'INT', notNull: true, autoIncrement: true, key: 'PRIMARY', comment: 'pk' },
+      { name: 'name', type: 'VARCHAR(128)', notNull: true, defaultValue: "'anonymous'" },
+    ],
+  })
+
+  assert.equal(sql, [
+    'CREATE TABLE `shop`.`New``Table` (',
+    "  `id` INT NOT NULL AUTO_INCREMENT COMMENT 'pk',",
+    "  `name` VARCHAR(128) NOT NULL DEFAULT 'anonymous',",
+    '  PRIMARY KEY (`id`)',
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='demo table';",
+  ].join('\n'))
+}
+
+function testColumnTypeOptionsIncludeCommonMySQLTypes() {
+  assert.ok(MYSQL_COLUMN_TYPE_OPTIONS.includes('INT'))
+  assert.ok(MYSQL_COLUMN_TYPE_OPTIONS.includes('VARCHAR(255)'))
+  assert.ok(MYSQL_COLUMN_TYPE_OPTIONS.includes('DATETIME'))
+  assert.ok(MYSQL_COLUMN_TYPE_OPTIONS.includes('JSON'))
+}
+
+function testRenameAndDropTableSqlQuoteIdentifiers() {
+  assert.equal(
+    buildRenameTableSql({ dbName: 'shop`db', oldTableName: 'old`name', newTableName: 'new`name' }),
+    'RENAME TABLE `shop``db`.`old``name` TO `shop``db`.`new``name`;',
+  )
+  assert.equal(
+    buildDropTableSql({ dbName: 'shop`db', tableName: 'old`name' }),
+    'DROP TABLE `shop``db`.`old``name`;',
+  )
+}
+
 testFilterAutocompleteUsesLateColumns()
+testFilterAutocompleteFallsBackToResultColumns()
 testWorkspaceSnapshotRoundTrip()
 testWorkspaceStateDropsInvalidActiveTab()
 testPageSliceKeepsLocalPaginationOnly()
 testAppendResultPagePreservesMetadata()
 testNearBottomTrigger()
+testNormalizePageSize()
+testVisibleRowsPreserveSourceColumnMapping()
+testCopyDatabaseConfigDefaults()
+testCopyTableSelectionExtractsNames()
+testCopyProgressPercent()
+testCreateDatabaseTemplateQuotesIdentifiers()
+testCreateTableSqlBuildsColumnsAndOptions()
+testColumnTypeOptionsIncludeCommonMySQLTypes()
+testRenameAndDropTableSqlQuoteIdentifiers()
 
 console.log('unit tests passed')

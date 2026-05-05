@@ -29,6 +29,7 @@ import TableViewer        from './components/TableViewer'
 import DatabaseViewer     from './components/DatabaseViewer'
 import QueryTabView       from './components/QueryTabView'
 import ConnectionDialog   from './components/ConnectionDialog'
+import CopyDataModal      from './components/CopyDataModal'
 import MenuBar            from './components/MenuBar'
 import ThemeToggle        from './components/ThemeToggle'
 import AboutModal              from './components/AboutModal'
@@ -37,7 +38,7 @@ import ErrorBoundary      from './components/ErrorBoundary'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
 import { runQuery, runQueryPage, listConnections, getBuildInfo } from './lib/bridge'
-import { appendResultPage } from './lib/queryPaging'
+import { appendResultPage, DEFAULT_PAGE_SIZE } from './lib/queryPaging'
 import {
   getNextConsoleSeqFromTabs,
   loadWorkspaceState,
@@ -49,7 +50,7 @@ import {
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
 const DEFAULT_CONN_ID = 'mock-conn'
-const DEFAULT_RESULT_PAGE_SIZE = 200
+const DEFAULT_RESULT_PAGE_SIZE = DEFAULT_PAGE_SIZE
 let   nextConsoleSeq  = 1
 
 function isPageableSql(sql) {
@@ -338,6 +339,71 @@ export default function App() {
     }
   }, [])
 
+  const handleResultPageSizeChange = useCallback(async (consoleId, resultId, pageSize) => {
+    let target = null
+    setConsolesData((prev) => {
+      const d = prev[consoleId]
+      const entry = d?.resultSets?.find((r) => r.id === resultId)
+      const qr = entry?.queryResult
+      if (!d || !entry || !qr?.source || qr.loadingMore) return prev
+      target = { queryResult: qr }
+      return {
+        ...prev,
+        [consoleId]: {
+          ...d,
+          resultSets: d.resultSets.map((r) => r.id === resultId
+            ? { ...r, queryResult: { ...qr, loadingMore: true } }
+            : r),
+        },
+      }
+    })
+    if (!target) return
+
+    const source = target.queryResult.source
+    const nextSource = { ...source, pageSize }
+    try {
+      const page = await runQueryPage(connIdRef.current, source.dbName ?? '', source.sql, 0, pageSize)
+      setConsolesData((prev) => {
+        const d = prev[consoleId]
+        if (!d) return prev
+        return {
+          ...prev,
+          [consoleId]: {
+            ...d,
+            resultSets: d.resultSets.map((r) => {
+              if (r.id !== resultId) return r
+              const queryResult = appendResultPage(null, page, {
+                offset: 0,
+                pageSize,
+                source: nextSource,
+              })
+              return {
+                ...r,
+                queryResult: { ...queryResult, dbName: source.dbName ?? '' },
+              }
+            }),
+          },
+        }
+      })
+    } catch (err) {
+      const msg = normalizeError(err)
+      toast.error(`Reload page failed: ${msg}`)
+      setConsolesData((prev) => {
+        const d = prev[consoleId]
+        if (!d) return prev
+        return {
+          ...prev,
+          [consoleId]: {
+            ...d,
+            resultSets: d.resultSets.map((r) => r.id === resultId
+              ? { ...r, queryResult: { ...r.queryResult, loadingMore: false, error: msg } }
+              : r),
+          },
+        }
+      })
+    }
+  }, [])
+
   // ── Table open ────────────────────────────────────────────────────────────
   /**
    * handleTableOpen — opens or activates a TableViewer tab.
@@ -403,6 +469,12 @@ export default function App() {
       }]
     })
     setActiveTabId(tabId)
+  }, [])
+
+  const [copyModalSource, setCopyModalSource] = useState(null)
+
+  const handleDatabaseCopyOpen = useCallback(({ dbName, connId }) => {
+    setCopyModalSource({ dbName, connId: connId ?? connIdRef.current })
   }, [])
 
   // ── New SQL console ───────────────────────────────────────────────────────
@@ -551,6 +623,7 @@ export default function App() {
               onNewConnection={handleNewConnectionOpen}
               onTableOpen={handleTableOpen}
               onDatabaseOpen={handleDatabaseOpen}
+              onDatabaseCopyOpen={handleDatabaseCopyOpen}
               onQueryOpen={handleQueryOpen}
               onConsoleOpen={handleNewConsole}
               onPropertiesOpen={handlePropertiesOpen}
@@ -628,6 +701,7 @@ export default function App() {
                           activeResultId={activeResult?.id ?? null}
                           onSelectResult={(rid) => handleSelectResult(tab.id, rid)}
                           onLoadMore={() => activeResult?.id && handleLoadNextResultPage(tab.id, activeResult.id)}
+                          onPageSizeChange={(size) => activeResult?.id && handleResultPageSizeChange(tab.id, activeResult.id, size)}
                         />
                       </SplitPane>
                     </ErrorBoundary>
@@ -731,6 +805,13 @@ export default function App() {
         initialId={connDialogInitId}
         onClose={() => setConnDialogOpen(false)}
         onSaved={handleDialogSaved}
+      />
+
+      <CopyDataModal
+        isOpen={!!copyModalSource}
+        source={copyModalSource}
+        connections={connections}
+        onClose={() => setCopyModalSource(null)}
       />
 
       {/* ── About modal (Phase 18) ──────────────────────────────────── */}

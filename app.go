@@ -147,6 +147,10 @@ type App struct {
 	// queryMu protects queryCancels.
 	queryMu      sync.Mutex
 	queryCancels map[string]context.CancelFunc
+
+	// copyMu protects the currently running copy job cancel function.
+	copyMu     sync.Mutex
+	copyCancel context.CancelFunc
 }
 
 // NewApp creates the App instance. Called once at startup.
@@ -881,6 +885,22 @@ func (a *App) GetTableSchema(connectionID, dbName, tableName string) (*cache.Cac
 	ctx, cancel := context.WithTimeout(a.ctx, 500*time.Millisecond)
 	defer cancel()
 	return a.meta.GetTableSchema(ctx, connectionID, dbName, tableName)
+}
+
+// RefreshTableMetadata refreshes the local SQLite schema cache for one live
+// table. Use it after CREATE TABLE so the Data tab immediately knows about
+// primary keys, auto-increment columns, comments, and column nullability.
+func (a *App) RefreshTableMetadata(connectionID, dbName, tableName string) error {
+	if a.meta == nil {
+		return fmt.Errorf("metadata cache not initialised")
+	}
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+	defer cancel()
+	return a.meta.RefreshTable(ctx, connectionID, dbName, tableName, drv)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1635,6 +1655,69 @@ func (a *App) CancelQuery(connectionID string) error {
 // KillQuery sends KILL QUERY <processID> on the given connection.
 func (a *App) KillQuery(connectionID string, processID int64) (*QueryResult, error) {
 	return a.RunQuery(connectionID, "", fmt.Sprintf("KILL QUERY %d", processID))
+}
+
+// CopyTable copies one table's structure (and later data) between live
+// connections. The database.Manager owns direct *sql.DB access; App only
+// translates progress callbacks into Wails events.
+func (a *App) CopyTable(cfg database.CopyTableConfig) database.CopyResult {
+	if a.dbMgr == nil {
+		return database.CopyResult{Error: "database manager not initialised"}
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Minute)
+	defer cancel()
+	return a.dbMgr.CopyTable(ctx, cfg, func(progress database.CopyProgressEvent) {
+		if a.ctx != nil {
+			wailsruntime.EventsEmit(a.ctx, "copy_progress", progress)
+		}
+	})
+}
+
+// CopyDatabase copies all base tables from one database to another.
+func (a *App) CopyDatabase(cfg database.CopyDatabaseConfig) database.CopyResult {
+	if a.dbMgr == nil {
+		return database.CopyResult{Error: "database manager not initialised"}
+	}
+	if _, err := a.ensureLive(cfg.SourceConnID); err != nil {
+		return database.CopyResult{Error: fmt.Sprintf("source: %v", err)}
+	}
+	if _, err := a.ensureLive(cfg.TargetConnID); err != nil {
+		return database.CopyResult{Error: fmt.Sprintf("target: %v", err)}
+	}
+
+	baseCtx, baseCancel := context.WithTimeout(a.ctx, 30*time.Minute)
+	defer baseCancel()
+	ctx, cancel := context.WithCancel(baseCtx)
+	defer cancel()
+
+	a.copyMu.Lock()
+	a.copyCancel = cancel
+	a.copyMu.Unlock()
+	defer func() {
+		a.copyMu.Lock()
+		if a.copyCancel != nil {
+			a.copyCancel = nil
+		}
+		a.copyMu.Unlock()
+	}()
+
+	return a.dbMgr.CopyDatabase(ctx, cfg, func(progress database.CopyProgressEvent) {
+		if a.ctx != nil {
+			wailsruntime.EventsEmit(a.ctx, "copy_progress", progress)
+		}
+	})
+}
+
+// CancelCopy cancels the currently running database copy job.
+func (a *App) CancelCopy() error {
+	a.copyMu.Lock()
+	fn := a.copyCancel
+	a.copyMu.Unlock()
+	if fn == nil {
+		return fmt.Errorf("no running copy job")
+	}
+	fn()
+	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

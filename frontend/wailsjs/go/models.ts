@@ -325,6 +325,82 @@ export namespace database {
 		    return a;
 		}
 	}
+	export class CopyDatabaseConfig {
+	    sourceConnId: string;
+	    sourceDb: string;
+	    targetConnId: string;
+	    targetDb: string;
+	    copyStructure: boolean;
+	    copyData: boolean;
+	    dropTargetIfExists: boolean;
+	    batchSize: number;
+	    scope: string;
+	    tables: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CopyDatabaseConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sourceConnId = source["sourceConnId"];
+	        this.sourceDb = source["sourceDb"];
+	        this.targetConnId = source["targetConnId"];
+	        this.targetDb = source["targetDb"];
+	        this.copyStructure = source["copyStructure"];
+	        this.copyData = source["copyData"];
+	        this.dropTargetIfExists = source["dropTargetIfExists"];
+	        this.batchSize = source["batchSize"];
+	        this.scope = source["scope"];
+	        this.tables = source["tables"];
+	    }
+	}
+	export class CopyResult {
+	    success: boolean;
+	    timeMs: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CopyResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.timeMs = source["timeMs"];
+	        this.error = source["error"];
+	    }
+	}
+	export class CopyTableConfig {
+	    sourceConnId: string;
+	    sourceDb: string;
+	    sourceTable: string;
+	    targetConnId: string;
+	    targetDb: string;
+	    targetTable: string;
+	    copyStructure: boolean;
+	    copyData: boolean;
+	    dropTargetIfExists: boolean;
+	    batchSize: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CopyTableConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sourceConnId = source["sourceConnId"];
+	        this.sourceDb = source["sourceDb"];
+	        this.sourceTable = source["sourceTable"];
+	        this.targetConnId = source["targetConnId"];
+	        this.targetDb = source["targetDb"];
+	        this.targetTable = source["targetTable"];
+	        this.copyStructure = source["copyStructure"];
+	        this.copyData = source["copyData"];
+	        this.dropTargetIfExists = source["dropTargetIfExists"];
+	        this.batchSize = source["batchSize"];
+	    }
+	}
 	export class ExecResult {
 	    columns: string[];
 	    rows: any[];

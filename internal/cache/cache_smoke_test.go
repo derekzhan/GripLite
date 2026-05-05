@@ -17,8 +17,8 @@ import (
 
 type fakeDriver struct {
 	databases []string
-	tables    map[string][]driver.TableInfo         // dbName -> tables
-	details   map[string]*driver.TableDetail        // "db.table" -> detail
+	tables    map[string][]driver.TableInfo  // dbName -> tables
+	details   map[string]*driver.TableDetail // "db.table" -> detail
 }
 
 func (f *fakeDriver) Connect(ctx context.Context) error { return nil }
@@ -193,6 +193,39 @@ func TestCache_GetTableSchema_Miss(t *testing.T) {
 	}
 	if schema.Found {
 		t.Errorf("expected Found=false for uncached table, got %+v", schema)
+	}
+}
+
+func TestCache_RefreshTableInsertsNewTableMetadata(t *testing.T) {
+	c := newTestCache(t)
+	drv := &fakeDriver{
+		details: map[string]*driver.TableDetail{
+			"shop.user": {
+				TableInfo: driver.TableInfo{
+					Name: "user", Schema: "shop", Kind: driver.ObjectTable,
+					Engine: "InnoDB", Charset: "utf8mb4", Collation: "utf8mb4_general_ci",
+				},
+				Columns: []driver.ColumnInfo{
+					{Name: "id", DatabaseType: "int", Nullable: false, PrimaryKey: true, Comment: "id"},
+					{Name: "name", DatabaseType: "varchar(255)", Nullable: true, Comment: "姓名"},
+				},
+			},
+		},
+	}
+
+	if err := c.RefreshTable(context.Background(), "conn-new", "shop", "user", drv); err != nil {
+		t.Fatalf("RefreshTable: %v", err)
+	}
+
+	schema, err := c.GetTableSchema(context.Background(), "conn-new", "shop", "user")
+	if err != nil {
+		t.Fatalf("GetTableSchema: %v", err)
+	}
+	if !schema.Found {
+		t.Fatal("expected refreshed table to be found")
+	}
+	if len(schema.Columns) != 2 || schema.Columns[0].Name != "id" || !schema.Columns[0].IsPK {
+		t.Fatalf("expected id primary key column, got %+v", schema.Columns)
 	}
 }
 

@@ -1,5 +1,6 @@
 import DataViewer, { exportCsv } from './DataViewer'
 import ActionFooter from './ActionFooter'
+import { DEFAULT_PAGE_SIZE } from '../lib/queryPaging'
 
 function makeStatus({ shown, hasMore, loadingMore, capped }) {
   if (shown === 0) return 'No data'
@@ -17,6 +18,8 @@ export default function PagedResultViewer({
   hasMore = false,
   loadingMore = false,
   capped = false,
+  pageSize = DEFAULT_PAGE_SIZE,
+  onPageSizeChange,
   exportFilename = 'query_result.csv',
   fetchStats = null,
   onLoadMore,
@@ -57,8 +60,8 @@ export default function PagedResultViewer({
       </div>
       <ActionFooter
         mode="infinite"
-        pageSize="all"
-        setPageSize={() => {}}
+        pageSize={pageSize}
+        setPageSize={onPageSizeChange ?? (() => {})}
         currentPage={1}
         setCurrentPage={() => {}}
         totalRows={rows.length}
@@ -75,6 +78,8 @@ export default function PagedResultViewer({
         onDeleteRow={onDeleteRow}
         onSave={onSave}
         onCancel={onCancel}
+        showFetchSize={!!onPageSizeChange}
+        allowAllPageSize={false}
       />
     </div>
   )

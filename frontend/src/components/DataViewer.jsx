@@ -29,6 +29,7 @@ import { ArrowDown, ArrowUp, PanelRightOpen, Search, X } from 'lucide-react'
 import { AutoSizedGrid, deriveColumns, useRowOverrides } from './DataGrid'
 import ValuePanel from './ValuePanel'
 import { saveTextFile } from '../lib/bridge'
+import { getVisibleColumnIndices, projectVisibleRows } from '../lib/dataSearch'
 import { shouldLoadMore } from '../lib/queryPaging'
 import { useTheme } from '../theme/ThemeProvider'
 
@@ -211,6 +212,7 @@ function GridCanvas({
   searchMatchCells,
   currentSearchMatch,
   sourceRowOrder,
+  sourceColumnOrder,
   onNearBottom,
 }) {
   const rowOverrides = useRowOverrides()
@@ -222,6 +224,10 @@ function GridCanvas({
   const sortConfig = isExternal ? externalSortConfig : internalSort
   const baseRowCount = editState ? editState.totalDisplayRows : rows.length
   const numRows = sourceRowOrder ? sourceRowOrder.length : baseRowCount
+  const mapDisplayCol = useCallback(
+    (displayCol) => sourceColumnOrder?.[displayCol] ?? displayCol,
+    [sourceColumnOrder],
+  )
 
   // Visual row order inside the grid. We keep selection/edit state keyed by
   // source-row index, then map display row -> source row after sorting.
@@ -230,13 +236,14 @@ function GridCanvas({
     if (isExternal || !internalSort) return order
     const { colIdx, dir } = internalSort
     order.sort((a, b) => {
-      const aValue = editState ? editState.getCellValue(colIdx, a) : rows?.[a]?.[colIdx]
-      const bValue = editState ? editState.getCellValue(colIdx, b) : rows?.[b]?.[colIdx]
+      const sourceCol = mapDisplayCol(colIdx)
+      const aValue = editState ? editState.getCellValue(sourceCol, a) : rows?.[a]?.[colIdx]
+      const bValue = editState ? editState.getCellValue(sourceCol, b) : rows?.[b]?.[colIdx]
       const cmp = compareValues(aValue, bValue)
       return dir === 'asc' ? cmp : -cmp
     })
     return order
-  }, [baseRowCount, sourceRowOrder, isExternal, internalSort, editState, rows])
+  }, [baseRowCount, sourceRowOrder, isExternal, internalSort, editState, rows, mapDisplayCol])
 
   const mapDisplayRow = useCallback(
     (displayRow) => rowOrder[displayRow] ?? displayRow,
@@ -246,16 +253,17 @@ function GridCanvas({
   // ── Column objects with sort indicator appended to title ──────────────
   const glideCols = useMemo(() =>
     deriveColumns(columns).map((col, i) => {
-      const active = sortConfig?.colIdx === i
+      const active = sortConfig?.colIdx === mapDisplayCol(i)
       const arrow  = active ? (sortConfig.dir === 'asc' ? ' ↑' : ' ↓') : ''
       return { ...col, title: col.title + arrow }
     }),
-  [columns, sortConfig])
+  [columns, sortConfig, mapDisplayCol])
 
   // ── Header click: internal or delegate to parent ───────────────────────
   const handleHeaderClicked = useCallback((colIndex) => {
+    const sourceCol = mapDisplayCol(colIndex)
     if (isExternal) {
-      externalOnHeaderClicked(colIndex)
+      externalOnHeaderClicked(sourceCol)
     } else {
       setInternalSort((prev) => {
         if (prev?.colIdx !== colIndex) return { colIdx: colIndex, dir: 'asc' }
@@ -263,7 +271,7 @@ function GridCanvas({
         return null // 3rd click clears sort
       })
     }
-  }, [isExternal, externalOnHeaderClicked])
+  }, [isExternal, externalOnHeaderClicked, mapDisplayCol])
 
   // ── Cell content (read-only or edit-aware) ────────────────────────────
   const stdGetCellContent = useCallback(
@@ -296,10 +304,11 @@ function GridCanvas({
   const editGetCellContent = useCallback(
     ([col, displayRow]) => {
       const sourceRow = mapDisplayRow(displayRow)
+      const sourceCol = mapDisplayCol(col)
       const deleted    = editState.isDeleted(sourceRow)
-      const edited     = editState.isEdited(col, sourceRow)
+      const edited     = editState.isEdited(sourceCol, sourceRow)
       const isSelected = sourceRow === selectedRow
-      const raw  = editState.getCellValue(col, sourceRow)
+      const raw  = editState.getCellValue(sourceCol, sourceRow)
       const text = raw === null || raw === undefined ? '' : String(raw)
       const isCurrentMatch = currentSearchMatch?.row === sourceRow && currentSearchMatch?.col === col
       const isSearchMatch = isCurrentMatch || searchMatchCells?.has(`${sourceRow}:${col}`)
@@ -321,7 +330,7 @@ function GridCanvas({
             : undefined,
       }
     },
-    [editState, selectedRow, rowOverrides, mapDisplayRow, searchMatchCells, currentSearchMatch],
+    [editState, selectedRow, rowOverrides, mapDisplayRow, mapDisplayCol, searchMatchCells, currentSearchMatch],
   )
 
   const getCellContent = editState ? editGetCellContent : stdGetCellContent
@@ -364,10 +373,10 @@ function GridCanvas({
   const handleCellEdited = useCallback(
     ([col, displayRow], newValue) => {
       if (editState && newValue.kind === GridCellKind.Text) {
-        editState.editCell(col, mapDisplayRow(displayRow), newValue.data)
+        editState.editCell(mapDisplayCol(col), mapDisplayRow(displayRow), newValue.data)
       }
     },
-    [editState, mapDisplayRow],
+    [editState, mapDisplayRow, mapDisplayCol],
   )
 
   const handleCellClicked = useCallback(
@@ -644,6 +653,7 @@ function GridWithPanel({
   searchMatchCells,
   currentSearchMatch,
   sourceRowOrder,
+  sourceColumnOrder,
   onNearBottom,
 }) {
   const [panelOpen,  setPanelOpen]  = useState(false)
@@ -654,6 +664,10 @@ function GridWithPanel({
   const [rowColors, setRowColors] = useState(() => new Map())
   const { resolvedTheme } = useTheme()
   const isDark = resolvedTheme === 'dark'
+  const mapDisplayCol = useCallback(
+    (displayCol) => sourceColumnOrder?.[displayCol] ?? displayCol,
+    [sourceColumnOrder],
+  )
 
   const setRowColor = useCallback((rowIdx, colorEntry) => {
     setRowColors((prev) => {
@@ -690,12 +704,13 @@ function GridWithPanel({
   // IS open it re-reads panelCell on every render so subsequent cell clicks
   // immediately switch its content. ────────────────────────────────────────
   const handleCellClick = useCallback((col, row) => {
+    const sourceCol = mapDisplayCol(col)
     onSelectRow(row)
     editState?.setSelectedRow(row)
-    const value   = editState ? editState.getCellValue(col, row) : (rows[row]?.[col] ?? null)
+    const value   = editState ? editState.getCellValue(sourceCol, row) : (rows[row]?.[col] ?? null)
     const colName = columns[col]?.name ?? `col_${col}`
-    setPanelCell({ col, row, value, colName })
-  }, [rows, columns, onSelectRow, editState])
+    setPanelCell({ col: sourceCol, row, value, colName })
+  }, [rows, columns, onSelectRow, editState, mapDisplayCol])
 
   // ── Drag-to-resize the ValuePanel ────────────────────────────────────────
   const isDragging  = useRef(false)
@@ -742,6 +757,7 @@ function GridWithPanel({
           searchMatchCells={searchMatchCells}
           currentSearchMatch={currentSearchMatch}
           sourceRowOrder={sourceRowOrder}
+          sourceColumnOrder={sourceColumnOrder}
           onNearBottom={onNearBottom}
         />
       </div>
@@ -789,9 +805,10 @@ function GridWithPanel({
           // instead of a stale `null`.  panelCell is then refreshed by
           // every subsequent cell click.
           if (!panelOpen && panelCell.value === null && panelCell.col === 0 && panelCell.row === 0) {
-            const value   = editState ? editState.getCellValue(0, 0) : (rows[0]?.[0] ?? null)
+            const sourceCol = mapDisplayCol(0)
+            const value   = editState ? editState.getCellValue(sourceCol, 0) : (rows[0]?.[0] ?? null)
             const colName = columns[0]?.name ?? 'col_0'
-            setPanelCell({ col: 0, row: 0, value, colName })
+            setPanelCell({ col: sourceCol, row: 0, value, colName })
           }
           setPanelOpen((o) => !o)
         }}
@@ -1366,8 +1383,18 @@ export default function DataViewer({
     [searchQuery, searchCaseSensitive, searchRegex, searchWholeWord],
   )
 
-  const visibleColumns = columns.filter((_, i) => !hiddenCols.has(i))
-  const allVisibleRows = rows.map(row => row.filter((_, i) => !hiddenCols.has(i)))
+  const visibleColumnIndices = useMemo(
+    () => getVisibleColumnIndices(columns.length, hiddenCols),
+    [columns.length, hiddenCols],
+  )
+  const visibleColumns = useMemo(
+    () => visibleColumnIndices.map((sourceCol) => columns[sourceCol]).filter(Boolean),
+    [columns, visibleColumnIndices],
+  )
+  const allVisibleRows = useMemo(
+    () => projectVisibleRows(rows, visibleColumnIndices),
+    [rows, visibleColumnIndices],
+  )
 
   const filteredSourceRows = useMemo(() => {
     if (!searchFilterRows || !searchCompiled.re) {
@@ -1375,14 +1402,14 @@ export default function DataViewer({
     }
     const out = []
     for (let r = 0; r < rows.length; r++) {
-      const hasMatch = rows[r]?.some((value) => {
+      const hasMatch = allVisibleRows[r]?.some((value) => {
         const text = value === null || value === undefined ? 'NULL' : String(value)
         return searchCompiled.re.test(text)
       })
       if (hasMatch) out.push(r)
     }
     return out
-  }, [rows, searchFilterRows, searchCompiled])
+  }, [rows, allVisibleRows, searchFilterRows, searchCompiled])
 
   const filteredSourceSet = useMemo(() => new Set(filteredSourceRows), [filteredSourceRows])
   const displayRows = searchFilterRows
@@ -1690,6 +1717,7 @@ export default function DataViewer({
                 searchMatchCells={searchMatchCells}
                 currentSearchMatch={currentSearchMatch}
                 sourceRowOrder={searchFilterRows ? filteredSourceRows : undefined}
+                sourceColumnOrder={visibleColumnIndices}
                 onNearBottom={searchFilterRows ? undefined : onNearBottom}
               />
             )}

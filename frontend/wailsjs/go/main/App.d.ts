@@ -10,6 +10,8 @@ export function AddConnection(arg1:driver.ConnectionConfig):Promise<string>;
 
 export function ApplyChanges(arg1:database.ChangeSet):Promise<database.ApplyResult>;
 
+export function CancelCopy():Promise<void>;
+
 export function CancelQuery(arg1:string):Promise<void>;
 
 export function ClearQueryHistory(arg1:string):Promise<void>;
@@ -17,6 +19,10 @@ export function ClearQueryHistory(arg1:string):Promise<void>;
 export function Connect(arg1:database.ConnectionConfig):Promise<main.ConnectResult>;
 
 export function ConnectSaved(arg1:string):Promise<string>;
+
+export function CopyDatabase(arg1:database.CopyDatabaseConfig):Promise<database.CopyResult>;
+
+export function CopyTable(arg1:database.CopyTableConfig):Promise<database.CopyResult>;
 
 export function DeleteSavedConnection(arg1:string):Promise<void>;
 
@@ -85,6 +91,8 @@ export function PreviewIndexAlter(arg1:string,arg2:driver.IndexChangeRequest):Pr
 export function PreviewPartitionAlter(arg1:string,arg2:driver.PartitionChangeRequest):Promise<driver.SchemaChangePreview>;
 
 export function PreviewTableAlter(arg1:string,arg2:driver.SchemaChangeRequest):Promise<driver.SchemaChangePreview>;
+
+export function RefreshTableMetadata(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RemoveConnection(arg1:string):Promise<void>;
 

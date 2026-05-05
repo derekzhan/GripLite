@@ -37,11 +37,13 @@ import {
   previewConstraintAlter, executeConstraintAlter,
   previewPartitionAlter, executePartitionAlter,
   getDataFilterHistory, setDataFilterHistory,
+  refreshTableMetadata,
 } from '../lib/bridge'
 import { useEditState } from '../hooks/useEditState'
 import { normalizeError } from '../lib/errors'
 import { toast } from '../lib/toast'
-import { getWhereFilterSuggestions, getWordBeforeCursor } from '../lib/filterAutocomplete'
+import { buildFilterSuggestionColumns, getWhereFilterSuggestions, getWordBeforeCursor } from '../lib/filterAutocomplete'
+import { DEFAULT_PAGE_SIZE } from '../lib/queryPaging'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock schema metadata (Properties tab)
@@ -2773,7 +2775,7 @@ function DataView({ tableName, dbName, connId, schema }) {
   const [isLoadingMore,setIsLoadingMore]= useState(false)
   const [loadError,    setLoadError]    = useState('')
   const [hasMore,      setHasMore]      = useState(false)
-  const pageSize = 200
+  const [pageSize,     setPageSize]     = useState(DEFAULT_PAGE_SIZE)
   // Real table row count from SELECT COUNT(*) — the authoritative total for
   // pagination maths.  `null` while still loading / on error.
   const [totalRows,    setTotalRows]    = useState(null)
@@ -2936,7 +2938,7 @@ function DataView({ tableName, dbName, connId, schema }) {
       })
 
     return () => { cancelled = true }
-  }, [connId, tableName, dbName, whereClause, sortConfig])
+  }, [connId, tableName, dbName, whereClause, sortConfig, pageSize])
 
   // Tab identity change (new table / db / conn) — reset page, wipe the live
   // filter draft, and refresh the auto-filled-column set.  Per-table
@@ -2984,6 +2986,20 @@ function DataView({ tableName, dbName, connId, schema }) {
     loadCount()
     load(0)
   }, [load, loadCount])
+
+  const handlePageSizeChange = useCallback((nextPageSize) => {
+    if (editStateRef.current?.isDirty) {
+      const ok = typeof window !== 'undefined' && window.confirm
+        ? window.confirm(
+            'Changing fetch size will reload the grid and discard your unsaved changes.\n\nContinue?',
+          )
+        : true
+      if (!ok) return false
+      editStateRef.current.cancel()
+    }
+    setPageSize(nextPageSize)
+    return true
+  }, [])
 
   // ── Filter commit (▶ button / Enter) ───────────────────────────────────
   // Pushes the draft into the live whereClause, resets to page 1, and
@@ -3047,6 +3063,10 @@ function DataView({ tableName, dbName, connId, schema }) {
 
   const cols = dataResult?.columns ?? []
   const rows = dataResult?.rows    ?? []
+  const filterSuggestionColumns = useMemo(
+    () => buildFilterSuggestionColumns(schema?.columns ?? [], cols),
+    [schema?.columns, cols],
+  )
 
   useEffect(() => {
     if (totalRows !== null && rows.length >= totalRows) setHasMore(false)
@@ -3179,7 +3199,7 @@ function DataView({ tableName, dbName, connId, schema }) {
         runButtonTitle={runButtonTitle}
         sqlForWhereClause={sqlForWhere}
         persistHint="Filter history is saved in your local griplite database and survives restarts."
-        columns={schema?.columns ?? []}
+        columns={filterSuggestionColumns}
       />
 
       {showSqlBar && (
@@ -3262,6 +3282,8 @@ function DataView({ tableName, dbName, connId, schema }) {
         sortConfig={gridSortConfig}
         hasMore={hasMore && (totalRows === null || rows.length < totalRows)}
         loadingMore={isLoadingMore}
+        pageSize={pageSize}
+        onPageSizeChange={handlePageSizeChange}
         onLoadMore={handleLoadMore}
         onRefresh={handleRefresh}
         isRefreshing={isLoading || isSaving || isCounting}
@@ -3316,11 +3338,33 @@ function useTableSchema(connId, dbName, tableName) {
   const reload = useCallback(() => setReloadNonce((n) => n + 1), [])
 
   useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      reload()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [reload])
+
+  useEffect(() => {
     let cancelled = false   // ← local closure flag, never shared across renders
 
     setSchemaState((s) => ({ ...s, loading: true }))
 
-    getTableSchema(connId, dbName, tableName)
+    const loadCachedSchema = async () => {
+      let cached = await getTableSchema(connId, dbName, tableName)
+      if ((!cached.found || !cached.columns?.length) && connId && dbName && tableName) {
+        try {
+          await refreshTableMetadata(connId, dbName, tableName)
+          cached = await getTableSchema(connId, dbName, tableName)
+        } catch {
+          // Fall through to the existing mock fallback below.
+        }
+      }
+      return cached
+    }
+
+    loadCachedSchema()
       .then((cached) => {
         if (cancelled) return
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import PagedResultViewer from './PagedResultViewer'
 import { useEditState } from '../hooks/useEditState'
+import { DEFAULT_PAGE_SIZE } from '../lib/queryPaging'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pagination helpers
@@ -34,6 +35,7 @@ export default function ResultPanel({
   activeResultId = null,
   onSelectResult,
   onLoadMore,
+  onPageSizeChange,
 }) {
   const [activeTab,    setActiveTab]    = useState('Result')
   const [fetchStats,   setFetchStats]   = useState(null)
@@ -206,7 +208,9 @@ export default function ResultPanel({
                 hasMore={!!queryResult.hasMore}
                 loadingMore={!!queryResult.loadingMore}
                 capped={queryResult.truncated && !queryResult.hasMore}
+                pageSize={queryResult.pageSize ?? DEFAULT_PAGE_SIZE}
                 onLoadMore={onLoadMore}
+                onPageSizeChange={queryResult.source ? onPageSizeChange : undefined}
                 exportFilename="query_result.csv"
                 fetchStats={fetchStats}
                 editState={editState}

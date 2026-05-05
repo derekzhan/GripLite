@@ -10,6 +10,10 @@ export function ApplyChanges(arg1) {
   return window['go']['main']['App']['ApplyChanges'](arg1);
 }
 
+export function CancelCopy() {
+  return window['go']['main']['App']['CancelCopy']();
+}
+
 export function CancelQuery(arg1) {
   return window['go']['main']['App']['CancelQuery'](arg1);
 }
@@ -24,6 +28,14 @@ export function Connect(arg1) {
 
 export function ConnectSaved(arg1) {
   return window['go']['main']['App']['ConnectSaved'](arg1);
+}
+
+export function CopyDatabase(arg1) {
+  return window['go']['main']['App']['CopyDatabase'](arg1);
+}
+
+export function CopyTable(arg1) {
+  return window['go']['main']['App']['CopyTable'](arg1);
 }
 
 export function DeleteSavedConnection(arg1) {
@@ -160,6 +172,10 @@ export function PreviewPartitionAlter(arg1, arg2) {
 
 export function PreviewTableAlter(arg1, arg2) {
   return window['go']['main']['App']['PreviewTableAlter'](arg1, arg2);
+}
+
+export function RefreshTableMetadata(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RefreshTableMetadata'](arg1, arg2, arg3);
 }
 
 export function RemoveConnection(arg1) {

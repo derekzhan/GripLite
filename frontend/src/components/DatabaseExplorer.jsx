@@ -28,6 +28,9 @@
  * can never update state after a re-fetch or component unmount.
  */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import CreateDatabaseModal from './CreateDatabaseModal'
+import CreateTableModal from './CreateTableModal'
+import TableActionModal from './TableActionModal'
 import {
   LayoutGrid, Plus, Search, X,
   // Tree-node glyphs.  All of these are thin-stroke Lucide icons (strokeWidth
@@ -39,15 +42,16 @@ import {
   Eye, KeyRound, Users as UsersIcon, UserRound,
   Settings2, Info, Cable, RotateCw, Link2, Unplug,
   FolderOpen, FolderTree,
-  ListChecks, Play, Zap, Bell, Code2,
+  ListChecks, Play, Zap, Bell, Code2, Copy, Pencil, Trash2,
 } from 'lucide-react'
 import {
   listConnections, fetchDatabases, fetchTables, getTableSchema,
   fetchRoutines, fetchTriggers, fetchEvents,
-  runQuery, syncMetadata, connect, connectSaved, disconnect,
+  runQuery, syncMetadata, connect, connectSaved, disconnect, refreshTableMetadata,
 } from '../lib/bridge'
 import { normalizeError } from '../lib/errors'
 import { toast } from '../lib/toast'
+import { buildCreateDatabaseSql, buildDropTableSql, buildRenameTableSql, quoteSqlIdentifier } from '../lib/databaseTemplates'
 import { formatBytes } from '../utils/formatters'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,6 +265,7 @@ export default function DatabaseExplorer({
   onNewConnection,
   onTableOpen,
   onDatabaseOpen,
+  onDatabaseCopyOpen,
   onQueryOpen,
   onConsoleOpen,
   onPropertiesOpen,
@@ -304,6 +309,15 @@ export default function DatabaseExplorer({
   const [focusedMenuIdx,  setFocusedMenuIdx]  = useState(-1)
   const contextMenuRef    = useRef(null)
   const focusedMenuIdxRef = useRef(-1)
+  const [createDbTarget, setCreateDbTarget] = useState(null)
+  const [createDbBusy, setCreateDbBusy] = useState(false)
+  const [createDbError, setCreateDbError] = useState('')
+  const [createTableTarget, setCreateTableTarget] = useState(null)
+  const [createTableBusy, setCreateTableBusy] = useState(false)
+  const [createTableError, setCreateTableError] = useState('')
+  const [tableAction, setTableAction] = useState(null)
+  const [tableActionBusy, setTableActionBusy] = useState(false)
+  const [tableActionError, setTableActionError] = useState('')
 
   // Keep the ref in sync so the keydown handler (closure) always reads the
   // latest index without requiring it to be in the effect's dep array.
@@ -748,6 +762,105 @@ export default function DatabaseExplorer({
     onConnectionsChanged?.()
   }, [refreshNode, onConnectionsChanged])
 
+  const handleCreateDatabase = useCallback(async ({ databaseName, charset, collation }) => {
+    if (!createDbTarget?.connId) return
+    setCreateDbBusy(true)
+    setCreateDbError('')
+    try {
+      const sql = buildCreateDatabaseSql({ databaseName, charset, collation })
+      const result = await runQuery(createDbTarget.connId, '', sql)
+      if (result?.error) throw new Error(result.error)
+      toast.success(`Created database ${databaseName}`)
+      const node = createDbTarget.nodeRef ?? {
+        id: groupId(createDbTarget.connId, 'databases'),
+        type: 'group',
+        groupKind: 'databases',
+        connId: createDbTarget.connId,
+        hasChildren: true,
+      }
+      setCreateDbTarget(null)
+      refreshNode(node, null)
+      onConnectionsChanged?.()
+    } catch (err) {
+      setCreateDbError(normalizeError(err))
+    } finally {
+      setCreateDbBusy(false)
+    }
+  }, [createDbTarget, onConnectionsChanged, refreshNode])
+
+  const handleCreateTable = useCallback(async ({ tableName, sql }) => {
+    if (!createTableTarget?.connId || !createTableTarget?.dbName) return
+    setCreateTableBusy(true)
+    setCreateTableError('')
+    try {
+      const result = await runQuery(createTableTarget.connId, createTableTarget.dbName, sql)
+      if (result?.error) throw new Error(result.error)
+      try {
+        await refreshTableMetadata(createTableTarget.connId, createTableTarget.dbName, tableName)
+      } catch (err) {
+        console.warn('[explorer] refresh table metadata failed:', err)
+      }
+      toast.success(`Created table ${tableName}`)
+      const node = createTableTarget.nodeRef ?? {
+        id: `folder::tables::${createTableTarget.connId}::${createTableTarget.dbName}`,
+        type: 'folder',
+        folderKind: 'tables',
+        connId: createTableTarget.connId,
+        dbName: createTableTarget.dbName,
+        hasChildren: true,
+      }
+      setCreateTableTarget(null)
+      refreshNode(node, null)
+      onConnectionsChanged?.()
+    } catch (err) {
+      setCreateTableError(normalizeError(err))
+    } finally {
+      setCreateTableBusy(false)
+    }
+  }, [createTableTarget, onConnectionsChanged, refreshNode])
+
+  const refreshTablesFolder = useCallback((connId, dbName) => {
+    refreshNode({
+      id: `folder::tables::${connId}::${dbName}`,
+      type: 'folder',
+      folderKind: 'tables',
+      connId,
+      dbName,
+      hasChildren: true,
+    }, null)
+  }, [refreshNode])
+
+  const handleTableAction = useCallback(async ({ newTableName } = {}) => {
+    if (!tableAction?.connId || !tableAction?.dbName || !tableAction?.tableName) return
+    setTableActionBusy(true)
+    setTableActionError('')
+    try {
+      const { action, connId, dbName, tableName } = tableAction
+      const sql = action === 'rename'
+        ? buildRenameTableSql({ dbName, oldTableName: tableName, newTableName })
+        : buildDropTableSql({ dbName, tableName })
+
+      const result = await runQuery(connId, dbName, sql)
+      if (result?.error) throw new Error(result.error)
+
+      if (action === 'rename') {
+        try { await refreshTableMetadata(connId, dbName, newTableName) } catch { /* best-effort */ }
+        toast.success(`Renamed ${tableName} to ${newTableName}`)
+      } else {
+        toast.success(`Deleted table ${tableName}`)
+      }
+
+      setTableAction(null)
+      refreshTablesFolder(connId, dbName)
+      try { await syncMetadata(connId) } catch { /* best-effort */ }
+      onConnectionsChanged?.()
+    } catch (err) {
+      setTableActionError(normalizeError(err))
+    } finally {
+      setTableActionBusy(false)
+    }
+  }, [onConnectionsChanged, refreshTablesFolder, tableAction])
+
   // ── Table open handler ────────────────────────────────────────────────────
   /**
    * openTable — open (or activate) the table's TableViewer tab.
@@ -839,10 +952,20 @@ export default function DatabaseExplorer({
       toggleExpand(node)
     }
 
-    // Right-click on a database node or its Tables folder pops the same
-    // DBeaver-style menu (Create New Table / View Tables / Browse / Refresh).
+    // Right-click on database-related nodes pops DBeaver-style actions.
     const handleContextMenu = (e) => {
-      if (node.type === 'database' || (isFolder && node.folderKind === 'tables')) {
+      if (node.type === 'group' && node.groupKind === 'databases') {
+        e.preventDefault()
+        e.stopPropagation()
+        setSelected(node.id)
+        setContextMenu({
+          kind:    'databases-group',
+          x:       e.clientX,
+          y:       e.clientY,
+          connId:  node.connId,
+          nodeRef: node,
+        })
+      } else if (node.type === 'database' || (isFolder && node.folderKind === 'tables')) {
         e.preventDefault()
         e.stopPropagation()
         setSelected(node.id)
@@ -1347,6 +1470,47 @@ export default function DatabaseExplorer({
           </div>
         )
       })()}
+
+      <CreateDatabaseModal
+        isOpen={!!createDbTarget}
+        isCreating={createDbBusy}
+        error={createDbError}
+        onCancel={() => {
+          if (!createDbBusy) {
+            setCreateDbTarget(null)
+            setCreateDbError('')
+          }
+        }}
+        onCreate={handleCreateDatabase}
+      />
+
+      <CreateTableModal
+        isOpen={!!createTableTarget}
+        dbName={createTableTarget?.dbName ?? ''}
+        isCreating={createTableBusy}
+        error={createTableError}
+        onCancel={() => {
+          if (!createTableBusy) {
+            setCreateTableTarget(null)
+            setCreateTableError('')
+          }
+        }}
+        onCreate={handleCreateTable}
+      />
+
+      <TableActionModal
+        action={tableAction?.action}
+        target={tableAction}
+        isBusy={tableActionBusy}
+        error={tableActionError}
+        onCancel={() => {
+          if (!tableActionBusy) {
+            setTableAction(null)
+            setTableActionError('')
+          }
+        }}
+        onConfirm={handleTableAction}
+      />
     </div>
   )
 
@@ -1357,6 +1521,29 @@ export default function DatabaseExplorer({
   function buildMenuItems(ctx) {
     if (!ctx) return []
 
+    if (ctx.kind === 'databases-group') {
+      const { connId, nodeRef } = ctx
+      return [
+        {
+          label:    <MenuLabel icon={Plus} text="Create Database..." />,
+          shortcut: 'N', key: 'n',
+          action:   () => setCreateDbTarget({ connId, nodeRef }),
+        },
+        { divider: true },
+        {
+          label:    <MenuLabel icon={RotateCw} text="Refresh" />,
+          shortcut: 'F5', key: 'F5',
+          action:   () => refreshNode(nodeRef ?? {
+            id: groupId(connId, 'databases'),
+            type: 'group',
+            groupKind: 'databases',
+            connId,
+            hasChildren: true,
+          }, null),
+        },
+      ]
+    }
+
     if (ctx.kind === 'table') {
       const { connId, dbName, tableName, tableKind, nodeRef } = ctx
       return [
@@ -1364,6 +1551,16 @@ export default function DatabaseExplorer({
           label:    <MenuLabel icon={ListChecks} text="View Table" />,
           shortcut: 'F4', key: 'F4',
           action:   () => openTable(nodeRef, null, 'properties'),
+        },
+        {
+          label:    <MenuLabel icon={Pencil} text="Rename Table..." />,
+          key: 'r',
+          action:   () => setTableAction({ action: 'rename', connId, dbName, tableName }),
+        },
+        {
+          label:    <MenuLabel icon={Trash2} text="Delete Table..." />,
+          key: 'x',
+          action:   () => setTableAction({ action: 'delete', connId, dbName, tableName }),
         },
         { divider: true },
         {
@@ -1385,7 +1582,7 @@ export default function DatabaseExplorer({
           label:    <MenuLabel icon={Play} text="Copy SELECT" />,
           key: 's',
           action:   () => onConsoleOpen?.({
-            initialSql: `SELECT * FROM \`${dbName}\`.\`${tableName}\` LIMIT 100;`,
+            initialSql: `SELECT * FROM ${quoteSqlIdentifier(dbName)}.${quoteSqlIdentifier(tableName)} LIMIT 100;`,
             label: `SELECT — ${tableName}`,
             defaultDb: dbName,
           }),
@@ -1395,16 +1592,6 @@ export default function DatabaseExplorer({
 
     if (ctx.kind === 'database') {
       const { connId, dbName, nodeRef } = ctx
-      const newTableTemplate =
-`-- Create a new table in ${dbName}
-
-CREATE TABLE \`new_table\` (
-  \`id\`         INT(11)      NOT NULL AUTO_INCREMENT,
-  \`name\`       VARCHAR(128) NOT NULL,
-  \`created_at\` DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (\`id\`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-`
       const browseTemplate = `-- Browse ${dbName}\n\n`
       return [
         {
@@ -1418,9 +1605,14 @@ CREATE TABLE \`new_table\` (
           action:   () => openDatabase({ dbName, connId }, null),
         },
         {
+          label:    <MenuLabel icon={Copy} text="Copy Data To..." />,
+          shortcut: 'Y', key: 'y',
+          action:   () => onDatabaseCopyOpen?.({ dbName, connId }),
+        },
+        {
           label:    <MenuLabel icon={Plus}       text="Create New Table…" />,
           shortcut: 'N', key: 'n',
-          action:   () => onConsoleOpen?.({ initialSql: newTableTemplate, label: `New table — ${dbName}`, defaultDb: dbName }),
+          action:   () => setCreateTableTarget({ connId, dbName, nodeRef }),
         },
         { divider: true },
         {
@@ -1485,10 +1677,3 @@ CREATE TABLE \`new_table\` (
   }
 }
 
-// ─── SQL identifier quoting helper (module-scope) ─────────────────────────
-// Mirrors the backend's quoteIdent: doubles any embedded backtick and wraps
-// the result in backticks.  Defined here so context-menu builders can quote
-// db / table names without importing the (frontend-private) bridge helpers.
-function quoteIdent(name) {
-  return '`' + String(name ?? '').replace(/`/g, '``') + '`'
-}

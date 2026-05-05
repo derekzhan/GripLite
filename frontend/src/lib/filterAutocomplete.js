@@ -41,3 +41,20 @@ export function getWhereFilterSuggestions({ value, cursorPos, columns }) {
 
   return [...colMatches, ...kwMatches]
 }
+
+export function buildFilterSuggestionColumns(schemaColumns = [], resultColumns = []) {
+  const out = []
+  const seen = new Set()
+  for (const source of [schemaColumns, resultColumns]) {
+    for (const col of source ?? []) {
+      const normalized = typeof col === 'string' ? { name: col } : col
+      const name = String(normalized?.name ?? '').trim()
+      if (!name) continue
+      const key = name.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(normalized)
+    }
+  }
+  return out
+}

@@ -31,12 +31,15 @@ func TestBuildDSN_PlainTCP(t *testing.T) {
 		"parseTime=true",
 		"charset=utf8mb4",
 		"timeout=10s",
-		"readTimeout=30s",
-		"writeTimeout=30s",
 	}
 	for _, s := range wantSubstrings {
 		if !strings.Contains(dsn, s) {
 			t.Errorf("DSN missing %q\nfull: %s", s, dsn)
+		}
+	}
+	for _, s := range []string{"readTimeout=", "writeTimeout="} {
+		if strings.Contains(dsn, s) {
+			t.Errorf("DSN should not set default query timeout %q\nfull: %s", s, dsn)
 		}
 	}
 }
@@ -80,7 +83,7 @@ func TestBuildDSN_AdvancedParamsEnabled(t *testing.T) {
 		AdvancedParams: []driver.AdvancedParam{
 			{Key: "allowMultiQueries", Value: "true", Enabled: true},
 			{Key: "serverTimezone", Value: "UTC", Enabled: true}, // JDBC → loc=UTC
-			{Key: "useSSL", Value: "false", Enabled: false},       // disabled → dropped
+			{Key: "useSSL", Value: "false", Enabled: false},      // disabled → dropped
 		},
 	})
 	if err != nil {
@@ -105,7 +108,9 @@ func TestBuildDSN_AdvancedParamsEnabled(t *testing.T) {
 // TestBuildDSN_JDBCTranslation covers the JDBC-to-go-driver param rewrites.
 //
 // Users pasting a JDBC URL like
-//   jdbc:mysql://host:3306/db?useSSL=false&serverTimezone=America/Vancouver&allowPublicKeyRetrieval=true
+//
+//	jdbc:mysql://host:3306/db?useSSL=false&serverTimezone=America/Vancouver&allowPublicKeyRetrieval=true
+//
 // into the Advanced tab would previously fail with MySQL Error 1193
 // "Unknown system variable" because go-sql-driver forwards unknown keys as
 // SET statements at connect time.
@@ -129,7 +134,7 @@ func TestBuildDSN_JDBCTranslation(t *testing.T) {
 	dsn := d.buildDSN(10 * time.Second)
 
 	wantContains := []string{
-		"tls=false",            // useSSL=false → tls=false
+		"tls=false",               // useSSL=false → tls=false
 		"loc=America%2FVancouver", // serverTimezone → loc (URL-encoded "/")
 	}
 	for _, s := range wantContains {
@@ -150,15 +155,18 @@ func TestBuildDSN_JDBCTranslation(t *testing.T) {
 // TestTranslateAdvancedParam covers the individual rewrite rules in isolation.
 func TestTranslateAdvancedParam(t *testing.T) {
 	cases := []struct {
-		inKey, inVal         string
-		wantKey, wantVal     string
-		wantKeep             bool
+		inKey, inVal     string
+		wantKey, wantVal string
+		wantKeep         bool
 	}{
 		// JDBC rewrites
 		{"useSSL", "false", "tls", "false", true},
 		{"USESSL", "TRUE", "tls", "true", true},
 		{"serverTimezone", "Asia/Shanghai", "loc", "Asia/Shanghai", true},
 		{"allowPublicKeyRetrieval", "true", "", "", false},
+		// Query read/write deadlines break SSH tunnels and auto-cancel long SQL.
+		{"readTimeout", "30s", "", "", false},
+		{"writeTimeout", "30s", "", "", false},
 		// Unknown key — passthrough unchanged.
 		{"allowMultiQueries", "true", "allowMultiQueries", "true", true},
 	}

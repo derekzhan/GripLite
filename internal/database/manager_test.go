@@ -26,6 +26,11 @@ func TestBuildDSN_DirectTCP(t *testing.T) {
 	if !strings.Contains(dsn, "parseTime=true") {
 		t.Errorf("expected parseTime in DSN: %s", dsn)
 	}
+	for _, s := range []string{"readTimeout=", "writeTimeout="} {
+		if strings.Contains(dsn, s) {
+			t.Errorf("DSN should not set default query timeout %q: %s", s, dsn)
+		}
+	}
 }
 
 func TestBuildDSN_SSHProtocol(t *testing.T) {
@@ -69,6 +74,28 @@ func TestBuildDSN_AdvancedParams(t *testing.T) {
 	}
 	if strings.Contains(dsn, "disabled=ignored") {
 		t.Errorf("disabled param must not appear in DSN: %s", dsn)
+	}
+}
+
+func TestBuildDSN_DropsQueryTimeoutAdvancedParams(t *testing.T) {
+	cfg := ConnectionConfig{
+		Host:     "private-db",
+		Port:     3306,
+		Username: "bob",
+		Password: "pw",
+		Database: "analytics",
+		Advanced: []AdvancedParam{
+			{Key: "readTimeout", Value: "30s", Enabled: true},
+			{Key: "writeTimeout", Value: "30s", Enabled: true},
+		},
+	}
+
+	dsn := buildDSN(cfg, "mgrssh_conn42")
+
+	for _, s := range []string{"readTimeout=", "writeTimeout="} {
+		if strings.Contains(dsn, s) {
+			t.Errorf("DSN should drop query timeout advanced param %q: %s", s, dsn)
+		}
 	}
 }
 

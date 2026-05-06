@@ -315,13 +315,15 @@ func buildDSN(cfg ConnectionConfig, proto string) string {
 	p.Set("parseTime", "true")
 	p.Set("charset", "utf8mb4")
 	p.Set("timeout", "10s")
-	p.Set("readTimeout", "30s")
-	p.Set("writeTimeout", "30s")
 	if cfg.TLS {
 		p.Set("tls", "true")
 	}
 	for _, adv := range cfg.Advanced {
 		if adv.Enabled && adv.Key != "" {
+			switch strings.ToLower(adv.Key) {
+			case "readtimeout", "writetimeout":
+				continue
+			}
 			p.Set(adv.Key, adv.Value)
 		}
 	}

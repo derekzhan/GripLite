@@ -111,8 +111,6 @@ func (d *mysqlDriver) buildDSN(timeout time.Duration) string {
 	params.Set("parseTime", "true")
 	params.Set("charset", "utf8mb4")
 	params.Set("timeout", timeout.String())
-	params.Set("readTimeout", "30s")
-	params.Set("writeTimeout", "30s")
 
 	// Append any enabled AdvancedParams — translating JDBC-style keys that
 	// users often copy-paste from their existing connection strings into the
@@ -267,10 +265,10 @@ func (d *mysqlDriver) FetchTables(ctx context.Context, dbName string) ([]driver.
 	var tables []driver.TableInfo
 	for rows.Next() {
 		var (
-			name, tableType, comment    string
-			engine, collation           string
-			rowCount, sizeBytes         int64
-			autoInc                     sql.NullInt64
+			name, tableType, comment string
+			engine, collation        string
+			rowCount, sizeBytes      int64
+			autoInc                  sql.NullInt64
 		)
 		if err := rows.Scan(&name, &tableType, &rowCount, &sizeBytes, &comment,
 			&engine, &collation, &autoInc); err != nil {
@@ -566,9 +564,9 @@ func (d *mysqlDriver) ExecuteQueryOnDB(ctx context.Context, dbName, query string
 	}
 
 	iter := &sqlRowIterator{
-		rows:   sqlRows,
-		conn:   conn,
-		nCols:  len(cols),
+		rows:  sqlRows,
+		conn:  conn,
+		nCols: len(cols),
 	}
 
 	return &driver.ResultSet{
@@ -616,6 +614,12 @@ func translateAdvancedParam(key, value string) (outKey, outValue string, keep bo
 	// automatically since v1.6; the key is a no-op and the server would
 	// otherwise reject it with Error 1193 — so we drop it silently.
 	case "allowpublickeyretrieval":
+		return "", "", false
+
+	// go-sql-driver applies these as net.Conn deadlines before each packet.
+	// SSH tunnel channels do not support deadlines, and these values also
+	// auto-cancel long-running SQL, so GripLite does not pass them through.
+	case "readtimeout", "writetimeout":
 		return "", "", false
 
 	// Already-correct go-driver keys (or keys we don't recognise) pass through.

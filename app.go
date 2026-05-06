@@ -623,9 +623,9 @@ func (a *App) RunQuery(connectionID, dbName, sql string) (*QueryResult, error) {
 	}
 
 	// Set up a cancellable context so CancelQuery can abort in-flight queries.
-	baseCtx, baseCancel := context.WithTimeout(a.ctx, 60*time.Second)
-	defer baseCancel()
-	cancelCtx, cancelFn := context.WithCancel(baseCtx)
+	// Do not add a query deadline here; SQL console statements may be long-running
+	// and should only stop on user cancel or app shutdown.
+	cancelCtx, cancelFn := context.WithCancel(a.ctx)
 	defer cancelFn()
 	a.queryMu.Lock()
 	a.queryCancels[connectionID] = cancelFn
@@ -731,9 +731,9 @@ func (a *App) RunQueryPage(connectionID, dbName, sqlText string, offset, limit i
 		return nil, err
 	}
 
-	baseCtx, baseCancel := context.WithTimeout(a.ctx, 60*time.Second)
-	defer baseCancel()
-	cancelCtx, cancelFn := context.WithCancel(baseCtx)
+	// Paged queries can also wrap expensive user SQL, so they must not receive an
+	// automatic deadline. CancelQuery and app shutdown remain the cancellation paths.
+	cancelCtx, cancelFn := context.WithCancel(a.ctx)
 	defer cancelFn()
 	a.queryMu.Lock()
 	a.queryCancels[connectionID] = cancelFn

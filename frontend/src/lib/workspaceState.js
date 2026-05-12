@@ -93,3 +93,22 @@ export function getNextConsoleSeqFromTabs(tabs) {
   }
   return max + 1
 }
+
+export function closeTabInWorkspace(tabs, activeTabId, tabId) {
+  const list = Array.isArray(tabs) ? tabs : []
+  const idx = list.findIndex((tab) => tab.id === tabId)
+  if (idx < 0) {
+    return { tabs: list, activeTabId }
+  }
+
+  const nextTabs = list.filter((tab) => tab.id !== tabId)
+  const nextActiveTabId = activeTabId === tabId
+    ? (nextTabs[Math.max(0, idx - 1)]?.id ?? nextTabs[0]?.id ?? '')
+    : activeTabId
+
+  return { tabs: nextTabs, activeTabId: nextActiveTabId }
+}
+
+export function closeAllTabsInWorkspace() {
+  return { tabs: [], activeTabId: '' }
+}

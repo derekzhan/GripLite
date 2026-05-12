@@ -40,6 +40,8 @@ import { normalizeError } from './lib/errors'
 import { runQuery, runQueryPage, listConnections, getBuildInfo } from './lib/bridge'
 import { appendResultPage, DEFAULT_PAGE_SIZE } from './lib/queryPaging'
 import {
+  closeAllTabsInWorkspace,
+  closeTabInWorkspace,
   getNextConsoleSeqFromTabs,
   loadWorkspaceState,
   makeWorkspaceSnapshot,
@@ -137,6 +139,7 @@ export default function App() {
   // or database tab.
   const [tabs,        setTabs]        = useState(() => initialWorkspaceRef.current?.tabs ?? [])
   const [activeTabId, setActiveTabId] = useState(() => initialWorkspaceRef.current?.activeTabId ?? '')
+  const activeTabIdRef = useRef(activeTabId)
 
   /**
    * consolesData: {
@@ -163,6 +166,8 @@ export default function App() {
   })
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
+
+  useEffect(() => { activeTabIdRef.current = activeTabId }, [activeTabId])
 
   useEffect(() => {
     saveWorkspaceState(undefined, makeWorkspaceSnapshot({ tabs, activeTabId, activeConnId }))
@@ -505,25 +510,41 @@ export default function App() {
   //
   // Phase 13 / Task 1: closing the last tab now leaves tabs=[] and returns the
   // user to the WelcomePane instead of spawning a replacement console.
-  const handleTabClose = useCallback((e, tabId) => {
-    e.stopPropagation()
+  const removePersistedTabState = useCallback((tabId) => {
     try {
       localStorage.removeItem(`griplite_sql_editor_${tabId}_v1`)
     } catch { /* ignore */ }
+  }, [])
+
+  const handleCloseTabById = useCallback((tabId) => {
+    removePersistedTabState(tabId)
     setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== tabId)
-      setActiveTabId((cur) => {
-        if (cur !== tabId) return cur
-        const idx = prev.findIndex((t) => t.id === tabId)
-        return next[Math.max(0, idx - 1)]?.id ?? next[0]?.id ?? ''
-      })
-      return next
+      const next = closeTabInWorkspace(prev, activeTabIdRef.current, tabId)
+      activeTabIdRef.current = next.activeTabId
+      setActiveTabId(next.activeTabId)
+      return next.tabs
     })
     setConsolesData((prev) => {
       const { [tabId]: _dropped, ...rest } = prev
       return rest
     })
-  }, [])
+  }, [removePersistedTabState])
+
+  const handleTabClose = useCallback((e, tabId) => {
+    e?.stopPropagation()
+    handleCloseTabById(tabId)
+  }, [handleCloseTabById])
+
+  const handleCloseAllTabs = useCallback(() => {
+    setTabs((prev) => {
+      for (const tab of prev) removePersistedTabState(tab.id)
+      const next = closeAllTabsInWorkspace()
+      activeTabIdRef.current = next.activeTabId
+      setActiveTabId(next.activeTabId)
+      return next.tabs
+    })
+    setConsolesData({})
+  }, [removePersistedTabState])
 
   // ── Connection dialog state ────────────────────────────────────────────────
   const [connDialogOpen,  setConnDialogOpen]  = useState(false)
@@ -641,6 +662,8 @@ export default function App() {
               consolesData={consolesData}
               onSwitch={setActiveTabId}
               onClose={handleTabClose}
+              onCloseTab={handleCloseTabById}
+              onCloseAll={handleCloseAllTabs}
               onNewConsole={handleNewConsole}
             />
 
@@ -902,7 +925,36 @@ function WelcomePane({ hasConnections, onNewConsole, onNewConnection }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // TabBar
 // ─────────────────────────────────────────────────────────────────────────────
-function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onNewConsole }) {
+function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab, onCloseAll, onNewConsole }) {
+  const [contextMenu, setContextMenu] = useState(null)
+
+  useEffect(() => {
+    if (!contextMenu) return undefined
+    const close = () => setContextMenu(null)
+    const onKey = (e) => {
+      if (e.key === 'Escape') close()
+    }
+    document.addEventListener('click', close)
+    document.addEventListener('contextmenu', close)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('blur', close)
+    return () => {
+      document.removeEventListener('click', close)
+      document.removeEventListener('contextmenu', close)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('blur', close)
+    }
+  }, [contextMenu])
+
+  const openContextMenu = (e, tabId) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onSwitch(tabId)
+    setContextMenu({ tabId, x: e.clientX, y: e.clientY })
+  }
+
+  const closeMenu = () => setContextMenu(null)
+
   return (
     <div className="flex items-stretch bg-titlebar border-b border-line-subtle flex-shrink-0 overflow-x-auto min-h-[36px]">
       {tabs.map((tab) => {
@@ -921,6 +973,7 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onNewConso
           <div
             key={tab.id}
             onClick={() => onSwitch(tab.id)}
+            onContextMenu={(e) => openContextMenu(e, tab.id)}
             title={tab.label}
             className={[
               'flex items-center gap-1.5 px-3 py-0 text-[13px] cursor-pointer select-none',
@@ -971,6 +1024,36 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onNewConso
 
       {/* Spacer */}
       <div className="flex-1" />
+
+      {contextMenu && (
+        <div
+          className="fixed z-50 min-w-[140px] py-1 rounded-md border border-line bg-panel shadow-xl text-[12px]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <button
+            type="button"
+            className="w-full px-3 py-1.5 text-left text-fg-secondary hover:bg-hover hover:text-fg-primary"
+            onClick={() => {
+              onCloseTab(contextMenu.tabId)
+              closeMenu()
+            }}
+          >
+            Close Current Tab
+          </button>
+          <button
+            type="button"
+            className="w-full px-3 py-1.5 text-left text-fg-secondary hover:bg-hover hover:text-fg-primary"
+            onClick={() => {
+              onCloseAll()
+              closeMenu()
+            }}
+          >
+            Close All Tabs
+          </button>
+        </div>
+      )}
     </div>
   )
 }

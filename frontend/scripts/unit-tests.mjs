@@ -10,8 +10,11 @@ import {
 } from '../src/lib/databaseTemplates.js'
 import { getVisibleColumnIndices, projectVisibleRows } from '../src/lib/dataSearch.js'
 import { buildFilterSuggestionColumns, getWhereFilterSuggestions } from '../src/lib/filterAutocomplete.js'
+import { databaseScopeFromSelection, tablesFolderIdForScope } from '../src/lib/explorerSearch.js'
 import { appendResultPage, normalizePageSize, pageSlice, shouldLoadMore } from '../src/lib/queryPaging.js'
 import {
+  closeAllTabsInWorkspace,
+  closeTabInWorkspace,
   getNextConsoleSeqFromTabs,
   loadWorkspaceState,
   makeWorkspaceSnapshot,
@@ -102,6 +105,70 @@ function testWorkspaceStateDropsInvalidActiveTab() {
   })
 
   assert.equal(state.activeTabId, 'console-1')
+}
+
+function testExplorerSearchScopeUsesSelectedDatabase() {
+  assert.deepEqual(
+    databaseScopeFromSelection('db::conn-1::orders', [], ''),
+    { connId: 'conn-1', dbName: 'orders' },
+  )
+  assert.deepEqual(
+    databaseScopeFromSelection('folder::tables::conn-1::orders', [], ''),
+    { connId: 'conn-1', dbName: 'orders' },
+  )
+  assert.deepEqual(
+    databaseScopeFromSelection('tbl::conn-1::orders::order_items', [], ''),
+    { connId: 'conn-1', dbName: 'orders' },
+  )
+}
+
+function testExplorerSearchScopeFallsBackToConnectionDatabase() {
+  const connections = [
+    { id: 'conn-1', database: 'default_db' },
+    { id: 'conn-2', database: 'other_db' },
+  ]
+
+  assert.deepEqual(
+    databaseScopeFromSelection('conn::conn-2', connections, 'conn-1'),
+    { connId: 'conn-2', dbName: 'other_db' },
+  )
+  assert.deepEqual(
+    databaseScopeFromSelection('', connections, 'conn-1'),
+    { connId: 'conn-1', dbName: 'default_db' },
+  )
+  assert.equal(tablesFolderIdForScope({ connId: 'conn-1', dbName: 'default_db' }), 'folder::tables::conn-1::default_db')
+}
+
+function testCloseCurrentWorkspaceTabActivatesNeighbor() {
+  const tabs = [
+    { id: 'console-1', type: 'console', label: 'SQL Console' },
+    { id: 'table-1', type: 'table', label: 'users' },
+    { id: 'query-1', type: 'query', label: 'Status' },
+  ]
+
+  const next = closeTabInWorkspace(tabs, 'table-1', 'table-1')
+
+  assert.deepEqual(next.tabs.map((tab) => tab.id), ['console-1', 'query-1'])
+  assert.equal(next.activeTabId, 'console-1')
+}
+
+function testCloseInactiveWorkspaceTabKeepsActiveTab() {
+  const tabs = [
+    { id: 'console-1', type: 'console', label: 'SQL Console' },
+    { id: 'table-1', type: 'table', label: 'users' },
+  ]
+
+  const next = closeTabInWorkspace(tabs, 'console-1', 'table-1')
+
+  assert.deepEqual(next.tabs.map((tab) => tab.id), ['console-1'])
+  assert.equal(next.activeTabId, 'console-1')
+}
+
+function testCloseAllWorkspaceTabsClearsActiveTab() {
+  const next = closeAllTabsInWorkspace()
+
+  assert.deepEqual(next.tabs, [])
+  assert.equal(next.activeTabId, '')
 }
 
 function testPageSliceKeepsLocalPaginationOnly() {
@@ -247,6 +314,11 @@ testFilterAutocompleteUsesLateColumns()
 testFilterAutocompleteFallsBackToResultColumns()
 testWorkspaceSnapshotRoundTrip()
 testWorkspaceStateDropsInvalidActiveTab()
+testExplorerSearchScopeUsesSelectedDatabase()
+testExplorerSearchScopeFallsBackToConnectionDatabase()
+testCloseCurrentWorkspaceTabActivatesNeighbor()
+testCloseInactiveWorkspaceTabKeepsActiveTab()
+testCloseAllWorkspaceTabsClearsActiveTab()
 testPageSliceKeepsLocalPaginationOnly()
 testAppendResultPagePreservesMetadata()
 testNearBottomTrigger()

@@ -52,6 +52,7 @@ import {
 import { normalizeError } from '../lib/errors'
 import { toast } from '../lib/toast'
 import { buildCreateDatabaseSql, buildDropTableSql, buildRenameTableSql, quoteSqlIdentifier } from '../lib/databaseTemplates'
+import { databaseScopeFromSelection, tablesFolderIdForScope } from '../lib/explorerSearch'
 import { formatBytes } from '../utils/formatters'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -297,6 +298,12 @@ export default function DatabaseExplorer({
     [connections],
   )
 
+  const searchScope = useMemo(
+    () => databaseScopeFromSelection(selected, connections, selectedConnId),
+    [selected, connections, selectedConnId],
+  )
+  const searchTablesFolderId = tablesFolderIdForScope(searchScope)
+
   // Tree rows to show: every connection in browse mode, connected-only
   // while searching (disconnected data sources are hidden for the search UX).
   const treeConnections = searchQuery ? connectedConnections : connections
@@ -383,26 +390,35 @@ export default function DatabaseExplorer({
   // with (# matching subtrees × subtree depth), which is tiny.
   const autoExpanded = useMemo(() => {
     const set = new Set()
-    if (!searchQuery) return set
+    if (!searchQuery || !searchScope?.connId || !searchScope?.dbName) return set
+
+    const nodeInScope = (node) => {
+      if (node.id === connNodeId(searchScope.connId)) return true
+      if (node.id === groupId(searchScope.connId, 'databases')) return true
+      if (node.id === dbNodeId(searchScope.connId, searchScope.dbName)) return true
+      if (node.id === searchTablesFolderId) return true
+      return node.connId === searchScope.connId &&
+        node.dbName === searchScope.dbName &&
+        (node.type === 'table' || node.type === 'column')
+    }
 
     const visit = (node) => {
+      if (!nodeInScope(node)) return false
       const cache = nodeCache.get(node.id)
       if (!cache || cache.status !== 'loaded') return false
       let anyChildMatches = false
       for (const child of cache.children) {
-        const childHasMatch = matchesLabel(child.label, searchQuery) || visit(child)
+        const childHasMatch = (child.type === 'table' && matchesLabel(child.label, searchQuery)) || visit(child)
         if (childHasMatch) anyChildMatches = true
       }
       if (anyChildMatches) set.add(node.id)
       return anyChildMatches
     }
 
-    for (const conn of connectedConnections) {
-      const root = { id: connNodeId(conn.id) }
-      visit(root)
-    }
+    const root = { id: connNodeId(searchScope.connId) }
+    visit(root)
     return set
-  }, [searchQuery, nodeCache, connectedConnections])
+  }, [searchQuery, nodeCache, searchScope, searchTablesFolderId])
 
   const isEffectivelyExpanded = useCallback(
     (nodeId) => expanded.has(nodeId) || autoExpanded.has(nodeId),
@@ -706,6 +722,39 @@ export default function DatabaseExplorer({
     return () => { cancelled = true }
   }, [])
 
+  useEffect(() => {
+    if (!searchQuery || !searchScope?.connId || !searchScope?.dbName) return
+
+    fetchChildren({
+      id: connNodeId(searchScope.connId),
+      type: 'connection',
+      connId: searchScope.connId,
+      hasChildren: true,
+    })
+    fetchChildren({
+      id: groupId(searchScope.connId, 'databases'),
+      type: 'group',
+      groupKind: 'databases',
+      connId: searchScope.connId,
+      hasChildren: true,
+    })
+    fetchChildren({
+      id: dbNodeId(searchScope.connId, searchScope.dbName),
+      type: 'database',
+      connId: searchScope.connId,
+      dbName: searchScope.dbName,
+      hasChildren: true,
+    })
+    fetchChildren({
+      id: searchTablesFolderId,
+      type: 'folder',
+      folderKind: 'tables',
+      connId: searchScope.connId,
+      dbName: searchScope.dbName,
+      hasChildren: true,
+    })
+  }, [fetchChildren, searchQuery, searchScope, searchTablesFolderId])
+
   // ── Toggle expand / collapse ──────────────────────────────────────────────
   const toggleExpand = useCallback((node) => {
     if (!node.hasChildren) return
@@ -910,6 +959,19 @@ export default function DatabaseExplorer({
       : 'hover:bg-hover text-fg-secondary',
   ].join(' ')
 
+  const searchVisible = (node) => {
+    if (!searchQuery) return true
+    if (node.type === 'connection' || node.type === 'group' || node.type === 'database' || node.type === 'folder') {
+      return true
+    }
+    if (node.type === 'table' || node.type === 'column' || node.type === 'sysinfo' || node.type === 'admin') {
+      return matchesLabel(node.label, searchQuery)
+    }
+    const cache = nodeCache.get(node.id)
+    if (!cache || cache.status !== 'loaded') return false
+    return cache.children.some((child) => searchVisible(child))
+  }
+
   // ── Single node row ───────────────────────────────────────────────────────
   function NodeRow({ node, depth }) {
     const isOpen     = isEffectivelyExpanded(node.id)
@@ -923,7 +985,7 @@ export default function DatabaseExplorer({
     // Visibility rule for search (Phase 17): show the node if its label
     // matches OR any descendant in the loaded cache matches.  Parents stay
     // visible as long as the subtree they guard has something to show.
-    if (searchQuery && !subtreeMatches(node, searchQuery, nodeCache)) return null
+    if (searchQuery && !searchVisible(node)) return null
 
     const isLeafQuery = node.type === 'sysinfo' || node.type === 'admin'
 
@@ -1146,7 +1208,7 @@ export default function DatabaseExplorer({
   function TreeBranch({ node, depth }) {
     const isOpen  = isEffectivelyExpanded(node.id)
     const cache   = nodeCache.get(node.id)
-    if (searchQuery && !subtreeMatches(node, searchQuery, nodeCache)) return null
+    if (searchQuery && !searchVisible(node)) return null
 
     return (
       <>
@@ -1192,18 +1254,6 @@ export default function DatabaseExplorer({
     const node = {
       id: nodeId, type: 'connection', label: connLabel,
       connId: conn.id, hasChildren: true,
-    }
-
-    // Search visibility: the connection row stays if its label, the display
-    // name, the host:port, the default database, OR any loaded descendant
-    // matches.  This lets users type either a server name or a table name to
-    // reveal the row.
-    if (searchQuery) {
-      const selfMatch =
-        matchesLabel(connLabel, searchQuery) ||
-        matchesLabel(`${conn.host}:${conn.port}`, searchQuery) ||
-        matchesLabel(conn.database ?? '', searchQuery)
-      if (!selfMatch && !subtreeMatches(node, searchQuery, nodeCache)) return null
     }
 
     const handleContextMenu = (e) => {
@@ -1404,21 +1454,6 @@ export default function DatabaseExplorer({
           </div>
         )}
 
-        {!connLoading && !connError && searchQuery && connectedConnections.length > 0
-          && autoExpanded.size === 0 &&
-          !connectedConnections.some((c) =>
-            matchesLabel(c.name || `${c.host}:${c.port}`, searchQuery) ||
-            matchesLabel(`${c.host}:${c.port}`, searchQuery) ||
-            matchesLabel(c.database ?? '', searchQuery),
-          ) && (
-            <div className="px-4 py-6 text-[12px] text-fg-muted text-center select-none">
-              <div className="text-[20px] mb-1">🔍</div>
-              <div>No results for &quot;{searchQuery}&quot;</div>
-              <div className="text-[11px] mt-1 text-fg-faint">
-                Search is limited to connected sources; expand a connection to load its tables
-              </div>
-            </div>
-          )}
       </div>
 
       {/* ── Context menu (right-click on connection / database / table) ── */}

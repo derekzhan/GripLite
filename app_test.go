@@ -39,6 +39,12 @@ func (d *queryContextDriver) ExecuteQueryOnDB(ctx context.Context, dbName, query
 func (d *queryContextDriver) Kind() driver.DriverKind { return driver.DriverMySQL }
 func (d *queryContextDriver) ServerVersion() string   { return "8.0-test" }
 
+type mongoKindDriver struct {
+	queryContextDriver
+}
+
+func (d *mongoKindDriver) Kind() driver.DriverKind { return driver.DriverMongoDB }
+
 type emptyRowIterator struct{}
 
 func (it *emptyRowIterator) Next() bool   { return false }
@@ -105,6 +111,30 @@ func TestBuildPagedQueryPreservesInnerLimit(t *testing.T) {
 func TestBuildPagedQueryRejectsNonSelect(t *testing.T) {
 	if _, err := buildPagedQuery("SHOW TABLES", 200, 0); err == nil {
 		t.Fatal("expected non-select query to be rejected")
+	}
+}
+
+func TestRunQueryPageRejectsMongoDBDriver(t *testing.T) {
+	app := appWithDriver("mongo-1", &mongoKindDriver{})
+
+	result, err := app.RunQueryPage("mongo-1", "shop", "SELECT * FROM users", 0, 100)
+	if err != nil {
+		t.Fatalf("RunQueryPage returned error: %v", err)
+	}
+	if result.Error == "" {
+		t.Fatalf("RunQueryPage should return an in-band error for MongoDB drivers")
+	}
+}
+
+func TestConnectionSuccessMessageUsesDriverKind(t *testing.T) {
+	mysqlMsg := connectionSuccessMessage(driver.DriverMySQL, "8.0.23")
+	if mysqlMsg != "Successfully connected · MySQL 8.0.23" {
+		t.Fatalf("mysql message = %q", mysqlMsg)
+	}
+
+	mongoMsg := connectionSuccessMessage(driver.DriverMongoDB, "8.0.23")
+	if mongoMsg != "Successfully connected · MongoDB 8.0.23" {
+		t.Fatalf("mongo message = %q", mongoMsg)
 	}
 }
 

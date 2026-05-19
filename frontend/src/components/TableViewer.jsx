@@ -32,7 +32,7 @@ import ReviewSqlModal from './ReviewSqlModal'
 import { useTheme } from '../theme/ThemeProvider'
 import {
   runQuery, getTableSchema, getTableAdvancedProperties,
-  previewTableAlter, executeTableAlter, applyChanges,
+  previewTableAlter, executeTableAlter, applyChanges, applyMongoChanges,
   previewIndexAlter, executeIndexAlter,
   previewConstraintAlter, executeConstraintAlter,
   previewPartitionAlter, executePartitionAlter,
@@ -44,6 +44,7 @@ import { normalizeError } from '../lib/errors'
 import { toast } from '../lib/toast'
 import { buildFilterSuggestionColumns, getWhereFilterSuggestions, getWordBeforeCursor } from '../lib/filterAutocomplete'
 import { DEFAULT_PAGE_SIZE } from '../lib/queryPaging'
+import { buildMongoCollectionFindQuery, getMongoFieldSuggestions, normalizeMongoObjectInput } from '../lib/mongoQuery'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock schema metadata (Properties tab)
@@ -2769,13 +2770,147 @@ function FilterBar({
 // ─────────────────────────────────────────────────────────────────────────────
 // Data view — auto-loads on mount via runQuery IPC / mock
 // ─────────────────────────────────────────────────────────────────────────────
-function DataView({ tableName, dbName, connId, schema }) {
+function MongoQueryInput({ label, value, onChange, onKeyDown, placeholder, ariaLabel, columns }) {
+  const inputRef = useRef(null)
+  const [focused, setFocused] = useState(false)
+  const [suggestions, setSuggestions] = useState([])
+  const [open, setOpen] = useState(false)
+  const [idx, setIdx] = useState(-1)
+
+  const rebuild = useCallback((nextValue, cursorPos) => {
+    const next = getMongoFieldSuggestions({ value: nextValue, cursorPos, columns })
+    setSuggestions(next)
+    setOpen(next.length > 0)
+    setIdx(-1)
+  }, [columns])
+
+  useEffect(() => {
+    if (!focused) return
+    const input = inputRef.current
+    if (!input) return
+    rebuild(input.value, input.selectionStart ?? input.value.length)
+  }, [focused, value, columns, rebuild])
+
+  const applySuggestion = useCallback((sugg) => {
+    const input = inputRef.current
+    if (!input) return
+    const cursor = input.selectionStart ?? value.length
+    const before = value.slice(0, cursor)
+    const after = value.slice(cursor)
+    const match = before.match(/[\w.]+$/)
+    const wordStart = match ? cursor - match[0].length : cursor
+    const nextValue = value.slice(0, wordStart) + sugg.text + after
+    onChange(nextValue)
+    const nextCursor = wordStart + sugg.text.length
+    requestAnimationFrame(() => {
+      input.selectionStart = nextCursor
+      input.selectionEnd = nextCursor
+      input.focus()
+    })
+    setOpen(false)
+    setIdx(-1)
+  }, [value, onChange])
+
+  const handleKeyDown = useCallback((e) => {
+    if (open) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setIdx((i) => Math.min(i + 1, suggestions.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setIdx((i) => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        applySuggestion(idx >= 0 ? suggestions[idx] : suggestions[0])
+        return
+      }
+      if (e.key === 'Enter' && idx >= 0) {
+        e.preventDefault()
+        applySuggestion(suggestions[idx])
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setOpen(false)
+        return
+      }
+    }
+    onKeyDown?.(e)
+  }, [open, idx, suggestions, applySuggestion, onKeyDown])
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 min-w-0 flex-1 border-r border-line-subtle relative">
+      <span className="text-fg-muted font-medium">{label}</span>
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => {
+          const next = e.target.value
+          onChange(next)
+          rebuild(next, e.target.selectionStart ?? next.length)
+        }}
+        onKeyDown={handleKeyDown}
+        onFocus={(e) => {
+          setFocused(true)
+          rebuild(e.target.value, e.target.selectionStart ?? e.target.value.length)
+        }}
+        onBlur={() => setTimeout(() => {
+          setFocused(false)
+          setOpen(false)
+        }, 150)}
+        onSelect={(e) => {
+          if (open) rebuild(e.target.value, e.target.selectionStart ?? e.target.value.length)
+        }}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        autoComplete="off"
+        className="min-w-0 flex-1 bg-transparent outline-none font-mono text-syntax-string placeholder:text-fg-muted"
+        placeholder={placeholder}
+        aria-label={ariaLabel}
+      />
+      {open && suggestions.length > 0 && (
+        <div className="absolute top-full left-2 right-2 mt-0.5 z-40 rounded border border-line bg-panel shadow-xl overflow-hidden">
+          <div className="overflow-y-auto" style={{ maxHeight: 210 }}>
+            {suggestions.map((sugg, i) => (
+              <button
+                key={sugg.text}
+                onMouseDown={(e) => { e.preventDefault(); applySuggestion(sugg) }}
+                className={[
+                  'w-full flex items-center gap-2 px-3 py-1 text-left font-mono text-[12px] transition-colors',
+                  i === idx ? 'bg-selected text-fg-on-accent' : 'text-fg-primary hover:bg-hover',
+                ].join(' ')}
+              >
+                <span className="text-[9px] font-sans px-1 py-px rounded flex-shrink-0 bg-success/20 text-success">
+                  field
+                </span>
+                <span className="flex-1 truncate">{sugg.text}</span>
+                {sugg.type && <span className="text-fg-muted text-[10px] font-sans flex-shrink-0">{sugg.type}</span>}
+              </button>
+            ))}
+          </div>
+          <div className="px-3 py-0.5 border-t border-line-subtle bg-titlebar text-[10px] text-fg-muted select-none">
+            Tab / Enter 插入字段 · ↑↓ 导航 · Esc 关闭
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DataView({ tableName, dbName, connId, schema, objectKind = 'table' }) {
+  const isCollection = objectKind === 'collection'
   const [dataResult,   setDataResult]   = useState(null)
   const [isLoading,    setIsLoading]    = useState(true)
   const [isLoadingMore,setIsLoadingMore]= useState(false)
   const [loadError,    setLoadError]    = useState('')
   const [hasMore,      setHasMore]      = useState(false)
   const [pageSize,     setPageSize]     = useState(DEFAULT_PAGE_SIZE)
+  const [viewerMode,   setViewerMode]   = useState('grid')
   // Real table row count from SELECT COUNT(*) — the authoritative total for
   // pagination maths.  `null` while still loading / on error.
   const [totalRows,    setTotalRows]    = useState(null)
@@ -2798,6 +2933,10 @@ function DataView({ tableName, dbName, connId, schema }) {
   //   showSqlBar   — collapsible info strip showing the full SQL being sent.
   const [whereClause, setWhereClause] = useState('')
   const [whereDraft,  setWhereDraft]  = useState('')
+  const [mongoFindClause, setMongoFindClause] = useState('{}')
+  const [mongoFindDraft,  setMongoFindDraft]  = useState('{}')
+  const [mongoSortClause, setMongoSortClause] = useState('')
+  const [mongoSortDraft,  setMongoSortDraft]  = useState('')
   const [history,     setHistory]     = useState([])
   const [historyOpen, setHistoryOpen] = useState(false)
   const [showSqlBar,  setShowSqlBar]  = useState(true)
@@ -2821,12 +2960,23 @@ function DataView({ tableName, dbName, connId, schema }) {
   // flight.  Uses the COMMITTED whereClause, not the unsaved draft.
   const loadedRows = dataResult?.rows?.length ?? 0
   const nextPage = Math.floor(loadedRows / pageSize) + 1
-  const selectSql = buildSelectSql(dbName, tableName, pageSize, Math.max(1, nextPage), whereClause, sortConfig)
+  const selectSql = isCollection
+    ? buildMongoCollectionFindQuery(tableName, pageSize, loadedRows, mongoFindClause, mongoSortClause)
+    : buildSelectSql(dbName, tableName, pageSize, Math.max(1, nextPage), whereClause, sortConfig)
+  const currentSelectSql = isCollection
+    ? buildMongoCollectionFindQuery(tableName, pageSize, 0, mongoFindClause, mongoSortClause)
+    : selectSql
 
   // ── Count(*) — runs once per (connId, dbName, tableName) + on Refresh.
   // The count is the authoritative pagination total; we keep it separate
   // from page fetching so the footer can tell when infinite loading is done.
   const loadCount = useCallback(() => {
+    if (isCollection) {
+      setIsCounting(false)
+      setCountError('')
+      setTotalRows(null)
+      return () => {}
+    }
     let cancelled = false
     setIsCounting(true)
     setCountError('')
@@ -2853,12 +3003,16 @@ function DataView({ tableName, dbName, connId, schema }) {
       })
 
     return () => { cancelled = true }
-  }, [connId, dbName, tableName, whereClause])
+  }, [connId, dbName, tableName, whereClause, isCollection])
 
   // ── Column metadata — fetched once per (connId, dbName, tableName).
   // Powers the Duplicate-Row "skip auto-filled columns" behaviour.  A
   // failure here is non-fatal: we just fall back to copying every cell.
   const loadColumnMeta = useCallback(() => {
+    if (isCollection) {
+      setAutoFilledColumns(new Set(['_id']))
+      return () => {}
+    }
     let cancelled = false
     runQuery(connId, dbName, buildColumnMetaSql(dbName, tableName))
       .then((result) => {
@@ -2878,7 +3032,7 @@ function DataView({ tableName, dbName, connId, schema }) {
         if (!cancelled) setAutoFilledColumns(new Set())
       })
     return () => { cancelled = true }
-  }, [connId, dbName, tableName])
+  }, [connId, dbName, tableName, isCollection])
 
   // ── Core load function: fetches one slice and appends it when offset > 0.
   const load = useCallback((offset = 0) => {
@@ -2894,7 +3048,9 @@ function DataView({ tableName, dbName, connId, schema }) {
     }
 
     const page = Math.floor(offset / pageSize) + 1
-    const sql = buildSelectSql(dbName, tableName, pageSize, page, whereClause, sortConfig)
+    const sql = isCollection
+      ? buildMongoCollectionFindQuery(tableName, pageSize, offset, mongoFindClause, mongoSortClause)
+      : buildSelectSql(dbName, tableName, pageSize, page, whereClause, sortConfig)
     const fetchStart = performance.now()
 
     runQuery(connId, dbName, sql)
@@ -2938,7 +3094,7 @@ function DataView({ tableName, dbName, connId, schema }) {
       })
 
     return () => { cancelled = true }
-  }, [connId, tableName, dbName, whereClause, sortConfig, pageSize])
+  }, [connId, tableName, dbName, whereClause, sortConfig, pageSize, isCollection, mongoFindClause, mongoSortClause])
 
   // Tab identity change (new table / db / conn) — reset page, wipe the live
   // filter draft, and refresh the auto-filled-column set.  Per-table
@@ -2955,20 +3111,26 @@ function DataView({ tableName, dbName, connId, schema }) {
     setHasMore(false)
     setWhereClause('')
     setWhereDraft('')
+    setMongoFindClause('{}')
+    setMongoFindDraft('{}')
+    setMongoSortClause('')
+    setMongoSortDraft('')
     setHistory([])
     setHistoryOpen(false)
     setSortConfig(null)
     loadColumnMeta()
     let cancelled = false
-    getDataFilterHistory(connId, dbName, tableName)
-      .then((h) => {
-        if (cancelled) return
-        setHistory(Array.isArray(h) && h.length ? h.slice(0, 20) : [])
-      })
-      .catch(() => { if (!cancelled) setHistory([]) })
+    if (!isCollection) {
+      getDataFilterHistory(connId, dbName, tableName)
+        .then((h) => {
+          if (cancelled) return
+          setHistory(Array.isArray(h) && h.length ? h.slice(0, 20) : [])
+        })
+        .catch(() => { if (!cancelled) setHistory([]) })
+    }
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connId, dbName, tableName])
+  }, [connId, dbName, tableName, isCollection])
 
   // Count + page fetch whenever identity, page, size OR the committed
   // whereClause changes.  `load` / `loadCount` are memoised with those same
@@ -3118,7 +3280,8 @@ function DataView({ tableName, dbName, connId, schema }) {
   // server-side defaults become visible immediately.
   const handleSave = useCallback(async () => {
     setSaveError('')
-    if (!pkName) {
+    const effectivePkName = isCollection ? '_id' : pkName
+    if (!effectivePkName) {
       setSaveError(
         'This table has no primary key — inline edits cannot be applied safely. ' +
         'Add a primary key in the Properties tab first.',
@@ -3129,13 +3292,13 @@ function DataView({ tableName, dbName, connId, schema }) {
       connectionId: connId,
       database:     dbName,
       tableName,
-      primaryKey:   pkName,
+      primaryKey:   effectivePkName,
     })
     if (!cs) return  // nothing to commit
 
     setIsSaving(true)
     try {
-      const result = await applyChanges(cs)
+      const result = isCollection ? await applyMongoChanges(cs) : await applyChanges(cs)
       if (result?.error) {
         setSaveError(result.error)
         return
@@ -3148,7 +3311,7 @@ function DataView({ tableName, dbName, connId, schema }) {
     } finally {
       setIsSaving(false)
     }
-  }, [connId, dbName, tableName, pkName, editState, load, loadCount])
+  }, [connId, dbName, tableName, pkName, isCollection, editState, load, loadCount])
 
   const handleCancel = useCallback(() => {
     setSaveError('')
@@ -3159,6 +3322,48 @@ function DataView({ tableName, dbName, connId, schema }) {
     if (!hasMore || isLoading || isLoadingMore || editStateRef.current?.isDirty) return
     return load(rows.length)
   }, [hasMore, isLoading, isLoadingMore, load, rows.length])
+
+  const commitMongoFilter = useCallback(() => {
+    const nextFind = normalizeMongoObjectInput(mongoFindDraft, '{}')
+    const nextSort = normalizeMongoObjectInput(mongoSortDraft, '')
+    if (editStateRef.current?.isDirty) {
+      const ok = typeof window !== 'undefined' && window.confirm
+        ? window.confirm(
+            'Applying a MongoDB filter will reload the collection and discard your ' +
+            'unsaved changes.\n\nContinue?',
+          )
+        : true
+      if (!ok) return
+      editStateRef.current.cancel()
+    }
+    setMongoFindDraft(nextFind)
+    setMongoSortDraft(nextSort)
+    if (nextFind === mongoFindClause && nextSort === mongoSortClause) {
+      load(0)
+    } else {
+      setMongoFindClause(nextFind)
+      setMongoSortClause(nextSort)
+    }
+  }, [mongoFindDraft, mongoSortDraft, mongoFindClause, mongoSortClause, load])
+
+  const handleMongoFilterKeyDown = useCallback((e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      commitMongoFilter()
+    } else if (e.key === 'Escape') {
+      setMongoFindDraft(mongoFindClause)
+      setMongoSortDraft(mongoSortClause)
+    }
+  }, [commitMongoFilter, mongoFindClause, mongoSortClause])
+
+  const clearMongoFilter = useCallback(() => {
+    setMongoFindDraft('{}')
+    setMongoSortDraft('')
+    if (mongoFindClause !== '{}' || mongoSortClause !== '') {
+      setMongoFindClause('{}')
+      setMongoSortClause('')
+    }
+  }, [mongoFindClause, mongoSortClause])
 
   const sqlForWhere = useCallback(
     (clause) => buildSelectSql(dbName, tableName, pageSize, 1, clause),
@@ -3176,7 +3381,53 @@ function DataView({ tableName, dbName, connId, schema }) {
     }
   }, [whereClause])
 
-  const filterToolbar = (
+  const filterToolbar = isCollection ? (
+    <>
+      <div className="flex items-stretch bg-elevated border-b border-line-subtle flex-shrink-0 text-[12px]">
+        <MongoQueryInput
+          label="find"
+          value={mongoFindDraft}
+          onChange={setMongoFindDraft}
+          onKeyDown={handleMongoFilterKeyDown}
+          placeholder="{}"
+          ariaLabel="MongoDB find filter"
+          columns={filterSuggestionColumns}
+        />
+        <MongoQueryInput
+          label="sort"
+          value={mongoSortDraft}
+          onChange={setMongoSortDraft}
+          onKeyDown={handleMongoFilterKeyDown}
+          placeholder="{ createdAt: -1 }"
+          ariaLabel="MongoDB sort document"
+          columns={filterSuggestionColumns}
+        />
+        <button
+          onClick={commitMongoFilter}
+          disabled={isLoading || isSaving}
+          className="px-3 flex items-center gap-1 text-accent hover:bg-hover disabled:opacity-50 disabled:cursor-not-allowed"
+          title={`Run (Enter) — ${currentSelectSql}`}
+        >
+          <Play size={13} />
+          Run
+        </button>
+        <button
+          onClick={clearMongoFilter}
+          disabled={isLoading || isSaving}
+          className="px-2 flex items-center text-fg-muted hover:text-fg-primary hover:bg-hover disabled:opacity-50"
+          title="Reset find and sort"
+          aria-label="Reset MongoDB filter"
+        >
+          <X size={13} />
+        </button>
+      </div>
+      <div className="flex items-center gap-3 px-3 py-1 bg-elevated border-b border-line-subtle
+                      flex-shrink-0 text-[11px] text-fg-muted">
+        <span className="font-medium text-fg-secondary">MongoDB</span>
+        <code className="text-syntax-string truncate flex-1">{currentSelectSql}</code>
+      </div>
+    </>
+  ) : (
     <>
       <FilterBar
         draft={whereDraft}
@@ -3278,8 +3529,8 @@ function DataView({ tableName, dbName, connId, schema }) {
         execMs={dataResult?.execMs}
         exportFilename={`${tableName}.csv`}
         editState={editState}
-        onHeaderClicked={handleHeaderClicked}
-        sortConfig={gridSortConfig}
+        onHeaderClicked={isCollection ? undefined : handleHeaderClicked}
+        sortConfig={isCollection ? null : gridSortConfig}
         hasMore={hasMore && (totalRows === null || rows.length < totalRows)}
         loadingMore={isLoadingMore}
         pageSize={pageSize}
@@ -3295,6 +3546,17 @@ function DataView({ tableName, dbName, connId, schema }) {
         onDeleteRow={() => editState.deleteRow()}
         onSave={handleSave}
         onCancel={handleCancel}
+        modeOptions={isCollection ? [
+          { id: 'grid',   icon: '⊞', label: 'Grid' },
+          { id: 'record', icon: '▤', label: 'Record' },
+          { id: 'text',   icon: '≡', label: 'Text' },
+        ] : undefined}
+        initialMode={viewerMode}
+        onModeChange={setViewerMode}
+        initialTextFormat={isCollection ? 'json' : 'table'}
+        textFormatOptions={isCollection ? [
+          { id: 'json', label: 'JSON' },
+        ] : undefined}
       />
     </div>
   )
@@ -3428,8 +3690,9 @@ function useTableSchema(connId, dbName, tableName) {
  *   This prop is consumed once on mount; subsequent changes are ignored
  *   because the component owns its own tab state after that.
  */
-export default function TableViewer({ tableName = 'users', dbName = 'db1', connId = 'mock-conn', defaultView }) {
-  const [mainTab, setMainTab] = useState(defaultView === 'data' ? 'data' : 'properties')
+export default function TableViewer({ tableName = 'users', dbName = 'db1', connId = 'mock-conn', defaultView, objectKind = 'table', connectionKind = 'mysql' }) {
+  const isCollection = objectKind === 'collection' || connectionKind === 'mongodb'
+  const [mainTab, setMainTab] = useState(defaultView === 'data' || isCollection ? 'data' : 'properties')
   const { schema, loading: schemaLoading, fromCache, reload: reloadSchema } = useTableSchema(connId, dbName, tableName)
 
   const TabBtn = ({ id, label, badge }) => (
@@ -3452,39 +3715,44 @@ export default function TableViewer({ tableName = 'users', dbName = 'db1', connI
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 px-4 py-1.5 bg-elevated border-b border-line-subtle
                       flex-shrink-0 text-[12px] text-fg-muted">
-        <span>📋</span>
+        <span>{isCollection ? '🍃' : '📋'}</span>
         <span className="text-syntax-keyword">{dbName}</span>
         <span>/</span>
         <span className="text-fg-primary font-semibold">{tableName}</span>
+        {isCollection && <span className="text-fg-muted">collection</span>}
       </div>
 
       {/* Main tab bar */}
       <div className="flex items-center bg-titlebar border-b border-line-subtle flex-shrink-0">
-        <TabBtn
-          id="properties"
-          label="Properties"
-          badge={
-            schemaLoading ? '…'
-            : fromCache   ? null
-            :               '⚠ mock'
-          }
-        />
+        {!isCollection && (
+          <TabBtn
+            id="properties"
+            label="Properties"
+            badge={
+              schemaLoading ? '…'
+              : fromCache   ? null
+              :               '⚠ mock'
+            }
+          />
+        )}
         <TabBtn id="data" label="Data" badge="100 rows" />
       </div>
 
       {/* Tab content — BOTH panels stay mounted; only CSS visibility changes.
           This preserves scroll position, selected section, grid state, etc.   */}
-      <div className="flex-1 overflow-hidden" style={{ display: mainTab === 'properties' ? 'flex' : 'none', flexDirection: 'column' }}>
-        <PropertiesView
-          schema={schema}
-          connId={connId}
-          dbName={dbName}
-          tableName={tableName}
-          onSchemaChanged={reloadSchema}
-        />
-      </div>
+      {!isCollection && (
+        <div className="flex-1 overflow-hidden" style={{ display: mainTab === 'properties' ? 'flex' : 'none', flexDirection: 'column' }}>
+          <PropertiesView
+            schema={schema}
+            connId={connId}
+            dbName={dbName}
+            tableName={tableName}
+            onSchemaChanged={reloadSchema}
+          />
+        </div>
+      )}
       <div className="flex-1 overflow-hidden" style={{ display: mainTab === 'data' ? 'flex' : 'none', flexDirection: 'column' }}>
-        <DataView tableName={tableName} dbName={dbName} connId={connId} schema={schema} />
+        <DataView tableName={tableName} dbName={dbName} connId={connId} schema={schema} objectKind={objectKind} />
       </div>
     </div>
   )

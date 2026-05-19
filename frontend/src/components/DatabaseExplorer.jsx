@@ -113,6 +113,7 @@ function TreeIcon({ type, folderKind, groupKind, kind, isPK, className = '' }) {
 
   if (type === 'connection')                      { Cmp = Plug;       color = 'var(--success)' }
   else if (type === 'database')                   { Cmp = Database;   color = 'var(--success)' }
+  else if (type === 'table' && kind === 'collection') { Cmp = Table2; color = 'var(--accent)' }
   else if (type === 'table' && kind === 'view')   { Cmp = Eye;        color = 'var(--fg-secondary)' }
   else if (type === 'table')                      { Cmp = Table2;     color = 'var(--fg-secondary)' }
   else if (type === 'column' && isPK)             { Cmp = KeyRound;   color = 'var(--syntax-pk)' }
@@ -307,6 +308,10 @@ export default function DatabaseExplorer({
   // Tree rows to show: every connection in browse mode, connected-only
   // while searching (disconnected data sources are hidden for the search UX).
   const treeConnections = searchQuery ? connectedConnections : connections
+  const connectionKindById = useMemo(
+    () => new Map(connections.map((conn) => [conn.id, conn.kind])),
+    [connections],
+  )
 
   // Right-click context menu — discriminated by `kind`:
   //   { kind: 'connection',    x, y, connId, connName }
@@ -620,11 +625,12 @@ export default function DatabaseExplorer({
         }))
 
       } else if (type === 'database') {
+        const isMongo = connectionKindById.get(connId) === 'mongodb'
         // Databases show virtual folder nodes so the tree mirrors DBeaver.
         children = [
           {
             id: `folder::tables::${connId}::${dbName}`,
-            type: 'folder', folderKind: 'tables', label: 'Tables',
+            type: 'folder', folderKind: 'tables', label: isMongo ? 'Collections' : 'Tables',
             connId, dbName, hasChildren: true,
           },
           {
@@ -921,7 +927,7 @@ export default function DatabaseExplorer({
    */
   const openTable = useCallback((node, e, defaultView = 'properties') => {
     e?.stopPropagation()
-    onTableOpen?.({ tableName: node.tableName, dbName: node.dbName, connId: node.connId, defaultView })
+    onTableOpen?.({ tableName: node.tableName, dbName: node.dbName, connId: node.connId, defaultView, objectKind: node.kind })
   }, [onTableOpen])
 
   // ── Database overview open handler ────────────────────────────────────────
@@ -1163,7 +1169,7 @@ export default function DatabaseExplorer({
             onClick from also triggering expand/collapse. */}
         {isTable && (
           <button
-            title="Open table data"
+            title={node.kind === 'collection' ? 'Open collection data' : 'Open table data'}
             // Phase 14 / Task 2: stopPropagation prevents the outer row's
             // onClick / onDoubleClick from firing; preventDefault is a belt
             // for the rare case where the <button> default behaviour would

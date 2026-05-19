@@ -20,7 +20,7 @@
  * when switching tabs. React therefore never unmounts any component on a
  * tab switch, so every piece of internal state is preserved automatically.
  */
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import SplitPane          from './components/SplitPane'
 import DatabaseExplorer   from './components/DatabaseExplorer'
 import SqlEditor          from './components/SqlEditor'
@@ -132,6 +132,10 @@ export default function App() {
   useEffect(() => { connIdRef.current = activeConnId }, [activeConnId])
 
   const connInfo = connections.find((c) => c.id === activeConnId) ?? null
+  const connectionKindById = useMemo(
+    () => new Map(connections.map((conn) => [conn.id, conn.kind ?? 'mysql'])),
+    [connections],
+  )
 
   // ── Tab state ─────────────────────────────────────────────────────────────
   // Phase 13 / Task 1: No demo tab on cold start.  The workspace opens on the
@@ -417,8 +421,9 @@ export default function App() {
    *   defaultView: 'properties' | 'data'  (only applied on first open;
    *   after that the tab owns its own internal state).
    */
-  const handleTableOpen = useCallback(({ tableName, dbName, connId, defaultView }) => {
+  const handleTableOpen = useCallback(({ tableName, dbName, connId, defaultView, objectKind }) => {
     const effectiveConnId = connId ?? connIdRef.current
+    const connectionKind = connectionKindById.get(effectiveConnId) ?? 'mysql'
     const tabId = `table:${effectiveConnId}:${dbName}:${tableName}`
     setTabs((prev) => {
       if (prev.some((t) => t.id === tabId)) return prev   // already open → just switch
@@ -427,10 +432,11 @@ export default function App() {
         tableName, dbName,
         connId:      effectiveConnId,
         defaultView: defaultView ?? 'properties',
+        objectKind:  objectKind ?? (connectionKind === 'mongodb' ? 'collection' : 'table'),
       }]
     })
     setActiveTabId(tabId)
-  }, [])
+  }, [connectionKindById])
 
   // ── Read-only query tab open (Phase 22) ───────────────────────────────────
   /**
@@ -716,6 +722,7 @@ export default function App() {
                             ? (connInfo.name || `${connInfo.host}:${connInfo.port}`)
                             : ''}
                           storageKey={`griplite_sql_editor_${tab.id}_v1`}
+                          connectionKind={connInfo?.kind ?? 'mysql'}
                         />
                         <ResultPanel
                           queryResult={activeResult?.queryResult ?? null}
@@ -733,22 +740,28 @@ export default function App() {
               })}
 
               {/* Table viewer tabs — ALL kept mounted, CSS-switched */}
-              {tabs.filter((t) => t.type === 'table').map((tab) => (
-                <div
-                  key={tab.id}
-                  className="absolute inset-0"
-                  style={{ display: activeTabId === tab.id ? 'flex' : 'none', flexDirection: 'column' }}
-                >
-                  <ErrorBoundary label={`Table · ${tab.dbName}.${tab.tableName}`}>
-                    <TableViewer
-                      tableName={tab.tableName}
-                      dbName={tab.dbName}
-                      connId={tab.connId}
-                      defaultView={tab.defaultView}
-                    />
-                  </ErrorBoundary>
-                </div>
-              ))}
+              {tabs.filter((t) => t.type === 'table').map((tab) => {
+                const tableConnectionKind = connectionKindById.get(tab.connId) ?? 'mysql'
+                const tableObjectKind = tab.objectKind ?? (tableConnectionKind === 'mongodb' ? 'collection' : 'table')
+                return (
+                  <div
+                    key={tab.id}
+                    className="absolute inset-0"
+                    style={{ display: activeTabId === tab.id ? 'flex' : 'none', flexDirection: 'column' }}
+                  >
+                    <ErrorBoundary label={`Table · ${tab.dbName}.${tab.tableName}`}>
+                      <TableViewer
+                        tableName={tab.tableName}
+                        dbName={tab.dbName}
+                        connId={tab.connId}
+                        defaultView={tab.defaultView}
+                        objectKind={tableObjectKind}
+                        connectionKind={tableConnectionKind}
+                      />
+                    </ErrorBoundary>
+                  </div>
+                )
+              })}
 
               {/* Read-only query tabs (Phase 22 — Explorer system info) */}
               {tabs.filter((t) => t.type === 'query').map((tab) => (

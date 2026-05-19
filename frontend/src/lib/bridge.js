@@ -177,6 +177,16 @@ export async function listConnections() {
       serverVersion: '8.0.35 (mock)',
       connected: true,
     },
+    {
+      id: 'mock-mongo-1',
+      name: 'MongoDB Atlas (mock)',
+      kind: 'mongodb',
+      host: 'cluster.example.mongodb.net',
+      port: 27017,
+      database: 'admin',
+      serverVersion: '7.0.0 (mock)',
+      connected: true,
+    },
   ]
 }
 
@@ -192,6 +202,9 @@ export async function fetchDatabases(connectionID) {
     return FetchDatabases(connectionID)
   }
   await delay(80)
+  if (String(connectionID).includes('mongo')) {
+    return ['admin', 'sample_mflix', 'prm']
+  }
   return ['db1', 'analytics', 'logs']
 }
 
@@ -226,6 +239,23 @@ export async function fetchTables(connectionID, dbName) {
     return FetchTables(connectionID, dbName)
   }
   await delay(80)
+  if (String(connectionID).includes('mongo')) {
+    const mockCollections = {
+      admin: [
+        { name: 'system.version', kind: 'collection', rowCount: -1, sizeBytes: -1, comment: 'MongoDB system metadata' },
+      ],
+      sample_mflix: [
+        { name: 'movies', kind: 'collection', rowCount: 23541, sizeBytes: 134_217_728, comment: 'Movie documents' },
+        { name: 'comments', kind: 'collection', rowCount: 50304, sizeBytes: 268_435_456, comment: 'User comments' },
+      ],
+      prm: [
+        { name: 'prm_order', kind: 'collection', rowCount: 120000, sizeBytes: 536_870_912, comment: 'Order documents' },
+        { name: 'prm_order_error', kind: 'collection', rowCount: 4200, sizeBytes: 67_108_864, comment: 'Order error documents' },
+      ],
+    }
+    const fallback = [{ name: 'sample_collection', kind: 'collection', rowCount: -1, sizeBytes: -1, comment: '' }]
+    return (mockCollections[dbName] ?? fallback).map((t) => ({ ...t, schema: dbName }))
+  }
   // Mock data includes realistic sizeBytes values so the tree UI can be
   // developed and verified without a live database connection.
   const mockTables = {
@@ -791,6 +821,26 @@ const MOCK_SAVED = [
     createdAt: '2024-01-01T00:00:00Z',
     updatedAt: '2024-01-01T00:00:00Z',
   },
+  {
+    id: 'mock-mongo-1',
+    name: 'MongoDB Atlas (mock)',
+    comment: 'Mock MongoDB SRV connection',
+    kind: 'mongodb',
+    host: 'cluster.example.mongodb.net',
+    port: 27017,
+    username: 'demo',
+    password: '',
+    database: 'admin',
+    tls: true,
+    ssh: { enabled: false, host: '', port: 22, user: '', authType: 'password', password: '', privateKeyPath: '' },
+    advancedParams: [
+      { key: '_gripliteMongoConnectionMode', value: 'srv', enabled: true },
+    ],
+    readOnly: false,
+    color: '',
+    createdAt: '2024-01-01T00:00:00Z',
+    updatedAt: '2024-01-01T00:00:00Z',
+  },
 ]
 
 /**
@@ -868,7 +918,9 @@ export async function testConnection(conn) {
   await delay(800 + Math.random() * 400)
   // Mock: succeed 80% of the time
   if (Math.random() > 0.2) {
-    return 'Successfully connected · MySQL 8.0.35 (mock)'
+    return conn?.kind === 'mongodb'
+      ? 'Successfully connected · MongoDB 7.0.0 (mock)'
+      : 'Successfully connected · MySQL 8.0.35 (mock)'
   }
   throw new Error('Connection refused: mock failure')
 }
@@ -1124,6 +1176,22 @@ export async function applyChanges(changeSet) {
   }
   await delay(200 + Math.random() * 200)
   // Browser dev mock — pretend everything succeeded.
+  return {
+    deletedCount: (changeSet.deletedIds ?? []).length,
+    insertedCount: (changeSet.addedRows ?? []).length,
+    updatedCount: (changeSet.editedRows ?? []).length,
+    timeMs: Math.floor(Math.random() * 100) + 10,
+    statements: [],
+    error: '',
+  }
+}
+
+export async function applyMongoChanges(changeSet) {
+  if (isWails()) {
+    const { ApplyMongoChanges } = await import('../../wailsjs/go/main/App.js')
+    return ApplyMongoChanges(changeSet)
+  }
+  await delay(200 + Math.random() * 200)
   return {
     deletedCount: (changeSet.deletedIds ?? []).length,
     insertedCount: (changeSet.addedRows ?? []).length,

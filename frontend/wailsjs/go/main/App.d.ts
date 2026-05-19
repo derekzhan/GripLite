@@ -10,6 +10,8 @@ export function AddConnection(arg1:driver.ConnectionConfig):Promise<string>;
 
 export function ApplyChanges(arg1:database.ChangeSet):Promise<database.ApplyResult>;
 
+export function ApplyMongoChanges(arg1:database.ChangeSet):Promise<database.ApplyResult>;
+
 export function CancelCopy():Promise<void>;
 
 export function CancelQuery(arg1:string):Promise<void>;

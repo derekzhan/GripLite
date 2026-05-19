@@ -23,6 +23,7 @@
  */
 import { useState, useRef, useCallback, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
+import { AlignJustify, Copy, Check, CornerDownLeft, X } from 'lucide-react'
 import { useTheme } from '../theme/ThemeProvider'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,6 +103,19 @@ const MODES = [
   { value: 'text', label: 'Text' },
   { value: 'xml',  label: 'XML'  },
 ]
+
+const toolbarButtonClass = [
+  'flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-md',
+  'border border-line-subtle text-fg-secondary bg-elevated',
+  'hover:text-fg-primary hover:border-accent hover:bg-hover',
+  'transition-colors select-none',
+].join(' ')
+
+const toolbarDisabledButtonClass = [
+  'flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-md',
+  'border border-line-subtle text-fg-faint cursor-not-allowed bg-elevated/60',
+  'transition-colors select-none',
+].join(' ')
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ValuePanel
@@ -249,25 +263,22 @@ export default function ValuePanel({ value, columnName, rowIndex, onClose, editS
           onClick={() => setWordWrap((w) => !w)}
           title={`Word wrap: ${wordWrap ? 'on (click to disable)' : 'off (click to enable)'}`}
           className={[
-            'flex-shrink-0 w-6 h-6 flex items-center justify-center text-[13px] rounded',
-            'transition-colors select-none border',
+            toolbarButtonClass,
             wordWrap
-              ? 'border-line text-fg-secondary bg-hover'
-              : 'border-transparent text-fg-muted hover:text-fg-primary hover:bg-hover',
+              ? 'text-accent border-accent/60 bg-hover'
+              : '',
           ].join(' ')}
         >
-          ⮒
+          <AlignJustify size={16} strokeWidth={1.8} />
         </button>
 
         {/* Copy */}
         <button
           onClick={copyValue}
           title="Copy value"
-          className="flex-shrink-0 w-6 h-6 flex items-center justify-center text-[12px] rounded
-                     border border-transparent text-fg-muted
-                     hover:text-fg-primary hover:border-line transition-colors select-none"
+          className={toolbarButtonClass}
         >
-          {copied ? '✓' : '⎘'}
+          {copied ? <Check size={15} strokeWidth={2.2} /> : <Copy size={15} strokeWidth={1.8} />}
         </button>
 
         {/* Save (↵) — only meaningful when an editable cell is bound. */}
@@ -281,14 +292,12 @@ export default function ValuePanel({ value, columnName, rowIndex, onClose, editS
               : 'Save change (⌘/Ctrl+S)'
             }
             className={[
-              'flex-shrink-0 w-7 h-6 flex items-center justify-center rounded',
-              'text-[12px] font-semibold transition-colors select-none border',
               editable && dirty
-                ? 'bg-accent border-accent text-fg-on-accent hover:bg-accent-hover ring-1 ring-success/40'
-                : 'border-line-subtle text-fg-faint cursor-not-allowed',
+                ? `${toolbarButtonClass} bg-accent border-accent text-fg-on-accent hover:bg-accent-hover ring-1 ring-success/40`
+                : toolbarDisabledButtonClass,
             ].join(' ')}
           >
-            ↵
+            <CornerDownLeft size={15} strokeWidth={2} />
           </button>
         )}
 
@@ -306,14 +315,12 @@ export default function ValuePanel({ value, columnName, rowIndex, onClose, editS
             : 'Close value panel'
           }
           className={[
-            'flex-shrink-0 w-6 h-6 flex items-center justify-center rounded',
-            'text-[15px] leading-none transition-colors select-none border',
             canEdit && dirty
-              ? 'border-danger/60 text-danger hover:bg-danger-bg'
-              : 'border-transparent text-fg-muted hover:text-fg-primary hover:bg-hover',
+              ? `${toolbarButtonClass} border-danger/60 text-danger hover:bg-danger-bg`
+              : toolbarButtonClass,
           ].join(' ')}
         >
-          ×
+          <X size={16} strokeWidth={2} />
         </button>
       </div>
 

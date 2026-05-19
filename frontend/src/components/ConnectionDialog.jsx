@@ -40,6 +40,48 @@ const DEFAULT_ADVANCED = [
   { key: 'autoReconnect',       value: 'true',  enabled: false },
   { key: 'allowPublicKeyRetrieval', value: 'true', enabled: false },
 ]
+const MONGO_CONNECTION_MODE_PARAM = '_gripliteMongoConnectionMode'
+
+function getMongoConnectionMode(form) {
+  return form.advancedParams?.find((p) => p.key === MONGO_CONNECTION_MODE_PARAM && p.enabled)?.value === 'srv'
+    ? 'srv'
+    : 'standard'
+}
+
+function setMongoConnectionMode(form, mode) {
+  const params = (form.advancedParams ?? []).filter((p) => p.key !== MONGO_CONNECTION_MODE_PARAM)
+  return {
+    ...form,
+    advancedParams: [
+      ...params,
+      { key: MONGO_CONNECTION_MODE_PARAM, value: mode === 'srv' ? 'srv' : 'standard', enabled: true },
+    ],
+  }
+}
+
+function switchConnectionKind(form, kind) {
+  if (kind === form.kind) return form
+  if (kind === 'mongodb') {
+    return setMongoConnectionMode({
+      ...form,
+      kind,
+      host: form.host === '127.0.0.1' ? 'localhost' : form.host,
+      port: 27017,
+      username: form.username === 'root' ? '' : form.username,
+      tls: true,
+      advancedParams: [],
+    }, 'standard')
+  }
+  return {
+    ...form,
+    kind: 'mysql',
+    host: form.host === 'localhost' ? '127.0.0.1' : form.host,
+    port: 3306,
+    username: form.username || 'root',
+    tls: false,
+    advancedParams: DEFAULT_ADVANCED.map((p) => ({ ...p })),
+  }
+}
 
 function makeBlankForm(id) {
   return {
@@ -132,23 +174,57 @@ function GeneralTab({ form, setForm }) {
   const setField = (key) => (e) =>
     setForm((f) => ({ ...f, [key]: e.target.value }))
 
-  const jdbcUrl = `jdbc:mysql://${form.host || 'host'}:${form.port || 3306}/${form.database || ''}`
+  const isMongo = form.kind === 'mongodb'
+  const mongoMode = getMongoConnectionMode(form)
+  const previewUrl = isMongo
+    ? `${mongoMode === 'srv' ? 'mongodb+srv' : 'mongodb'}://${form.host || 'host'}${mongoMode === 'srv' ? '' : `:${form.port || 27017}`}/${form.database || ''}`
+    : `jdbc:mysql://${form.host || 'host'}:${form.port || 3306}/${form.database || ''}`
 
   return (
     <div className="space-y-3">
+      {/* Driver kind */}
+      <div>
+        <Label>Driver</Label>
+        <Select
+          value={form.kind ?? 'mysql'}
+          onChange={(e) => setForm((f) => switchConnectionKind(f, e.target.value))}
+        >
+          <option value="mysql">MySQL</option>
+          <option value="mongodb">MongoDB</option>
+        </Select>
+      </div>
+
+      {isMongo && (
+        <div>
+          <Label>Connection type</Label>
+          <Select
+            value={mongoMode}
+            onChange={(e) => setForm((f) => setMongoConnectionMode({
+              ...f,
+              port: e.target.value === 'srv' ? 27017 : (f.port || 27017),
+              tls: e.target.value === 'srv' ? true : f.tls,
+            }, e.target.value))}
+          >
+            <option value="standard">Default</option>
+            <option value="srv">MongoDB Atlas (SRV protocol)</option>
+          </Select>
+        </div>
+      )}
+
       {/* Row 1: Host + Port */}
       <div className="flex gap-3">
         <div className="flex-1">
           <Label>Host</Label>
-          <Input value={form.host} onChange={setField('host')} placeholder="127.0.0.1" />
+          <Input value={form.host} onChange={setField('host')} placeholder={isMongo ? 'cluster.example.mongodb.net' : '127.0.0.1'} />
         </div>
-        <div className="w-24">
+        <div className={`w-24 ${isMongo && mongoMode === 'srv' ? 'opacity-50' : ''}`}>
           <Label>Port</Label>
           <Input
             type="number"
             value={form.port}
             onChange={(e) => setForm((f) => ({ ...f, port: Number(e.target.value) }))}
-            placeholder="3306"
+            placeholder={isMongo ? '27017' : '3306'}
+            readOnly={isMongo && mongoMode === 'srv'}
           />
         </div>
       </div>
@@ -169,7 +245,7 @@ function GeneralTab({ form, setForm }) {
       <div className="flex gap-3">
         <div className="flex-1">
           <Label>User</Label>
-          <Input value={form.username} onChange={setField('username')} placeholder="root" />
+          <Input value={form.username} onChange={setField('username')} placeholder={isMongo ? 'username' : 'root'} />
         </div>
         <div className="flex-1">
           <Label>Password</Label>
@@ -187,7 +263,7 @@ function GeneralTab({ form, setForm }) {
       <Toggle
         checked={form.tls}
         onChange={(val) => setForm((f) => ({ ...f, tls: val }))}
-        label="Require TLS/SSL"
+        label={isMongo ? 'Require TLS/SSL (recommended for Atlas)' : 'Require TLS/SSL'}
       />
 
       {/* Color label */}
@@ -224,13 +300,15 @@ function GeneralTab({ form, setForm }) {
           />
           <span className="text-[12px] text-fg-secondary">Read-only mode</span>
         </label>
-        <span className="text-[10px] text-fg-muted">Blocks write operations (INSERT/UPDATE/DELETE/DDL)</span>
+        <span className="text-[10px] text-fg-muted">
+          {isMongo ? 'Blocks MongoDB write/admin operations' : 'Blocks write operations (INSERT/UPDATE/DELETE/DDL)'}
+        </span>
       </div>
 
       {/* Live URL preview */}
       <div>
         <Label>Connection URL (preview)</Label>
-        <Input value={jdbcUrl} readOnly className="font-mono text-xs text-accent" />
+        <Input value={previewUrl} readOnly className="font-mono text-xs text-accent" />
       </div>
     </div>
   )
@@ -338,26 +416,29 @@ function SSHTab({ form, setForm, onBrowseKey }) {
 }
 
 function AdvancedTab({ form, setForm }) {
-  const params = form.advancedParams ?? []
+  const params = (form.advancedParams ?? []).filter((p) => p.key !== MONGO_CONNECTION_MODE_PARAM)
 
   const setParam = (idx, key, value) =>
     setForm((f) => {
-      const next = [...f.advancedParams]
-      next[idx] = { ...next[idx], [key]: value }
+      const visible = (f.advancedParams ?? []).filter((p) => p.key !== MONGO_CONNECTION_MODE_PARAM)
+      visible[idx] = { ...visible[idx], [key]: value }
+      const hidden = (f.advancedParams ?? []).filter((p) => p.key === MONGO_CONNECTION_MODE_PARAM)
+      const next = [...visible, ...hidden]
       return { ...f, advancedParams: next }
     })
 
   const addParam = () =>
     setForm((f) => ({
       ...f,
-      advancedParams: [...f.advancedParams, { key: '', value: '', enabled: true }],
+      advancedParams: [...(f.advancedParams ?? []), { key: '', value: '', enabled: true }],
     }))
 
   const removeParam = (idx) =>
     setForm((f) => {
-      const next = [...f.advancedParams]
-      next.splice(idx, 1)
-      return { ...f, advancedParams: next }
+      const visible = (f.advancedParams ?? []).filter((p) => p.key !== MONGO_CONNECTION_MODE_PARAM)
+      visible.splice(idx, 1)
+      const hidden = (f.advancedParams ?? []).filter((p) => p.key === MONGO_CONNECTION_MODE_PARAM)
+      return { ...f, advancedParams: [...visible, ...hidden] }
     })
 
   return (
@@ -527,6 +608,20 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
     resetToBlank()
   }
 
+  const handleNewMongoDB = () => {
+    const blank = switchConnectionKind(makeBlankForm(), 'mongodb')
+    setForm({
+      ...blank,
+      name: 'New MongoDB Connection',
+      database: 'admin',
+    })
+    setSelectedId(null)
+    prevFormRef.current = JSON.stringify(blank)
+    setIsDirty(true)
+    setTestResult(null)
+    setActiveTab('General')
+  }
+
   // ── Delete selected connection ──────────────────────────────────────────
   const handleDelete = async () => {
     if (!selectedId) return
@@ -624,10 +719,17 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
             <div className="flex gap-1">
               <button
                 onClick={handleNew}
-                title="New connection"
-                className="p-0.5 text-fg-muted hover:text-accent hover:bg-hover rounded transition-colors"
+                title="New MySQL connection"
+                className="px-1.5 py-0.5 text-[10px] text-fg-muted hover:text-accent hover:bg-hover rounded transition-colors"
               >
-                <Plus size={14} />
+                New MySQL
+              </button>
+              <button
+                onClick={handleNewMongoDB}
+                title="New MongoDB connection"
+                className="px-1.5 py-0.5 text-[10px] text-fg-muted hover:text-accent hover:bg-hover rounded transition-colors"
+              >
+                New MongoDB
               </button>
               <button
                 onClick={handleDelete}

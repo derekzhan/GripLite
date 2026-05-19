@@ -10,6 +10,10 @@ export function ApplyChanges(arg1) {
   return window['go']['main']['App']['ApplyChanges'](arg1);
 }
 
+export function ApplyMongoChanges(arg1) {
+  return window['go']['main']['App']['ApplyMongoChanges'](arg1);
+}
+
 export function CancelCopy() {
   return window['go']['main']['App']['CancelCopy']();
 }

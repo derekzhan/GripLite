@@ -17,6 +17,7 @@ import (
 	"GripLite/internal/database"
 	"GripLite/internal/db"
 	"GripLite/internal/driver"
+	_ "GripLite/internal/driver/mongodb"      // registers MongoDB driver
 	mysqlpkg "GripLite/internal/driver/mysql" // registers MySQL driver + SSH helpers
 	"GripLite/internal/store"
 )
@@ -304,8 +305,9 @@ func (a *App) AddConnection(cfg driver.ConnectionConfig) (string, error) {
 	a.configs[cfg.ID] = cfg
 	a.mu.Unlock()
 
-	// Also register in the pool Manager so the *sql.DB is directly accessible.
-	if a.dbMgr != nil {
+	// Also register MySQL connections in the pool Manager so the *sql.DB is directly accessible.
+	// MongoDB is not database/sql-backed and must stay on the driver layer.
+	if a.dbMgr != nil && cfg.Kind == driver.DriverMySQL {
 		mgrcfg := driverCfgToManagerCfg(cfg)
 		if _, e := a.dbMgr.Connect(ctx, mgrcfg); e != nil {
 			log.Printf("[app] dbMgr.Connect %q: %v (non-fatal, driver layer still active)", cfg.ID, e)
@@ -714,6 +716,14 @@ func (a *App) RunQuery(connectionID, dbName, sql string) (*QueryResult, error) {
 // The user SQL remains the inner query, so an explicit LIMIT/OFFSET written by
 // the user is preserved while GripLite adds an outer paging window.
 func (a *App) RunQueryPage(connectionID, dbName, sqlText string, offset, limit int) (*QueryResult, error) {
+	drv, err := a.ensureLive(connectionID)
+	if err != nil {
+		return nil, err
+	}
+	if drv.Kind() == driver.DriverMongoDB {
+		return &QueryResult{Error: "paged SQL loading is only supported for MySQL connections"}, nil
+	}
+
 	pageLimit := limit
 	if pageLimit <= 0 {
 		pageLimit = 200
@@ -724,11 +734,6 @@ func (a *App) RunQueryPage(connectionID, dbName, sqlText string, offset, limit i
 	pagedSQL, err := buildPagedQuery(sqlText, pageLimit+1, offset)
 	if err != nil {
 		return &QueryResult{Error: err.Error()}, nil
-	}
-
-	drv, err := a.ensureLive(connectionID)
-	if err != nil {
-		return nil, err
 	}
 
 	// Paged queries can also wrap expensive user SQL, so they must not receive an
@@ -1278,6 +1283,30 @@ func (a *App) ApplyChanges(cs database.ChangeSet) database.ApplyResult {
 	return a.dbMgr.ApplyChanges(ctx, cs)
 }
 
+type mongoChangeApplier interface {
+	ApplyChanges(context.Context, database.ChangeSet) database.ApplyResult
+}
+
+// ApplyMongoChanges commits inline edits for MongoDB collection data.
+// MySQL continues to use ApplyChanges above so the SQL applier remains unchanged.
+func (a *App) ApplyMongoChanges(cs database.ChangeSet) database.ApplyResult {
+	drv, err := a.ensureLive(cs.ConnectionID)
+	if err != nil {
+		return database.ApplyResult{Error: err.Error()}
+	}
+	if drv.Kind() != driver.DriverMongoDB {
+		return database.ApplyResult{Error: "MongoDB collection edits require a MongoDB connection"}
+	}
+	applier, ok := drv.(mongoChangeApplier)
+	if !ok {
+		return database.ApplyResult{Error: "MongoDB driver does not support collection edits"}
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, 20*time.Second)
+	defer cancel()
+	return applier.ApplyChanges(ctx, cs)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 11: Query Executor IPC methods
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1531,12 +1560,24 @@ func (a *App) TestConnection(sc store.SavedConnection) (string, error) {
 		return "", err
 	}
 	ver := drv.ServerVersion()
+	kind := drv.Kind()
 	_ = drv.Close(ctx)
 
-	if ver != "" {
-		return fmt.Sprintf("Successfully connected · MySQL %s", ver), nil
+	return connectionSuccessMessage(kind, ver), nil
+}
+
+func connectionSuccessMessage(kind driver.DriverKind, version string) string {
+	label := "Database"
+	switch kind {
+	case driver.DriverMySQL:
+		label = "MySQL"
+	case driver.DriverMongoDB:
+		label = "MongoDB"
 	}
-	return "Successfully connected", nil
+	if version != "" {
+		return fmt.Sprintf("Successfully connected · %s %s", label, version)
+	}
+	return fmt.Sprintf("Successfully connected · %s", label)
 }
 
 // ConnectSaved opens a live database connection from a saved config.

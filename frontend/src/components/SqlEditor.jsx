@@ -9,6 +9,10 @@ const INITIAL_SQL = `-- GripLite SQL Console
 -- Tip: ⌘+Enter / Ctrl+Enter to run the selected query
 
 `
+const MONGO_INITIAL_SQL = `// GripLite MongoDB Playground
+// Tip: ⌘+Enter / Ctrl+Enter to run the selected expression
+db.getCollection("prm_order").find({}).limit(100)
+`
 
 const TABS_INIT = [
   { id: 1, label: 'Console 1', content: INITIAL_SQL },
@@ -346,11 +350,13 @@ export default function SqlEditor({
   defaultDb = '',
   connectionLabel = '',
   storageKey = '',
+  connectionKind = 'mysql',
 }) {
   const { resolvedTheme } = useTheme()
+  const isMongo = connectionKind === 'mongodb'
   const initialStateRef = useRef(null)
   if (initialStateRef.current === null) {
-    initialStateRef.current = loadEditorState(storageKey, initialSql, defaultDb)
+    initialStateRef.current = loadEditorState(storageKey, initialSql ?? (isMongo ? MONGO_INITIAL_SQL : ''), defaultDb)
   }
   // initialSql is captured ONCE at mount; subsequent prop changes are
   // ignored because the editor's tab list is owned internally and re-seeding
@@ -472,6 +478,7 @@ export default function SqlEditor({
           ? model.getValueInRange(sel)
           : model.getValue()
 
+        if (isMongo) return
         let formatted
         try {
           formatted = formatSql(input, {
@@ -519,6 +526,9 @@ export default function SqlEditor({
         // are not the owner of the model being completed, otherwise the user
         // sees N duplicates for N open console tabs.
         if (model !== editorRef.current?.getModel()) {
+          return { suggestions: [] }
+        }
+        if (isMongo) {
           return { suggestions: [] }
         }
 
@@ -697,6 +707,11 @@ export default function SqlEditor({
    *   - 800 ms debounce avoids hammering the DB on every keystroke.
    */
   const validateSql = useCallback((sql, model, monaco) => {
+    if (isMongo) {
+      monaco.editor.setModelMarkers(model, 'sql-lint', [])
+      setSqlValid(null)
+      return
+    }
     clearTimeout(validateTimerRef.current)
     const trimmed = sql?.trim() ?? ''
     if (!trimmed) {
@@ -814,7 +829,7 @@ export default function SqlEditor({
       editorRef.current?.dispose()
       editorRef.current = null
     }
-  }, [])
+  }, [isMongo])
 
   // Close the Run split-button dropdown on outside click / Escape.
   useEffect(() => {
@@ -887,15 +902,24 @@ export default function SqlEditor({
     }
     const full = editor.getValue() ?? ''
     if (!full.trim()) return
+    if (isMongo) {
+      onRunQuery?.(full.trim(), { dbName: db })
+      return
+    }
     const caret = model?.getOffsetAt(editor.getPosition()) ?? 0
     const stmt  = findStatementAt(full, caret)
     onRunQuery?.(stmt ? stmt.sql : full.trim(), { dbName: db })
-  }, [onRunQuery])
+  }, [isMongo, onRunQuery])
 
   const runAll = useCallback(() => {
     const editor = editorRef.current
     if (!editor) return
     const full = editor.getValue() ?? ''
+    if (isMongo) {
+      const db = selectedDbRef.current
+      if (full.trim()) onRunQuery?.(full.trim(), { dbName: db })
+      return
+    }
     const stmts = splitSql(full)
     if (stmts.length === 0) return
     const db = selectedDbRef.current
@@ -904,7 +928,7 @@ export default function SqlEditor({
       return
     }
     onRunQuery?.(stmts.map((s) => s.sql), { multi: true, dbName: db })
-  }, [onRunQuery])
+  }, [isMongo, onRunQuery])
 
   const handleTxn = useCallback((sql) => {
     if (!connectionId || isRunning) return
@@ -1320,7 +1344,7 @@ export default function SqlEditor({
         <Editor
           key={activeTab}
           height="100%"
-          defaultLanguage="sql"
+          defaultLanguage={isMongo ? 'javascript' : 'sql'}
           value={activeContent}
           onChange={handleEditorChange}
           onMount={handleEditorMount}

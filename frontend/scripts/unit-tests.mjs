@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
+import {
+  buildNonEmptyColumnSet,
+  columnNameMatchesSearch,
+  filterColumnPickerEntries,
+  hiddenColumnsForNonEmptyFilter,
+  invertColumnPickerSelection,
+  selectColumnPickerEntries,
+} from '../src/lib/columnPicker.js'
 import { buildCopyDatabaseConfig, copyProgressPercent, tableNamesForCopySelection } from '../src/lib/copyData.js'
 import {
   MYSQL_COLUMN_TYPE_OPTIONS,
@@ -11,6 +20,7 @@ import {
 import { getVisibleColumnIndices, projectVisibleRows } from '../src/lib/dataSearch.js'
 import { buildFilterSuggestionColumns, getWhereFilterSuggestions } from '../src/lib/filterAutocomplete.js'
 import { databaseScopeFromSelection, tablesFolderIdForScope } from '../src/lib/explorerSearch.js'
+import { buildMongoCollectionFindQuery, getMongoFieldSuggestions } from '../src/lib/mongoQuery.js'
 import { appendResultPage, normalizePageSize, pageSlice, shouldLoadMore } from '../src/lib/queryPaging.js'
 import {
   closeAllTabsInWorkspace,
@@ -310,6 +320,174 @@ function testRenameAndDropTableSqlQuoteIdentifiers() {
   )
 }
 
+function testConnectionDialogHasExplicitDatabaseCreateEntries() {
+  const source = readFileSync(new URL('../src/components/ConnectionDialog.jsx', import.meta.url), 'utf8')
+  assert.match(source, />\s*New MySQL\s*</)
+  assert.match(source, />\s*New MongoDB\s*</)
+  assert.match(source, /handleNew =/)
+  assert.match(source, /handleNewMongoDB/)
+}
+
+function testMongoCollectionTextModeHidesMySQLFormatToggle() {
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  assert.match(dataViewer, /textFormatOptions/)
+  assert.match(tableViewer, /textFormatOptions=\{isCollection \? \[\s*\{\s*id: 'json'/m)
+}
+
+function testMongoTableViewerInfersCollectionFromConnectionKind() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  assert.match(app, /tableConnectionKind === 'mongodb' \? 'collection' : 'table'/)
+  assert.match(app, /connectionKind=\{tableConnectionKind\}/)
+  assert.match(tableViewer, /connectionKind = 'mysql'/)
+  assert.match(tableViewer, /objectKind === 'collection' \|\| connectionKind === 'mongodb'/)
+}
+
+function testMongoCollectionInlineEditingUsesMongoApplier() {
+  const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  assert.match(bridge, /export async function applyMongoChanges/)
+  assert.match(tableViewer, /applyChanges, applyMongoChanges/)
+  assert.match(tableViewer, /const effectivePkName = isCollection \? '_id' : pkName/)
+  assert.doesNotMatch(tableViewer, /editState=\{isCollection \? undefined : editState\}/)
+  assert.match(tableViewer, /const result = isCollection \? await applyMongoChanges\(cs\) : await applyChanges\(cs\)/)
+}
+
+function testMongoCollectionFindQueryBuildsDatagripStyleFilterAndSort() {
+  assert.equal(
+    buildMongoCollectionFindQuery('prm_order', 100, 0, '{ status: "paid" }', '{ createdAt: -1 }'),
+    'db.getCollection("prm_order").find({ status: "paid" }).sort({ createdAt: -1 }).limit(100)',
+  )
+  assert.equal(
+    buildMongoCollectionFindQuery('prm_order', 100, 100, '{}', ''),
+    'db.getCollection("prm_order").find({}).skip(100).limit(100)',
+  )
+}
+
+function testMongoFieldSuggestionsUseCollectionFields() {
+  assert.deepEqual(
+    getMongoFieldSuggestions({
+      value: '{tn',
+      cursorPos: 3,
+      columns: [{ name: 'tno', type: 'BSON' }, { name: 'tracking', type: 'BSON' }],
+    }).map((s) => s.text),
+    ['tno'],
+  )
+}
+
+function testMongoCollectionDefaultsToGridAndLabelsRecordMode() {
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  assert.match(tableViewer, /\{ id: 'grid',\s+icon: '⊞', label: 'Grid' \},\s*\{ id: 'record', icon: '▤', label: 'Record' \},\s*\{ id: 'text',\s+icon: '≡', label: 'Text' \}/m)
+  assert.match(tableViewer, /\{ id: 'record', icon: '▤', label: 'Record' \}/)
+  assert.match(tableViewer, /const \[viewerMode,\s+setViewerMode\]\s+= useState\('grid'\)/)
+}
+
+function testRecordViewRendersJsonValuesVisually() {
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+  assert.match(dataViewer, /function parseDisplayJsonValue/)
+  assert.match(dataViewer, /function JsonValueTree/)
+  assert.match(dataViewer, /function JsonExpandableValue/)
+  assert.match(dataViewer, /const \[expanded, setExpanded\] = useState\(false\)/)
+  assert.match(dataViewer, /expanded \? \(\s*<JsonValueTree value=\{parsedJson\} showRootSummary=\{false\} \/>/)
+  assert.match(dataViewer, /text-\[16px\]/)
+  assert.match(dataViewer, /String\(value\)/)
+  const jsonExpandable = dataViewer.match(/function JsonExpandableValue[\s\S]*?\n}\n\n\/\*\*/)?.[0] ?? ''
+  assert.doesNotMatch(jsonExpandable, /<summary[\s\S]*String\(value\)/)
+  assert.doesNotMatch(dataViewer, /parsedJson \? \(\s*<JsonValueTree value=\{parsedJson\}/)
+}
+
+function testRecordViewContextMenuSupportsDatagripActions() {
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+  assert.match(dataViewer, /function RecordValueContextMenu/)
+  assert.match(dataViewer, /label="Edit"/)
+  assert.match(dataViewer, /onEdit\(cell\)/)
+  assert.doesNotMatch(dataViewer, /Show Record View/)
+  assert.match(dataViewer, /Open in Value Editor/)
+  assert.match(dataViewer, /Set NULL/)
+  assert.match(dataViewer, /Copy/)
+  assert.match(dataViewer, /window\.getSelection\(\)\?\.toString\(\)/)
+  assert.match(dataViewer, /editRequestKey/)
+  assert.match(dataViewer, /setEditRequest\(/)
+}
+
+function testGridContextMenuSeparatesRowMarkerAndDataCell() {
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+  assert.match(dataViewer, /onCellContextMenu/)
+  assert.match(dataViewer, /localX <= ROW_MARKER_CONTEXT_WIDTH/)
+  assert.match(dataViewer, /onGridCellContextMenu/)
+  assert.match(dataViewer, /kind: 'cell'/)
+  assert.match(dataViewer, /RecordValueContextMenu/)
+}
+
+function testColumnPickerCanSearchAndFilterNonEmptyColumns() {
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+  assert.match(dataViewer, /columnPickerSearch/)
+  assert.match(dataViewer, /showNonEmptyColumnsOnly/)
+  assert.match(dataViewer, /nonEmptyColumnSet/)
+  assert.match(dataViewer, /filteredColumnPickerEntries/)
+  assert.match(dataViewer, /placeholder="Search columns"/)
+  assert.match(dataViewer, /Only non-empty/)
+
+  const columns = [{ name: 'name_mark' }, { name: 'empty_col' }, { name: 'blank_col' }, { name: 'missing_col' }]
+  const nonEmpty = buildNonEmptyColumnSet([
+    ['Receiver', '', '   ', null],
+    ['', null, undefined, 'N/A'],
+  ], columns)
+  assert.deepEqual([...nonEmpty], [0])
+  assert.equal(columnNameMatchesSearch('name_mark', 'name'), true)
+  assert.deepEqual(
+    filterColumnPickerEntries({
+      columns,
+      search: 'name',
+      showNonEmptyOnly: true,
+      nonEmptyColumnSet: nonEmpty,
+    }).map(({ col }) => col.name),
+    ['name_mark'],
+  )
+  assert.deepEqual([...hiddenColumnsForNonEmptyFilter(columns, nonEmpty)], [1, 2, 3])
+  assert.match(dataViewer, /hiddenColumnsForNonEmptyFilter/)
+  assert.match(dataViewer, /const next = hiddenColumnsForNonEmptyFilter\(columns, nonEmptyColumnSet\)/)
+  assert.match(dataViewer, /showNonEmptyColumnsOnly\)\s+\{/)
+  assert.doesNotMatch(dataViewer, /else\s+\{\s*setHiddenCols\(\(prev\) => \(prev\.size === 0 \? prev : new Set\(\)\)\)\s*\}/)
+  assert.match(dataViewer, /setShowNonEmptyColumnsOnly\(checked\)/)
+  assert.match(dataViewer, /if \(!checked\) setHiddenCols\(new Set\(\)\)/)
+}
+
+function testColumnPickerSupportsSelectAllAndInvertForFilteredEntries() {
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+  const entries = [{ index: 1 }, { index: 3 }]
+  const hidden = new Set([0, 1, 2])
+
+  assert.deepEqual([...selectColumnPickerEntries(hidden, entries)].sort(), [0, 2])
+  assert.deepEqual([...invertColumnPickerSelection(hidden, entries)].sort(), [0, 2, 3])
+  assert.match(dataViewer, /Select all/)
+  assert.match(dataViewer, /Invert/)
+  assert.match(dataViewer, /selectColumnPickerEntries\(prev, filteredColumnPickerEntries\)/)
+  assert.match(dataViewer, /invertColumnPickerSelection\(prev, filteredColumnPickerEntries\)/)
+}
+
+function testResultModeIsPreservedAcrossReloads() {
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+  const pagedViewer = readFileSync(new URL('../src/components/PagedResultViewer.jsx', import.meta.url), 'utf8')
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  assert.match(dataViewer, /onModeChange/)
+  assert.match(dataViewer, /setModeState\(next\)/)
+  assert.match(pagedViewer, /onModeChange=\{onModeChange\}/)
+  assert.match(tableViewer, /const \[viewerMode,\s+setViewerMode\]\s+= useState\('grid'\)/)
+  assert.match(tableViewer, /initialMode=\{viewerMode\}/)
+  assert.match(tableViewer, /onModeChange=\{setViewerMode\}/)
+}
+
+function testValuePanelToolbarUsesConsistentIcons() {
+  const valuePanel = readFileSync(new URL('../src/components/ValuePanel.jsx', import.meta.url), 'utf8')
+  assert.match(valuePanel, /import \{ AlignJustify, Copy, Check, CornerDownLeft, X \} from 'lucide-react'/)
+  assert.match(valuePanel, /const toolbarButtonClass =/)
+  assert.match(valuePanel, /<AlignJustify size=\{16\}/)
+  assert.match(valuePanel, /<Copy size=\{15\}/)
+  assert.match(valuePanel, /<CornerDownLeft size=\{15\}/)
+}
+
 testFilterAutocompleteUsesLateColumns()
 testFilterAutocompleteFallsBackToResultColumns()
 testWorkspaceSnapshotRoundTrip()
@@ -331,5 +509,19 @@ testCreateDatabaseTemplateQuotesIdentifiers()
 testCreateTableSqlBuildsColumnsAndOptions()
 testColumnTypeOptionsIncludeCommonMySQLTypes()
 testRenameAndDropTableSqlQuoteIdentifiers()
+testConnectionDialogHasExplicitDatabaseCreateEntries()
+testMongoCollectionTextModeHidesMySQLFormatToggle()
+testMongoTableViewerInfersCollectionFromConnectionKind()
+testMongoCollectionInlineEditingUsesMongoApplier()
+testMongoCollectionFindQueryBuildsDatagripStyleFilterAndSort()
+testMongoFieldSuggestionsUseCollectionFields()
+testMongoCollectionDefaultsToGridAndLabelsRecordMode()
+testRecordViewRendersJsonValuesVisually()
+testRecordViewContextMenuSupportsDatagripActions()
+testGridContextMenuSeparatesRowMarkerAndDataCell()
+testColumnPickerCanSearchAndFilterNonEmptyColumns()
+testColumnPickerSupportsSelectAllAndInvertForFilteredEntries()
+testResultModeIsPreservedAcrossReloads()
+testValuePanelToolbarUsesConsistentIcons()
 
 console.log('unit tests passed')

@@ -35,6 +35,11 @@ export default function PagedResultViewer({
   onDeleteRow,
   onSave,
   onCancel,
+  modeOptions,
+  initialMode,
+  onModeChange,
+  initialTextFormat,
+  textFormatOptions,
 }) {
   const statusLabel = makeStatus({
     shown: rows.length,
@@ -56,6 +61,11 @@ export default function PagedResultViewer({
           onHeaderClicked={onHeaderClicked}
           sortConfig={sortConfig}
           onNearBottom={onLoadMore}
+          modeOptions={modeOptions}
+          initialMode={initialMode}
+          onModeChange={onModeChange}
+          initialTextFormat={initialTextFormat}
+          textFormatOptions={textFormatOptions}
         />
       </div>
       <ActionFooter

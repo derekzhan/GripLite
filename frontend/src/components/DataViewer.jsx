@@ -29,6 +29,13 @@ import { ArrowDown, ArrowUp, PanelRightOpen, Search, X } from 'lucide-react'
 import { AutoSizedGrid, deriveColumns, useRowOverrides } from './DataGrid'
 import ValuePanel from './ValuePanel'
 import { saveTextFile } from '../lib/bridge'
+import {
+  buildNonEmptyColumnSet,
+  filterColumnPickerEntries,
+  hiddenColumnsForNonEmptyFilter,
+  invertColumnPickerSelection,
+  selectColumnPickerEntries,
+} from '../lib/columnPicker'
 import { getVisibleColumnIndices, projectVisibleRows } from '../lib/dataSearch'
 import { shouldLoadMore } from '../lib/queryPaging'
 import { useTheme } from '../theme/ThemeProvider'
@@ -184,6 +191,14 @@ function buildSearchRegex(query, { caseSensitive, regex, wholeWord }) {
   }
 }
 
+function sameSet(a, b) {
+  if (a.size !== b.size) return false
+  for (const item of a) {
+    if (!b.has(item)) return false
+  }
+  return true
+}
+
 /**
  * GridCanvas — canvas grid with integrated column-header sort.
  *
@@ -209,6 +224,7 @@ function GridCanvas({
   rowColors,
   // Right-click: (sourceRowIndex, x, y) => void
   onRowContextMenu,
+  onCellContextMenu: onGridCellContextMenu,
   searchMatchCells,
   currentSearchMatch,
   sourceRowOrder,
@@ -358,15 +374,27 @@ function GridCanvas({
   const canvasWrapperRef = useRef(null)
 
   const handleCellContextMenu = useCallback(
-    ([, displayRow], event) => {
+    ([col, displayRow], event) => {
       event?.preventDefault?.()
       const sourceRow = mapDisplayRow(displayRow)
+      const sourceCol = mapDisplayCol(col)
       const fallbackEvent = event?.nativeEvent ?? event
       const x = nativeCtxPos.current.x || fallbackEvent?.clientX || 0
       const y = nativeCtxPos.current.y || fallbackEvent?.clientY || 0
-      onRowContextMenu?.(sourceRow, x, y)
+      const localX = nativeCtxPos.current.localX ?? Number.POSITIVE_INFINITY
+      if (col < 0 || localX <= ROW_MARKER_CONTEXT_WIDTH) {
+        onRowContextMenu?.(sourceRow, x, y)
+        return
+      }
+      const value = editState ? editState.getCellValue(sourceCol, sourceRow) : rows?.[sourceRow]?.[sourceCol]
+      onGridCellContextMenu?.({
+        col: sourceCol,
+        row: sourceRow,
+        value,
+        colName: columns[sourceCol]?.name ?? `col_${sourceCol}`,
+      }, x, y)
     },
-    [mapDisplayRow, onRowContextMenu],
+    [columns, editState, mapDisplayCol, mapDisplayRow, onGridCellContextMenu, onRowContextMenu, rows],
   )
 
   // ── Edit committed by user in the overlay editor ───────────────────────
@@ -440,7 +468,12 @@ function GridCanvas({
       ref={canvasWrapperRef}
       style={{ width: '100%', height: '100%' }}
       onContextMenuCapture={(e) => {
-        nativeCtxPos.current = { x: e.clientX, y: e.clientY }
+        const rect = canvasWrapperRef.current?.getBoundingClientRect()
+        nativeCtxPos.current = {
+          x: e.clientX,
+          y: e.clientY,
+          localX: rect ? e.clientX - rect.left : Number.POSITIVE_INFINITY,
+        }
       }}
     >
       <AutoSizedGrid
@@ -452,7 +485,7 @@ function GridCanvas({
         onCellClicked={handleCellClicked}
         onHeaderClicked={handleHeaderClicked}
         onCellEdited={editState ? handleCellEdited : undefined}
-        onCellContextMenu={onRowContextMenu ? handleCellContextMenu : undefined}
+        onCellContextMenu={(onRowContextMenu || onGridCellContextMenu) ? handleCellContextMenu : undefined}
         onVisibleRegionChanged={onNearBottom ? handleVisibleRegionChanged : undefined}
         {...(editState ? { getCellsForSelection: true } : {})}
       />
@@ -503,6 +536,8 @@ const ROW_COLORS = [
   { label: 'Purple', value: '#ede9fe', dark: '#1e1040' },
   { label: 'Pink',   value: '#fce7f3', dark: '#2d0a20' },
 ]
+
+const ROW_MARKER_CONTEXT_WIDTH = 64
 
 /**
  * RowContextMenu — floating right-click menu for a grid row.
@@ -682,12 +717,25 @@ function GridWithPanel({
   }, [isDark])
 
   // ── Context menu state ────────────────────────────────────────────────
-  const [ctxMenu, setCtxMenu] = useState(null) // { x, y, row }
+  const [ctxMenu, setCtxMenu] = useState(null) // { kind, x, y, row | cell }
   const ctxRef = useRef(null)
 
   const openContextMenu = useCallback((row, x, y) => {
-    setCtxMenu({ x, y, row })
+    setCtxMenu({ kind: 'row', x, y, row })
   }, [])
+
+  const openGridCellContextMenu = useCallback((cell, x, y) => {
+    onSelectRow(cell.row)
+    editState?.setSelectedRow(cell.row)
+    setPanelCell(cell)
+    setCtxMenu({
+      kind: 'cell',
+      x,
+      y,
+      cell,
+      selectedText: window.getSelection()?.toString() ?? '',
+    })
+  }, [editState, onSelectRow])
 
   useEffect(() => {
     if (!ctxMenu) return
@@ -754,6 +802,7 @@ function GridWithPanel({
           sortConfig={sortConfig}
           rowColors={rowColors}
           onRowContextMenu={openContextMenu}
+          onCellContextMenu={openGridCellContextMenu}
           searchMatchCells={searchMatchCells}
           currentSearchMatch={currentSearchMatch}
           sourceRowOrder={sourceRowOrder}
@@ -815,7 +864,7 @@ function GridWithPanel({
       />
 
       {/* ── Row context menu ─────────────────────────────────────────── */}
-      {ctxMenu && (
+      {ctxMenu?.kind === 'row' && (
         <RowContextMenu
           ref={ctxRef}
           x={ctxMenu.x}
@@ -829,6 +878,31 @@ function GridWithPanel({
           onSetRowColor={(entry) => { setRowColor(ctxMenu.row, entry); setCtxMenu(null) }}
           onClose={() => setCtxMenu(null)}
         />
+      )}
+      {ctxMenu?.kind === 'cell' && (
+        <div ref={ctxRef}>
+          <RecordValueContextMenu
+            x={ctxMenu.x}
+            y={ctxMenu.y}
+            cell={ctxMenu.cell}
+            canEdit={!!editState && !editState.isDeleted(ctxMenu.cell.row)}
+            onEdit={(cell) => {
+              setPanelCell(cell)
+              setPanelOpen(true)
+            }}
+            onOpenValueEditor={(cell) => {
+              setPanelCell(cell)
+              setPanelOpen(true)
+            }}
+            onSetNull={(cell) => editState?.editCell(cell.col, cell.row, null)}
+            onCopy={(cell) => {
+              const selected = ctxMenu?.selectedText?.trim()
+              const text = selected || (cell.value === null || cell.value === undefined ? 'NULL' : String(cell.value))
+              navigator.clipboard.writeText(text)
+            }}
+            onClose={() => setCtxMenu(null)}
+          />
+        </div>
       )}
     </div>
   )
@@ -926,6 +1000,92 @@ function rowPreview(rowData) {
   return '—'
 }
 
+function parseDisplayJsonValue(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed || !['{', '['].includes(trimmed[0])) return null
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (parsed && typeof parsed === 'object') return parsed
+  } catch {
+    return null
+  }
+  return null
+}
+
+function JsonScalar({ value }) {
+  if (value === null) return <span className="text-fg-muted">null</span>
+  if (typeof value === 'string') return <span className="text-syntax-string">"{value}"</span>
+  if (typeof value === 'number') return <span className="text-syntax-number">{String(value)}</span>
+  if (typeof value === 'boolean') return <span className="text-syntax-keyword">{String(value)}</span>
+  return <span className="text-fg-primary">{String(value)}</span>
+}
+
+function JsonValueTree({ value, depth = 0, showRootSummary = true }) {
+  if (value === null || typeof value !== 'object') return <JsonScalar value={value} />
+
+  const isArray = Array.isArray(value)
+  const entries = isArray
+    ? value.map((item, index) => [index, item])
+    : Object.entries(value)
+  const label = isArray ? `[${entries.length}]` : `{${entries.length}}`
+
+  if (entries.length === 0) {
+    return <span className="text-fg-muted">{isArray ? '[]' : '{}'}</span>
+  }
+
+  const children = (
+    <div className={showRootSummary ? 'ml-4 mt-1 space-y-0.5 border-l border-line-subtle pl-3' : 'space-y-0.5 border-l border-line-subtle pl-3'}>
+      {entries.map(([key, child]) => (
+        <div key={String(key)} className="flex items-start gap-2">
+          <span className="text-syntax-keyword flex-shrink-0">{String(key)}</span>
+          <span className="text-fg-muted flex-shrink-0">:</span>
+          <span className="min-w-0 break-words">
+            <JsonValueTree value={child} depth={depth + 1} />
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+
+  if (!showRootSummary) return children
+
+  return (
+    <details open={depth < 1} className="group/json">
+      <summary className="cursor-pointer select-none text-fg-primary">
+        <span className="text-fg-muted">{label}</span>
+      </summary>
+      {children}
+    </details>
+  )
+}
+
+function JsonExpandableValue({ value, parsedJson }) {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <div className="flex items-start gap-1">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          setExpanded((v) => !v)
+        }}
+        onDoubleClick={(e) => e.stopPropagation()}
+        className="mt-0.5 w-5 flex-shrink-0 text-[16px] leading-none text-fg-muted hover:text-fg-primary transition-colors"
+        title={expanded ? 'Show raw JSON' : 'Show visual JSON'}
+      >
+        {expanded ? '▾' : '▸'}
+      </button>
+      {expanded ? (
+        <JsonValueTree value={parsedJson} showRootSummary={false} />
+      ) : (
+        <span className="text-fg-primary break-all whitespace-pre-wrap">{String(value)}</span>
+      )}
+    </div>
+  )
+}
+
 /**
  * InlineValueCell — DBeaver-style double-click editor for Record mode.
  *
@@ -940,13 +1100,14 @@ function rowPreview(rowData) {
  * produces a no-op edit (isDirty stays true only if the value actually
  * differs from the source row).
  */
-function InlineValueCell({ value, onCommit, onSetNull, readOnly, edited }) {
+function InlineValueCell({ value, onCommit, onSetNull, readOnly, edited, editRequestKey }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft]     = useState('')
   const taRef                 = useRef(null)
 
   const isNull = value === null || value === undefined
   const isLong = !isNull && String(value).length > 200
+  const parsedJson = parseDisplayJsonValue(value)
 
   // Auto-grow the textarea to fit its content while editing.
   useEffect(() => {
@@ -970,6 +1131,11 @@ function InlineValueCell({ value, onCommit, onSetNull, readOnly, edited }) {
       }
     })
   }
+
+  useEffect(() => {
+    if (editRequestKey) startEdit()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRequestKey])
 
   const commit = () => {
     setEditing(false)
@@ -1014,6 +1180,8 @@ function InlineValueCell({ value, onCommit, onSetNull, readOnly, edited }) {
       >
         {isNull ? (
           <span className="text-fg-muted">NULL</span>
+        ) : parsedJson ? (
+          <JsonExpandableValue value={value} parsedJson={parsedJson} />
         ) : isLong ? (
           <details>
             <summary className="text-fg-primary cursor-pointer select-none">
@@ -1047,9 +1215,56 @@ function InlineValueCell({ value, onCommit, onSetNull, readOnly, edited }) {
   )
 }
 
+function ReadonlyRecordValue({ value }) {
+  if (value === null || value === undefined) {
+    return <span className="text-fg-muted italic not-italic">NULL</span>
+  }
+  const parsedJson = parseDisplayJsonValue(value)
+  if (parsedJson) return <JsonExpandableValue value={value} parsedJson={parsedJson} />
+  if (String(value).length > 200) {
+    return (
+      <details>
+        <summary className="text-fg-primary cursor-pointer select-none">
+          {String(value).slice(0, 120)}…
+          <span className="ml-2 text-fg-muted text-[10px]">({String(value).length} chars)</span>
+        </summary>
+        <span className="text-fg-primary break-all block mt-1">{String(value)}</span>
+      </details>
+    )
+  }
+  return <span className="text-fg-primary break-words">{String(value)}</span>
+}
+
+function RecordValueContextMenu({ x, y, cell, canEdit, onEdit, onOpenValueEditor, onSetNull, onCopy, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed z-[9999] min-w-[230px] rounded-lg border border-line bg-panel shadow-xl py-1
+                 text-[13px] text-fg-primary select-none"
+      style={{ left: x, top: y }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <CtxItem label="Edit" onClick={() => { onEdit(cell); onClose() }} disabled={!canEdit} />
+      <CtxItem label="Open in Value Editor" onClick={() => { onOpenValueEditor(cell); onClose() }} />
+      <div className="my-1 border-t border-line-subtle" />
+      <CtxItem label="Set NULL" onClick={() => { onSetNull(cell); onClose() }} disabled={!canEdit} />
+      <CtxItem label="Copy" onClick={() => { onCopy(cell); onClose() }} />
+    </div>
+  )
+}
+
 function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
   const [copied,    setCopied]    = useState(false)
   const [fieldSort, setFieldSort] = useState(null) // null | 'asc' | 'desc'
+  const [ctxMenu,   setCtxMenu]   = useState(null)
+  const [valuePanelCell, setValuePanelCell] = useState(null)
+  const [editRequest, setEditRequest] = useState(null)
+  const ctxRef = useRef(null)
 
   const cycleFieldSort = () =>
     setFieldSort((s) => (s === null ? 'asc' : s === 'asc' ? 'desc' : null))
@@ -1094,6 +1309,53 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
       setTimeout(() => setCopied(false), 2000)
     })
   }
+
+  useEffect(() => {
+    if (!ctxMenu) return
+    const onDoc = (e) => {
+      if (!ctxRef.current?.contains(e.target)) setCtxMenu(null)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [ctxMenu])
+
+  const openValueContextMenu = useCallback((e, cell) => {
+    e.preventDefault()
+    onSelectIdx(cell.row)
+    editState?.setSelectedRow(cell.row)
+    setCtxMenu({
+      x: e.clientX,
+      y: e.clientY,
+      cell,
+      selectedText: window.getSelection()?.toString() ?? '',
+    })
+  }, [onSelectIdx, editState])
+
+  const openValueEditor = useCallback((cell) => {
+    setValuePanelCell(cell)
+  }, [])
+
+  const editCellFromMenu = useCallback((cell) => {
+    setValuePanelCell(null)
+    setEditRequest({
+      col: cell.col,
+      row: cell.row,
+      key: `${cell.row}-${cell.col}-${Date.now()}`,
+    })
+  }, [])
+
+  const copyCellValue = useCallback((cell) => {
+    const selected = ctxMenu?.selectedText?.trim()
+    const text = selected || (cell.value === null || cell.value === undefined ? 'NULL' : String(cell.value))
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [ctxMenu?.selectedText])
+
+  const setCellNull = useCallback((cell) => {
+    editState?.editCell(cell.col, cell.row, null)
+  }, [editState])
 
   // Keyboard navigation in the left list
   const onKeyDown = (e) => {
@@ -1214,27 +1476,26 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
                           <span className="ml-1.5 text-fg-muted text-[10px] font-normal">{col.type}</span>
                         )}
                       </td>
-                      <td className="px-4 py-1.5 border-b border-line-subtle font-mono text-[12px] align-top">
+                      <td
+                        className="px-4 py-1.5 border-b border-line-subtle font-mono text-[12px] align-top"
+                        onContextMenu={(e) => openValueContextMenu(e, {
+                          col: i,
+                          row: idx,
+                          value: val,
+                          colName: col.name,
+                        })}
+                      >
                         {editState ? (
                           <InlineValueCell
                             value={val}
                             edited={isEdited}
                             readOnly={deleted}
+                            editRequestKey={editRequest?.row === idx && editRequest?.col === i ? editRequest.key : null}
                             onCommit={(next) => editState.editCell(i, idx, next)}
                             onSetNull={() => editState.editCell(i, idx, null)}
                           />
-                        ) : val === null || val === undefined ? (
-                          <span className="text-fg-muted italic not-italic">NULL</span>
-                        ) : String(val).length > 200 ? (
-                          <details>
-                            <summary className="text-fg-primary cursor-pointer select-none">
-                              {String(val).slice(0, 120)}…
-                              <span className="ml-2 text-fg-muted text-[10px]">({String(val).length} chars)</span>
-                            </summary>
-                            <span className="text-fg-primary break-all block mt-1">{String(val)}</span>
-                          </details>
                         ) : (
-                          <span className="text-fg-primary break-words">{String(val)}</span>
+                          <ReadonlyRecordValue value={val} />
                         )}
                       </td>
                     </tr>
@@ -1245,6 +1506,38 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
           </div>
         )}
       </div>
+
+      {valuePanelCell && (
+        <div className="w-[380px] flex-shrink-0 border-l border-line-subtle overflow-hidden">
+          <ValuePanel
+            value={editState
+              ? editState.getCellValue(valuePanelCell.col, valuePanelCell.row)
+              : valuePanelCell.value}
+            columnName={valuePanelCell.colName}
+            rowIndex={valuePanelCell.row}
+            onClose={() => setValuePanelCell(null)}
+            editState={editState}
+            col={valuePanelCell.col}
+            row={valuePanelCell.row}
+          />
+        </div>
+      )}
+
+      {ctxMenu && (
+        <div ref={ctxRef}>
+          <RecordValueContextMenu
+            x={ctxMenu.x}
+            y={ctxMenu.y}
+            cell={ctxMenu.cell}
+            canEdit={!!editState && !deleted}
+            onEdit={editCellFromMenu}
+            onOpenValueEditor={openValueEditor}
+            onSetNull={setCellNull}
+            onCopy={copyCellValue}
+            onClose={() => setCtxMenu(null)}
+          />
+        </div>
+      )}
     </div>
   )
 }
@@ -1283,15 +1576,22 @@ export default function DataViewer({
   onHeaderClicked,
   sortConfig,
   onNearBottom,
+  modeOptions = MODES,
+  initialMode = 'grid',
+  onModeChange,
+  initialTextFormat = 'table',
+  textFormatOptions = TEXT_FORMATS,
 }) {
-  const [mode,        setMode]        = useState('grid')
-  const [textFormat,  setTextFormat]  = useState('table')
+  const [mode,        setModeState]   = useState(initialMode)
+  const [textFormat,  setTextFormat]  = useState(initialTextFormat)
   const [csvFlash,    setCsvFlash]    = useState(false)
   const [insertFlash, setInsertFlash] = useState(false)
   const [jsonFlash,   setJsonFlash]   = useState(false)
   const [tblName,     setTblName]     = useState('table_name')
   const [hiddenCols,  setHiddenCols]  = useState(new Set())
   const [showColPicker, setShowColPicker] = useState(false)
+  const [columnPickerSearch, setColumnPickerSearch] = useState('')
+  const [showNonEmptyColumnsOnly, setShowNonEmptyColumnsOnly] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchCaseSensitive, setSearchCaseSensitive] = useState(false)
   const [searchRegex, setSearchRegex] = useState(false)
@@ -1313,6 +1613,10 @@ export default function DataViewer({
   const setSelectedRow = editState
     ? (r) => { _setSelectedRow(r); editState.setSelectedRow(r) }
     : _setSelectedRow
+  const setMode = useCallback((next) => {
+    setModeState(next)
+    onModeChange?.(next)
+  }, [onModeChange])
 
   // Two distinct empty states (DBeaver semantics):
   //   noColumns → schema is unknown, the result is genuinely degenerate
@@ -1387,6 +1691,25 @@ export default function DataViewer({
     () => getVisibleColumnIndices(columns.length, hiddenCols),
     [columns.length, hiddenCols],
   )
+  const nonEmptyColumnSet = useMemo(() => {
+    return buildNonEmptyColumnSet(rows, columns)
+  }, [columns, rows])
+  useEffect(() => {
+    if (showNonEmptyColumnsOnly) {
+      setHiddenCols((prev) => {
+        const next = hiddenColumnsForNonEmptyFilter(columns, nonEmptyColumnSet)
+        return sameSet(prev, next) ? prev : next
+      })
+    }
+  }, [columns, nonEmptyColumnSet, showNonEmptyColumnsOnly])
+  const filteredColumnPickerEntries = useMemo(() => {
+    return filterColumnPickerEntries({
+      columns,
+      search: columnPickerSearch,
+      showNonEmptyOnly: showNonEmptyColumnsOnly,
+      nonEmptyColumnSet,
+    })
+  }, [columnPickerSearch, columns, nonEmptyColumnSet, showNonEmptyColumnsOnly])
   const visibleColumns = useMemo(
     () => visibleColumnIndices.map((sourceCol) => columns[sourceCol]).filter(Boolean),
     [columns, visibleColumnIndices],
@@ -1463,11 +1786,11 @@ export default function DataViewer({
       <div className="flex items-center gap-2 px-2 py-1.5 bg-titlebar border-b border-line-subtle
                       flex-shrink-0">
         {/* Mode toggle */}
-        <ToggleGroup options={MODES} value={mode} onChange={setMode} />
+        <ToggleGroup options={modeOptions} value={mode} onChange={setMode} />
 
         {/* Text format sub-toggle (only when in text mode) */}
         {mode === 'text' && !noColumns && (
-          <ToggleGroup options={TEXT_FORMATS} value={textFormat} onChange={setTextFormat} />
+          <ToggleGroup options={textFormatOptions} value={textFormat} onChange={setTextFormat} />
         )}
 
         {/* Local result-set search */}
@@ -1575,38 +1898,97 @@ export default function DataViewer({
             </button>
             {showColPicker && (
               <div className="absolute left-0 top-full mt-1 z-50 bg-panel border border-line rounded
-                              shadow-md min-w-[180px] max-h-[320px] overflow-y-auto py-1">
+                              shadow-md min-w-[260px] max-h-[360px] overflow-hidden py-1">
                 <div className="flex items-center justify-between px-2 py-1 border-b border-line-subtle">
                   <span className="text-[10px] uppercase tracking-wider text-fg-muted select-none">Columns</span>
-                  <button
-                    onClick={() => setHiddenCols(new Set())}
-                    className="text-[10px] text-accent hover:underline select-none"
-                  >
-                    Show all
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setHiddenCols(prev => selectColumnPickerEntries(prev, filteredColumnPickerEntries))}
+                      className="text-[10px] text-accent hover:underline select-none"
+                    >
+                      Select all
+                    </button>
+                    <button
+                      onClick={() => setHiddenCols(prev => invertColumnPickerSelection(prev, filteredColumnPickerEntries))}
+                      className="text-[10px] text-accent hover:underline select-none"
+                    >
+                      Invert
+                    </button>
+                    <button
+                      onClick={() => setHiddenCols(new Set())}
+                      className="text-[10px] text-accent hover:underline select-none"
+                    >
+                      Show all
+                    </button>
+                  </div>
                 </div>
-                {columns.map((col, i) => (
-                  <label
-                    key={i}
-                    className="flex items-center gap-2 px-2 py-1.5 hover:bg-hover cursor-pointer select-none"
-                  >
+                <div className="p-2 border-b border-line-subtle space-y-2">
+                  <div className="flex items-center gap-1.5 rounded border border-line bg-elevated px-2 py-1">
+                    <Search size={12} className="text-fg-muted flex-shrink-0" />
+                    <input
+                      value={columnPickerSearch}
+                      onChange={(e) => setColumnPickerSearch(e.target.value)}
+                      placeholder="Search columns"
+                      className="min-w-0 flex-1 bg-transparent outline-none text-[12px] text-fg-primary placeholder:text-fg-muted"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                    />
+                    {columnPickerSearch && (
+                      <button
+                        onClick={() => setColumnPickerSearch('')}
+                        className="text-fg-muted hover:text-fg-primary"
+                        title="Clear column search"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                  <label className="flex items-center gap-2 text-[11px] text-fg-secondary select-none cursor-pointer">
                     <input
                       type="checkbox"
-                      checked={!hiddenCols.has(i)}
-                      onChange={() => {
-                        setHiddenCols(prev => {
-                          const next = new Set(prev)
-                          if (next.has(i)) next.delete(i)
-                          else next.add(i)
-                          return next
-                        })
+                      checked={showNonEmptyColumnsOnly}
+                      onChange={(e) => {
+                        const checked = e.target.checked
+                        setShowNonEmptyColumnsOnly(checked)
+                        if (!checked) setHiddenCols(new Set())
                       }}
                       className="accent-accent"
                     />
-                    <span className="text-[12px] text-fg-primary font-mono truncate">{col.name}</span>
-                    {col.type && <span className="text-[10px] text-fg-muted ml-auto">{col.type}</span>}
+                    <span>Only non-empty</span>
+                    <span className="ml-auto text-fg-muted">
+                      {nonEmptyColumnSet.size}/{columns.length}
+                    </span>
                   </label>
-                ))}
+                </div>
+                <div className="max-h-[250px] overflow-y-auto py-1">
+                  {filteredColumnPickerEntries.length === 0 ? (
+                    <div className="px-3 py-3 text-[12px] text-fg-muted italic">
+                      No columns match.
+                    </div>
+                  ) : filteredColumnPickerEntries.map(({ col, index: i }) => (
+                    <label
+                      key={i}
+                      className="flex items-center gap-2 px-2 py-1.5 hover:bg-hover cursor-pointer select-none"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!hiddenCols.has(i)}
+                        onChange={() => {
+                          setHiddenCols(prev => {
+                            const next = new Set(prev)
+                            if (next.has(i)) next.delete(i)
+                            else next.add(i)
+                            return next
+                          })
+                        }}
+                        className="accent-accent"
+                      />
+                      <span className="text-[12px] text-fg-primary font-mono truncate">{col.name}</span>
+                      {col.type && <span className="text-[10px] text-fg-muted ml-auto">{col.type}</span>}
+                    </label>
+                  ))}
+                </div>
               </div>
             )}
           </div>

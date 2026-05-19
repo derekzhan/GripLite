@@ -26,7 +26,7 @@
 - Modify `frontend/src/components/SqlEditor.jsx`: show MongoDB placeholder/language when active connection kind is MongoDB.
 - Modify `frontend/src/App.jsx`: pass active connection kind to editor/result/table viewer and preserve MySQL defaults.
 - Modify `frontend/src/components/TableViewer.jsx`: add collection mode that hides MySQL-only schema editing and defaults collection data to MongoDB `find({}).limit(100)`.
-- Modify `frontend/src/components/DataViewer.jsx`: expose `Data`, `Grid`, `Text` labels for MongoDB while keeping existing MySQL mode labels unless explicitly enabled.
+- Modify `frontend/src/components/DataViewer.jsx`: expose `Grid`, `Record`, `Text` labels for MongoDB while keeping existing MySQL mode labels unless explicitly enabled.
 - Modify `frontend/scripts/unit-tests.mjs`: add focused tests for MongoDB result mode labeling and mock metadata branching.
 
 No git commit steps are included because commits require an explicit user request in this environment.
@@ -1293,5 +1293,5 @@ Verify in the app:
 - Console runs JSON command mode.
 - Explorer shows MongoDB databases and collections.
 - Double-click collection opens data.
-- `Data`, `Grid`, and `Text` display modes render the same result.
+- `Grid`, `Record`, and `Text` display modes render the same result.
 

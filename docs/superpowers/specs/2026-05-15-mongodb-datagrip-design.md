@@ -7,7 +7,7 @@ Add MongoDB support to GripLite with a DataGrip-like workflow:
 - Create and save MongoDB connections, including regular host/port connections and MongoDB Atlas SRV connections.
 - Open a MongoDB console that accepts Mongo Shell / DataGrip Playground style input, while also accepting raw JSON command documents.
 - Show MongoDB databases and collections in the existing explorer.
-- Double-click a collection to open its data, with `Data`, `Grid`, and `Text` display modes.
+- Double-click a collection to open its data, with `Grid`, `Record`, and `Text` display modes.
 
 The selected implementation approach is scheme C: embed a controlled JavaScript runtime for Mongo Shell style expressions, backed by the official Go MongoDB driver for all actual database operations.
 

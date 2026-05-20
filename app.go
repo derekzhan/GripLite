@@ -431,24 +431,14 @@ func (a *App) ListConnections() []ConnectionInfo {
 	a.mu.RLock()
 	for id, drv := range a.connections {
 		cfg := a.configs[id]
-		info := byID[id] // zero value when not saved
-		if _, known := byID[id]; !known {
+		info, known := byID[id] // zero value when not saved
+		if !known {
 			order = append(order, id)
-		}
-		info.ID = id
-		if info.Name == "" {
+			info.ID = id
 			info.Name = cfg.Name
-		}
-		if info.Kind == "" {
 			info.Kind = string(cfg.Kind)
-		}
-		if info.Host == "" {
 			info.Host = cfg.Host
-		}
-		if info.Port == 0 {
 			info.Port = cfg.Port
-		}
-		if info.Database == "" {
 			info.Database = cfg.Database
 		}
 		info.ServerVersion = drv.ServerVersion()

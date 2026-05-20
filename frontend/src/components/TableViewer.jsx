@@ -3690,7 +3690,7 @@ function useTableSchema(connId, dbName, tableName) {
  *   This prop is consumed once on mount; subsequent changes are ignored
  *   because the component owns its own tab state after that.
  */
-export default function TableViewer({ tableName = 'users', dbName = 'db1', connId = 'mock-conn', defaultView, objectKind = 'table', connectionKind = 'mysql' }) {
+export default function TableViewer({ tableName = 'users', dbName = 'db1', connId = 'mock-conn', connectionName = '', defaultView, objectKind = 'table', connectionKind = 'mysql' }) {
   const isCollection = objectKind === 'collection' || connectionKind === 'mongodb'
   const [mainTab, setMainTab] = useState(defaultView === 'data' || isCollection ? 'data' : 'properties')
   const { schema, loading: schemaLoading, fromCache, reload: reloadSchema } = useTableSchema(connId, dbName, tableName)
@@ -3716,6 +3716,12 @@ export default function TableViewer({ tableName = 'users', dbName = 'db1', connI
       <div className="flex items-center gap-1.5 px-4 py-1.5 bg-elevated border-b border-line-subtle
                       flex-shrink-0 text-[12px] text-fg-muted">
         <span>{isCollection ? '🍃' : '📋'}</span>
+        {connectionName && (
+          <>
+            <span className="text-syntax-keyword">{connectionName}</span>
+            <span>/</span>
+          </>
+        )}
         <span className="text-syntax-keyword">{dbName}</span>
         <span>/</span>
         <span className="text-fg-primary font-semibold">{tableName}</span>

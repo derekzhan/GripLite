@@ -818,6 +818,8 @@ const MOCK_SAVED = [
       { key: 'useSSL',            value: 'false', enabled: false },
       { key: 'serverTimezone',    value: 'UTC',   enabled: false },
     ],
+    readOnly: false,
+    color: '',
     createdAt: '2024-01-01T00:00:00Z',
     updatedAt: '2024-01-01T00:00:00Z',
   },

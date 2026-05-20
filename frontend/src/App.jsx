@@ -70,6 +70,15 @@ function makeConsoleTab() {
   }
 }
 
+function connectionDisplayName(conn, fallbackId = '') {
+  if (!conn) return fallbackId || ''
+  return conn.name || conn.host || conn.id || fallbackId || ''
+}
+
+function buildTableTabLabel(connectionName, dbName, tableName) {
+  return [connectionName, dbName, tableName].filter(Boolean).join(' / ')
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // App
 // ─────────────────────────────────────────────────────────────────────────────
@@ -136,6 +145,10 @@ export default function App() {
     () => new Map(connections.map((conn) => [conn.id, conn.kind ?? 'mysql'])),
     [connections],
   )
+  const connectionNameById = useMemo(
+    () => new Map(connections.map((conn) => [conn.id, connectionDisplayName(conn)])),
+    [connections],
+  )
 
   // ── Tab state ─────────────────────────────────────────────────────────────
   // Phase 13 / Task 1: No demo tab on cold start.  The workspace opens on the
@@ -176,6 +189,17 @@ export default function App() {
   useEffect(() => {
     saveWorkspaceState(undefined, makeWorkspaceSnapshot({ tabs, activeTabId, activeConnId }))
   }, [tabs, activeTabId, activeConnId])
+
+  useEffect(() => {
+    if (connections.length === 0) return
+    setTabs((prev) => prev.map((tab) => {
+      if (tab.type !== 'table') return tab
+      const tableConnectionName = connectionNameById.get(tab.connId) ?? tab.connectionName ?? ''
+      const label = buildTableTabLabel(tableConnectionName, tab.dbName, tab.tableName)
+      if (tab.connectionName === tableConnectionName && tab.label === label) return tab
+      return { ...tab, connectionName: tableConnectionName, label }
+    }))
+  }, [connectionNameById, connections.length])
 
   // Monotonic id generator for result-set sub-tabs.  Module-level counter is
   // fine — we only need uniqueness within a single session.
@@ -424,19 +448,21 @@ export default function App() {
   const handleTableOpen = useCallback(({ tableName, dbName, connId, defaultView, objectKind }) => {
     const effectiveConnId = connId ?? connIdRef.current
     const connectionKind = connectionKindById.get(effectiveConnId) ?? 'mysql'
+    const tableConnectionName = connectionNameById.get(effectiveConnId) ?? effectiveConnId
     const tabId = `table:${effectiveConnId}:${dbName}:${tableName}`
     setTabs((prev) => {
       if (prev.some((t) => t.id === tabId)) return prev   // already open → just switch
       return [...prev, {
-        id: tabId, type: 'table', label: tableName,
+        id: tabId, type: 'table', label: buildTableTabLabel(tableConnectionName, dbName, tableName),
         tableName, dbName,
-        connId:      effectiveConnId,
-        defaultView: defaultView ?? 'properties',
-        objectKind:  objectKind ?? (connectionKind === 'mongodb' ? 'collection' : 'table'),
+        connId:         effectiveConnId,
+        connectionName: tableConnectionName,
+        defaultView:    defaultView ?? 'properties',
+        objectKind:     objectKind ?? (connectionKind === 'mongodb' ? 'collection' : 'table'),
       }]
     })
     setActiveTabId(tabId)
-  }, [connectionKindById])
+  }, [connectionKindById, connectionNameById])
 
   // ── Read-only query tab open (Phase 22) ───────────────────────────────────
   /**
@@ -583,6 +609,24 @@ export default function App() {
    */
   const handleDialogSaved = useCallback((connId) => {
     if (connId) setActiveConnId(connId)
+    reloadConnections()
+  }, [reloadConnections])
+
+  const handleDialogDeleted = useCallback((connId) => {
+    if (!connId) {
+      reloadConnections()
+      return
+    }
+    setConnections((prev) => {
+      const next = prev.filter((conn) => conn.id !== connId)
+      setActiveConnId((active) => {
+        if (active !== connId) return active
+        const fallback = next[0]?.id ?? DEFAULT_CONN_ID
+        connIdRef.current = fallback
+        return fallback
+      })
+      return next
+    })
     reloadConnections()
   }, [reloadConnections])
 
@@ -743,6 +787,7 @@ export default function App() {
               {tabs.filter((t) => t.type === 'table').map((tab) => {
                 const tableConnectionKind = connectionKindById.get(tab.connId) ?? 'mysql'
                 const tableObjectKind = tab.objectKind ?? (tableConnectionKind === 'mongodb' ? 'collection' : 'table')
+                const tableConnectionName = tab.connectionName ?? connectionNameById.get(tab.connId) ?? ''
                 return (
                   <div
                     key={tab.id}
@@ -754,6 +799,7 @@ export default function App() {
                         tableName={tab.tableName}
                         dbName={tab.dbName}
                         connId={tab.connId}
+                        connectionName={tableConnectionName}
                         defaultView={tab.defaultView}
                         objectKind={tableObjectKind}
                         connectionKind={tableConnectionKind}
@@ -818,7 +864,7 @@ export default function App() {
         {connVersion && <span className="text-[11px] opacity-60">{connVersion}</span>}
         {activeTab?.type === 'table' && (
           <span className="text-[11px] opacity-80 ml-2">
-            📋 {activeTab.dbName}.{activeTab.tableName}
+            📋 {activeTab.connectionName ? `${activeTab.connectionName} / ` : ''}{activeTab.dbName}.{activeTab.tableName}
           </span>
         )}
         {activeTab?.type === 'dbviewer' && (
@@ -839,8 +885,10 @@ export default function App() {
       <ConnectionDialog
         isOpen={connDialogOpen}
         initialId={connDialogInitId}
+        connections={connections}
         onClose={() => setConnDialogOpen(false)}
         onSaved={handleDialogSaved}
+        onDeleted={handleDialogDeleted}
       />
 
       <CopyDataModal

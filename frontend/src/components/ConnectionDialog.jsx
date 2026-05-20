@@ -12,15 +12,14 @@
  *   │                                   │  [Test] [OK] [✕]  │
  *   └────────────────────────────────────────────────────────┘
  */
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { X, Plus, Trash2, CheckCircle, XCircle, Loader2, FolderOpen } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { X, Plus, Trash2, CheckCircle, XCircle, Loader2, FolderOpen, Database, Leaf } from 'lucide-react'
 import {
   listSavedConnections,
   getSavedConnection,
   saveConnection,
   deleteSavedConnection,
   testConnection,
-  connectSaved,
   openFileDialog,
 } from '../lib/bridge'
 import { toast } from '../lib/toast'
@@ -41,6 +40,7 @@ const DEFAULT_ADVANCED = [
   { key: 'allowPublicKeyRetrieval', value: 'true', enabled: false },
 ]
 const MONGO_CONNECTION_MODE_PARAM = '_gripliteMongoConnectionMode'
+const COLOR_PRESETS = ['', '#6b7280', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899']
 
 function getMongoConnectionMode(form) {
   return form.advancedParams?.find((p) => p.key === MONGO_CONNECTION_MODE_PARAM && p.enabled)?.value === 'srv'
@@ -166,6 +166,33 @@ function Toggle({ checked, onChange, label }) {
   )
 }
 
+function SourceIcon({ kind, selected }) {
+  const cls = selected ? 'text-fg-on-accent' : 'text-fg-muted'
+  if (kind === 'mongodb') return <Leaf size={14} className={cls} />
+  return <Database size={14} className={cls} />
+}
+
+function ToolbarIconButton({ title, onClick, disabled, children, danger = false }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={title}
+      disabled={disabled}
+      className={[
+        'w-7 h-7 inline-flex items-center justify-center rounded-md transition-colors',
+        danger
+          ? 'text-fg-muted hover:text-danger hover:bg-hover'
+          : 'text-fg-muted hover:text-accent hover:bg-hover',
+        disabled ? 'opacity-30 cursor-not-allowed hover:bg-transparent' : '',
+      ].join(' ')}
+    >
+      {children}
+    </button>
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tab pages
 // ─────────────────────────────────────────────────────────────────────────────
@@ -173,9 +200,11 @@ function Toggle({ checked, onChange, label }) {
 function GeneralTab({ form, setForm }) {
   const setField = (key) => (e) =>
     setForm((f) => ({ ...f, [key]: e.target.value }))
+  const customColorInputRef = useRef(null)
 
   const isMongo = form.kind === 'mongodb'
   const mongoMode = getMongoConnectionMode(form)
+  const isCustomColor = !!form.color && !COLOR_PRESETS.includes(form.color)
   const previewUrl = isMongo
     ? `${mongoMode === 'srv' ? 'mongodb+srv' : 'mongodb'}://${form.host || 'host'}${mongoMode === 'srv' ? '' : `:${form.port || 27017}`}/${form.database || ''}`
     : `jdbc:mysql://${form.host || 'host'}:${form.port || 3306}/${form.database || ''}`
@@ -270,7 +299,7 @@ function GeneralTab({ form, setForm }) {
       <div className="flex flex-col gap-1">
         <label className="text-[11px] text-fg-secondary">Color label</label>
         <div className="flex items-center gap-2">
-          {['', '#6b7280', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'].map(color => (
+          {COLOR_PRESETS.map(color => (
             <button
               key={color}
               type="button"
@@ -286,6 +315,31 @@ function GeneralTab({ form, setForm }) {
               style={color ? { backgroundColor: color } : {}}
             />
           ))}
+          <button
+            type="button"
+            title="Custom color"
+            onClick={() => customColorInputRef.current?.click()}
+            className={[
+              'relative w-5 h-5 rounded-full border-2 transition-all overflow-hidden',
+              isCustomColor
+                ? 'border-fg-primary scale-110'
+                : 'border-transparent hover:border-fg-secondary',
+            ].join(' ')}
+            style={{
+              background: isCustomColor
+                ? form.color
+                : 'linear-gradient(135deg, #ef4444 0%, #f97316 18%, #eab308 34%, #22c55e 50%, #06b6d4 66%, #3b82f6 82%, #8b5cf6 100%)',
+            }}
+          />
+          <input
+            ref={customColorInputRef}
+            type="color"
+            value={form.color || '#3b82f6'}
+            onChange={(e) => setForm(f => ({ ...f, color: e.target.value }))}
+            className="sr-only"
+            tabIndex={-1}
+            aria-label="Custom color picker"
+          />
         </div>
       </div>
 
@@ -530,12 +584,13 @@ const TABS = ['General', 'Options', 'SSH/SSL', 'Advanced']
  *                persisted connection's id.  Lets the parent refresh its
  *                DatabaseExplorer tree and auto-select the new entry.
  *                (Phase 13 / Task 2)
- *   onConnected — called after successful OK (save + live connect).  Fires
- *                AFTER onSaved and receives the same connId.  Kept separate
- *                because the parent may want to distinguish "saved to disk"
- *                from "actually dialled" (e.g. for status-bar messaging).
+ *   onDeleted  — called after a saved connection is deleted so the parent can
+ *                remove it from the Explorer immediately.
+ *   onConnected — legacy callback kept for callers that treat OK as an
+ *                accepted saved connection. OK no longer opens the database;
+ *                users connect explicitly via Test / Explorer context menu.
  */
-export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected, initialId }) {
+export default function ConnectionDialog({ isOpen, onClose, onSaved, onDeleted, onConnected, initialId, connections: externalConnections = [] }) {
   const [savedList,     setSavedList]     = useState([])
   const [selectedId,    setSelectedId]    = useState(null)
   const [form,          setForm]          = useState(() => makeBlankForm())
@@ -544,15 +599,49 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
   const [isTesting,     setIsTesting]     = useState(false)
   const [isSaving,      setIsSaving]      = useState(false)
   const [isDirty,       setIsDirty]       = useState(false)
+  const [deletedIds,    setDeletedIds]    = useState(() => new Set())
+  const [deleteConfirmId, setDeleteConfirmId] = useState(null)
+  const [isDeleting,    setIsDeleting]    = useState(false)
   const prevFormRef     = useRef(null)
+  const selectionRequestRef = useRef(0)
+  const isOpenRef = useRef(false)
+
+  useEffect(() => {
+    isOpenRef.current = isOpen
+    if (!isOpen) selectionRequestRef.current += 1
+  }, [isOpen])
 
   // ── Load saved connections list ─────────────────────────────────────────
   const loadList = useCallback(async () => {
     const list = await listSavedConnections()
     setSavedList(list ?? [])
   }, [])
+  const visibleConnections = useMemo(
+    () => (savedList.length > 0 ? savedList : externalConnections).filter((conn) => !deletedIds.has(conn.id)),
+    [deletedIds, externalConnections, savedList],
+  )
+  const deleteTarget = useMemo(
+    () => visibleConnections.find((conn) => conn.id === deleteConfirmId) ?? null,
+    [deleteConfirmId, visibleConnections],
+  )
+
+  const applyConnectionForm = useCallback((conn, { dirty = false } = {}) => {
+    if (!conn) return
+    const merged = {
+      ...makeBlankForm(conn.id),
+      ...conn,
+      advancedParams:
+        conn.advancedParams?.length > 0
+          ? conn.advancedParams
+          : DEFAULT_ADVANCED.map((p) => ({ ...p })),
+    }
+    setForm(merged)
+    prevFormRef.current = JSON.stringify(merged)
+    setIsDirty(dirty)
+  }, [])
 
   const resetToBlank = useCallback(() => {
+    selectionRequestRef.current += 1
     const blank = makeBlankForm()
     setForm(blank)
     setSelectedId(null)
@@ -560,6 +649,7 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
     setIsDirty(false)
     setTestResult(null)
     setActiveTab('General')
+    setDeleteConfirmId(null)
   }, [])
 
   useEffect(() => {
@@ -576,23 +666,23 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
 
   // ── Select a connection from the list ───────────────────────────────────
   const selectConnection = useCallback(async (id) => {
-    const full = await getSavedConnection(id)
-    if (!full) return
-    // Merge any missing advancedParams presets
-    const merged = {
-      ...makeBlankForm(full.id),
-      ...full,
-      advancedParams:
-        full.advancedParams?.length > 0
-          ? full.advancedParams
-          : DEFAULT_ADVANCED.map((p) => ({ ...p })),
-    }
+    const requestId = ++selectionRequestRef.current
+    const fallback = visibleConnections.find((conn) => conn.id === id) ?? null
     setSelectedId(id)
-    setForm(merged)
-    prevFormRef.current = JSON.stringify(merged)
-    setIsDirty(false)
+    setDeleteConfirmId(null)
     setTestResult(null)
-  }, [])
+    setActiveTab('General')
+    if (fallback) applyConnectionForm(fallback, { dirty: false })
+    let full = null
+    try {
+      full = await getSavedConnection(id)
+    } catch {
+      full = fallback
+    }
+    if (requestId !== selectionRequestRef.current || !isOpenRef.current) return
+    if (!full) return
+    applyConnectionForm(full, { dirty: false })
+  }, [applyConnectionForm, visibleConnections])
 
   // Track dirty state
   useEffect(() => {
@@ -609,6 +699,7 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
   }
 
   const handleNewMongoDB = () => {
+    selectionRequestRef.current += 1
     const blank = switchConnectionKind(makeBlankForm(), 'mongodb')
     setForm({
       ...blank,
@@ -620,15 +711,41 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
     setIsDirty(true)
     setTestResult(null)
     setActiveTab('General')
+    setDeleteConfirmId(null)
   }
 
   // ── Delete selected connection ──────────────────────────────────────────
-  const handleDelete = async () => {
-    if (!selectedId) return
-    if (!window.confirm('Remove this saved connection?')) return
-    await deleteSavedConnection(selectedId)
-    await loadList()
-    handleNew()
+  const handleDelete = () => {
+    const id = selectedId
+    if (!id) return
+    setDeleteConfirmId(id)
+  }
+
+  const confirmDelete = async () => {
+    const id = deleteConfirmId
+    if (!id || isDeleting) return
+    const previousSelection = visibleConnections.find((conn) => conn.id === id) ?? null
+    setIsDeleting(true)
+    setDeletedIds((prev) => new Set([...prev, id]))
+    setSavedList((prev) => prev.filter((conn) => conn.id !== id))
+    try {
+      await deleteSavedConnection(id)
+      await loadList()
+      onDeleted?.(id)
+      setDeleteConfirmId(null)
+      toast.success(`Deleted "${previousSelection?.name || id}"`)
+      onClose()
+    } catch (err) {
+      setDeletedIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+      if (previousSelection) selectConnection(id)
+      toast.error(`Delete failed: ${normalizeError(err)}`)
+    } finally {
+      setIsDeleting(false)
+    }
   }
 
   // ── Save (Apply button) ─────────────────────────────────────────────────
@@ -639,7 +756,7 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
       prevFormRef.current = JSON.stringify(form)
       setIsDirty(false)
       setSelectedId(form.id)
-      await loadList()
+      loadList().catch(() => {})
       // Phase 13: notify parent so the Explorer tree can refresh and
       // auto-select the just-saved connection, even though the dialog
       // stays open.
@@ -668,24 +785,29 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
     }
   }
 
-  // ── OK = Save + Connect ─────────────────────────────────────────────────
-  const handleOK = async () => {
-    setIsSaving(true)
-    try {
-      await saveConnection({ ...form })
-      // Phase 13: notify parent of the save *before* dialling the live
-      // connection so the tree already reflects the new entry by the time
-      // the connect call resolves.
-      onSaved?.(form.id)
-      const connId = await connectSaved(form.id)
-      onConnected?.(connId, form.name)
-      toast.success(`Connected to ${form.name || form.id}`)
+  // ── OK = Save + Close ───────────────────────────────────────────────────
+  const handleOK = () => {
+    if (!selectedId && !isDirty) {
       onClose()
-    } catch (err) {
-      toast.error(`Connect failed: ${normalizeError(err)}`)
-    } finally {
-      setIsSaving(false)
+      return
     }
+
+    const payload = { ...form }
+    prevFormRef.current = JSON.stringify(payload)
+    setIsDirty(false)
+    setSelectedId(payload.id)
+    onClose()
+
+    const savePromise = saveConnection(payload)
+    savePromise
+      .then(() => {
+        onSaved?.(payload.id)
+        onConnected?.(payload.id, payload.name)
+        toast.success(`Saved "${payload.name || payload.id}"`)
+      })
+      .catch((err) => {
+        toast.error(`Save failed: ${normalizeError(err)}`)
+      })
   }
 
   // ── Browse for private key file ─────────────────────────────────────────
@@ -712,57 +834,98 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onConnected
         {/* ── Left panel: saved connections list ─────────────────────────── */}
         <div className="w-56 flex-shrink-0 border-r border-line bg-titlebar flex flex-col">
           {/* List header */}
-          <div className="flex items-center justify-between px-3 py-2 border-b border-line-subtle">
-            <span className="text-xs font-semibold text-fg-muted uppercase tracking-wider">
+          <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-line-subtle">
+            <span className="text-[11px] font-semibold text-fg-muted uppercase tracking-wider whitespace-nowrap">
               Data Sources
             </span>
-            <div className="flex gap-1">
-              <button
+            <div className="flex items-center gap-0.5">
+              <ToolbarIconButton
                 onClick={handleNew}
                 title="New MySQL connection"
-                className="px-1.5 py-0.5 text-[10px] text-fg-muted hover:text-accent hover:bg-hover rounded transition-colors"
               >
-                New MySQL
-              </button>
-              <button
+                <Plus size={12} className="-mr-0.5" />
+                <Database size={14} />
+              </ToolbarIconButton>
+              <ToolbarIconButton
                 onClick={handleNewMongoDB}
                 title="New MongoDB connection"
-                className="px-1.5 py-0.5 text-[10px] text-fg-muted hover:text-accent hover:bg-hover rounded transition-colors"
               >
-                New MongoDB
-              </button>
-              <button
+                <Plus size={12} className="-mr-0.5" />
+                <Leaf size={14} />
+              </ToolbarIconButton>
+              <ToolbarIconButton
                 onClick={handleDelete}
                 title="Remove selected"
-                disabled={!selectedId}
-                className="p-0.5 text-fg-muted hover:text-danger hover:bg-hover rounded transition-colors disabled:opacity-30"
+                disabled={!selectedId || isDeleting}
+                danger
               >
-                <Trash2 size={14} />
-              </button>
+                {isDeleting ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+              </ToolbarIconButton>
             </div>
           </div>
 
           {/* Saved connections list */}
           <div className="flex-1 overflow-y-auto py-1">
-            {savedList.length === 0 && (
+            {visibleConnections.length === 0 && (
               <p className="text-xs text-fg-faint px-3 py-2 italic">No saved connections</p>
             )}
-            {savedList.map((c) => (
+            {visibleConnections.map((c) => (
               <button
                 key={c.id}
                 onClick={() => selectConnection(c.id)}
                 className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2
                   ${selectedId === c.id
-                    ? 'bg-selected text-accent-text border-l-2 border-accent'
+                    ? 'bg-selected text-fg-on-accent border-l-2 border-accent'
                     : 'text-fg-secondary hover:bg-hover border-l-2 border-transparent'
                   }`}
               >
-                <span className="text-xs">🔌</span>
+                <SourceIcon kind={c.kind} selected={selectedId === c.id} />
                 <span className="truncate">{c.name || c.host}</span>
               </button>
             ))}
           </div>
         </div>
+
+        {deleteConfirmId && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/30">
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="delete-connection-title"
+              className="w-[340px] rounded-lg border border-line bg-panel shadow-2xl p-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 id="delete-connection-title" className="text-sm font-semibold text-fg-primary">
+                Delete data source?
+              </h3>
+              <p className="mt-2 text-xs text-fg-secondary">
+                This will remove the saved connection from the Explorer.
+              </p>
+              <div className="mt-3 rounded bg-sunken border border-line px-2 py-1.5 text-xs text-fg-primary truncate">
+                {deleteTarget?.name || deleteConfirmId}
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={() => setDeleteConfirmId(null)}
+                  className="px-3 py-1.5 rounded bg-elevated hover:bg-hover text-xs text-fg-secondary transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={confirmDelete}
+                  className="px-3 py-1.5 rounded bg-danger text-fg-on-accent hover:brightness-110 text-xs transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+                >
+                  {isDeleting && <Loader2 size={12} className="animate-spin" />}
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Right panel: edit form ─────────────────────────────────────── */}
         <div className="flex-1 flex flex-col min-w-0">

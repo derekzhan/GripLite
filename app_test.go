@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"GripLite/internal/driver"
+	"GripLite/internal/store"
 )
 
 type queryContextDriver struct {
@@ -136,6 +137,51 @@ func TestConnectionSuccessMessageUsesDriverKind(t *testing.T) {
 	if mongoMsg != "Successfully connected · MongoDB 8.0.23" {
 		t.Fatalf("mongo message = %q", mongoMsg)
 	}
+}
+
+func TestListConnectionsKeepsClearedSavedDatabaseOverLiveConfig(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	const id = "mongo-1"
+	if err := st.Save(store.SavedConnection{
+		ID:       id,
+		Name:     "US QA MG",
+		Kind:     "mongodb",
+		Host:     "localhost",
+		Port:     27017,
+		Database: "",
+	}); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.store = st
+	app.connections[id] = &mongoKindDriver{}
+	app.configs[id] = driver.ConnectionConfig{
+		ID:       id,
+		Name:     "US QA MG",
+		Kind:     driver.DriverMongoDB,
+		Host:     "localhost",
+		Port:     27017,
+		Database: "prm",
+	}
+
+	connections := app.ListConnections()
+	for _, conn := range connections {
+		if conn.ID != id {
+			continue
+		}
+		if conn.Database != "" {
+			t.Fatalf("ListConnections database = %q, want empty saved value", conn.Database)
+		}
+		return
+	}
+	t.Fatalf("connection %q not found in %#v", id, connections)
 }
 
 func TestRunQueryDoesNotSetAutomaticQueryDeadline(t *testing.T) {

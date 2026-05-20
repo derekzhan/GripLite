@@ -28,6 +28,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -90,8 +92,10 @@ type SavedConnection struct {
 //
 // The zero value is unusable; create instances via [NewFromDB] or [New].
 type ConnectionStore struct {
-	db      *sql.DB
-	ownDB   bool // true when New opened the DB and Close should shut it down
+	db          *sql.DB
+	ownDB       bool // true when New opened the DB and Close should shut it down
+	schemaMu    sync.Mutex
+	schemaReady bool
 }
 
 // tableDDL is used only by the standalone [New] constructor when it needs to
@@ -118,10 +122,13 @@ CREATE TABLE IF NOT EXISTS connections (
 // NewFromDB creates a ConnectionStore that operates on a shared *sql.DB
 // (typically the unified griplite.db opened by internal/db.Open).
 //
-// The schema is assumed to be already applied; this constructor does NOT
-// create the connections table.
+// The unified DB path normally applies schema before constructing the store,
+// but this method still runs the lightweight connection-store migrations so
+// already-open legacy databases self-heal instead of returning an empty tree.
 func NewFromDB(db *sql.DB) *ConnectionStore {
-	return &ConnectionStore{db: db, ownDB: false}
+	s := &ConnectionStore{db: db, ownDB: false}
+	_ = s.ensureSchema()
+	return s
 }
 
 // New is a standalone constructor for testing or one-off tools.
@@ -147,7 +154,38 @@ func New(dir string) (*ConnectionStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: apply schema: %w", err)
 	}
-	return &ConnectionStore{db: db, ownDB: true}, nil
+	s := &ConnectionStore{db: db, ownDB: true}
+	if err := s.ensureSchema(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: migrate schema: %w", err)
+	}
+	return s, nil
+}
+
+func (s *ConnectionStore) ensureSchema() error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store: database not available")
+	}
+	s.schemaMu.Lock()
+	defer s.schemaMu.Unlock()
+	if s.schemaReady {
+		return nil
+	}
+	statements := []string{
+		tableDDL,
+		`ALTER TABLE connections ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE connections ADD COLUMN color TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, stmt := range statements {
+		if _, err := s.db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
+			return err
+		}
+	}
+	s.schemaReady = true
+	return nil
 }
 
 // Close releases the database handle only when this store owns it (i.e. when
@@ -162,6 +200,9 @@ func (s *ConnectionStore) Close() error {
 
 // Save inserts or replaces a connection.  Passwords are encrypted before storage.
 func (s *ConnectionStore) Save(c SavedConnection) error {
+	if err := s.ensureSchema(); err != nil {
+		return err
+	}
 	if c.ID == "" {
 		return fmt.Errorf("store: connection ID must not be empty")
 	}
@@ -235,6 +276,9 @@ func (s *ConnectionStore) Save(c SavedConnection) error {
 
 // List returns all saved connections with passwords OMITTED.
 func (s *ConnectionStore) List() ([]SavedConnection, error) {
+	if err := s.ensureSchema(); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.Query(`
 		SELECT id, name, comment, kind, host, port, username, database, tls,
 		       ssh_config_json, advanced_options_json, read_only, color, created_at, updated_at
@@ -269,6 +313,9 @@ func (s *ConnectionStore) List() ([]SavedConnection, error) {
 
 // Get returns a single connection with passwords decrypted (for the edit dialog).
 func (s *ConnectionStore) Get(id string) (*SavedConnection, error) {
+	if err := s.ensureSchema(); err != nil {
+		return nil, err
+	}
 	var c SavedConnection
 	var tls, readOnly int
 	var pwEnc, sshPwEnc, sshJSON, advJSON string
@@ -299,6 +346,9 @@ func (s *ConnectionStore) Get(id string) (*SavedConnection, error) {
 
 // Delete removes a saved connection by ID.
 func (s *ConnectionStore) Delete(id string) error {
+	if err := s.ensureSchema(); err != nil {
+		return err
+	}
 	res, err := s.db.Exec(`DELETE FROM connections WHERE id = ?`, id)
 	if err != nil {
 		return err

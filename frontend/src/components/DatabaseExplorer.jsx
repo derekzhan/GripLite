@@ -38,9 +38,9 @@ import {
   // consistent system — no more mixed-metric emoji that jump around when the
   // OS changes its emoji font.
   ChevronRight, ChevronDown, Loader2, AlertCircle,
-  Plug, Database, Table2, Columns as ColumnsIcon,
+  Database, Leaf, Table2, Columns as ColumnsIcon,
   Eye, KeyRound, Users as UsersIcon, UserRound,
-  Settings2, Info, Cable, RotateCw, Link2, Unplug,
+  Settings2, Info, Cable, RotateCw, Link2, Plug, Unplug,
   FolderOpen, FolderTree,
   ListChecks, Play, Zap, Bell, Code2, Copy, Pencil, Trash2,
 } from 'lucide-react'
@@ -75,7 +75,8 @@ const adminId     = (cid, key)                  => `admin::${cid}::${key}`
 // noisy.  We swap to a curated Lucide set with a distinct tint per node kind
 // so the eye can scan the hierarchy quickly:
 //
-//   connection         Plug        teal   (#4ec9b0 — "live" colour)
+//   connection:mysql   Database    teal   (#4ec9b0 — "live" colour)
+//   connection:mongodb Leaf        teal   (#4ec9b0 — "live" colour)
 //   group: databases   Database    green  (#4ec9b0)
 //   database           Database    green  (#4ec9b0 — matches the label)
 //   folder: tables     FolderTree  muted  (#858585)
@@ -111,7 +112,8 @@ function TreeIcon({ type, folderKind, groupKind, kind, isPK, className = '' }) {
   // Use CSS custom properties so the icons re-tint when the theme changes.
   let color = 'var(--fg-muted)'  // default (folders, unknown)
 
-  if (type === 'connection')                      { Cmp = Plug;       color = 'var(--success)' }
+  if (type === 'connection' && kind === 'mongodb') { Cmp = Leaf;      color = 'var(--success)' }
+  else if (type === 'connection')                 { Cmp = Database;   color = 'var(--success)' }
   else if (type === 'database')                   { Cmp = Database;   color = 'var(--success)' }
   else if (type === 'table' && kind === 'collection') { Cmp = Table2; color = 'var(--accent)' }
   else if (type === 'table' && kind === 'view')   { Cmp = Eye;        color = 'var(--fg-secondary)' }
@@ -127,6 +129,7 @@ function TreeIcon({ type, folderKind, groupKind, kind, isPK, className = '' }) {
   else if (type === 'folder' && folderKind === 'triggers') { Cmp = Zap;        color = 'var(--fg-muted)' }
   else if (type === 'folder' && folderKind === 'events')   { Cmp = Bell;       color = 'var(--fg-muted)' }
   else if (type === 'folder')                              { Cmp = FolderOpen; color = 'var(--fg-muted)' }
+  else if (type === 'group' && groupKind === 'connection') { Cmp = FolderTree; color = 'var(--fg-muted)' }
   else if (type === 'group' && groupKind === 'databases')  { Cmp = Database;  color = 'var(--success)' }
   else if (type === 'group' && groupKind === 'users')      { Cmp = UsersIcon; color = 'var(--syntax-user)' }
   else if (type === 'group' && groupKind === 'administer') { Cmp = Settings2; color = 'var(--syntax-pk)' }
@@ -187,6 +190,10 @@ const CONN_GROUPS = [
   { kind: 'administer', label: 'Administer'  },
   { kind: 'sysinfo',    label: 'System Info' },
 ]
+
+function groupsForConnectionKind(kind) {
+  return kind === 'mongodb' ? CONN_GROUPS.filter((g) => g.kind === 'databases') : CONN_GROUPS
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Static catalogues for the Administer / System Info groups.
@@ -312,6 +319,8 @@ export default function DatabaseExplorer({
     () => new Map(connections.map((conn) => [conn.id, conn.kind])),
     [connections],
   )
+  const connectionKindByIdRef = useRef(connectionKindById)
+  useEffect(() => { connectionKindByIdRef.current = connectionKindById }, [connectionKindById])
 
   // Right-click context menu — discriminated by `kind`:
   //   { kind: 'connection',    x, y, connId, connName }
@@ -557,7 +566,7 @@ export default function DatabaseExplorer({
         // Phase 22: a connection now exposes 4 fixed top-level groups that
         // mirror DBeaver's "navigator".  No backend call here — children are
         // synthesised locally and lazy-load their own contents on expansion.
-        children = CONN_GROUPS.map((g) => ({
+        children = groupsForConnectionKind(connectionKindByIdRef.current.get(connId)).map((g) => ({
           id:        groupId(connId, g.kind),
           type:      'group',
           groupKind: g.kind,
@@ -1286,7 +1295,7 @@ export default function DatabaseExplorer({
               : isOpen ? <ChevronDown size={CHEVRON_SIZE} strokeWidth={2} />
                        : <ChevronRight size={CHEVRON_SIZE} strokeWidth={2} />}
           </span>
-          <TreeIcon type="connection" />
+          <TreeIcon type="connection" kind={conn.kind} />
           {conn.color && (
             <span
               className="w-2.5 h-2.5 rounded-full flex-shrink-0 -ml-0.5 mr-0.5 border border-black/10"

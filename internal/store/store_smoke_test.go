@@ -1,9 +1,11 @@
 package store
 
 import (
+	"database/sql"
 	"testing"
 
 	"GripLite/internal/db"
+	_ "modernc.org/sqlite"
 )
 
 // newTestStore creates a ConnectionStore backed by a fresh griplite.db in a
@@ -136,6 +138,67 @@ func TestStore_UpdateRoundTrip(t *testing.T) {
 	got, _ := s.Get("x")
 	if got.Name != "renamed" || got.Password != "p2" {
 		t.Errorf("update not persisted: %+v", got)
+	}
+}
+
+func TestStore_NewFromDBMigratesExistingConnectionSchema(t *testing.T) {
+	database, err := sql.Open("sqlite", "file:"+t.TempDir()+"/legacy.db?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+
+	_, err = database.Exec(`CREATE TABLE connections (
+		id                    TEXT PRIMARY KEY,
+		name                  TEXT NOT NULL DEFAULT '',
+		comment               TEXT NOT NULL DEFAULT '',
+		kind                  TEXT NOT NULL DEFAULT 'mysql',
+		host                  TEXT NOT NULL DEFAULT '',
+		port                  INTEGER NOT NULL DEFAULT 3306,
+		username              TEXT NOT NULL DEFAULT '',
+		encrypted_password    TEXT NOT NULL DEFAULT '',
+		database              TEXT NOT NULL DEFAULT '',
+		tls                   INTEGER NOT NULL DEFAULT 0,
+		ssh_config_json       TEXT NOT NULL DEFAULT '{}',
+		ssh_pw_enc            TEXT NOT NULL DEFAULT '',
+		advanced_options_json TEXT NOT NULL DEFAULT '[]',
+		created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+		updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+	)`)
+	if err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	_, err = database.Exec(`INSERT INTO connections
+		(id, name, kind, host, port, ssh_config_json, advanced_options_json)
+		VALUES ('legacy', 'Legacy DB', 'mysql', '127.0.0.1', 3306, '{}', '[]')`)
+	if err != nil {
+		t.Fatalf("insert legacy connection: %v", err)
+	}
+
+	s := NewFromDB(database)
+	list, err := s.List()
+	if err != nil {
+		t.Fatalf("List after NewFromDB migration: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "legacy" {
+		t.Fatalf("legacy connection not preserved: %+v", list)
+	}
+	if !s.schemaReady {
+		t.Fatalf("NewFromDB should cache successful schema migration")
+	}
+}
+
+func TestStore_EnsureSchemaCachesSuccessfulMigration(t *testing.T) {
+	s := newTestStore(t)
+	if !s.schemaReady {
+		t.Fatalf("new test store should start with schemaReady=true")
+	}
+	s.schemaReady = false
+	if err := s.ensureSchema(); err != nil {
+		t.Fatalf("ensureSchema: %v", err)
+	}
+	if !s.schemaReady {
+		t.Fatalf("ensureSchema should mark schemaReady after success")
 	}
 }
 

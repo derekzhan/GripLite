@@ -322,10 +322,111 @@ function testRenameAndDropTableSqlQuoteIdentifiers() {
 
 function testConnectionDialogHasExplicitDatabaseCreateEntries() {
   const source = readFileSync(new URL('../src/components/ConnectionDialog.jsx', import.meta.url), 'utf8')
-  assert.match(source, />\s*New MySQL\s*</)
-  assert.match(source, />\s*New MongoDB\s*</)
+  const explorer = readFileSync(new URL('../src/components/DatabaseExplorer.jsx', import.meta.url), 'utf8')
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  assert.match(source, /title="New MySQL connection"/)
+  assert.match(source, /title="New MongoDB connection"/)
+  assert.match(source, /connections: externalConnections = \[\]/)
+  assert.match(source, /const \[deletedIds,\s+setDeletedIds\]\s+= useState\(\(\) => new Set\(\)\)/)
+  assert.match(source, /const visibleConnections = useMemo\([\s\S]*\(savedList\.length > 0 \? savedList : externalConnections\)\.filter/)
+  assert.match(app, /connections=\{connections\}/)
+  assert.match(source, /aria-label=\{title\}/)
+  assert.match(source, /<Database size=\{14\}/)
+  assert.match(source, /<Leaf size=\{14\}/)
+  assert.doesNotMatch(source, />\s*New MySQL\s*</)
+  assert.doesNotMatch(source, />\s*New MongoDB\s*</)
+  assert.doesNotMatch(source, />🔌</)
+  assert.match(source, /text-fg-on-accent/)
+  assert.match(explorer, /Leaf/)
+  assert.match(explorer, /type === 'connection' && kind === 'mongodb'/)
+  assert.match(explorer, /<TreeIcon type="connection" kind=\{conn\.kind\}/)
+  assert.doesNotMatch(explorer, /Cmp = Plug/)
   assert.match(source, /handleNew =/)
   assert.match(source, /handleNewMongoDB/)
+}
+
+function testConnectionDialogDeleteUpdatesVisibleListAndParent() {
+  const source = readFileSync(new URL('../src/components/ConnectionDialog.jsx', import.meta.url), 'utf8')
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const handleDelete = source.match(/const handleDelete = (?:async )?\(\) => \{[\s\S]*?\n  \}/)?.[0] ?? ''
+  const confirmDelete = source.match(/const confirmDelete = async \(\) => \{[\s\S]*?\n  \}/)?.[0] ?? ''
+  const handleDialogDeleted = app.match(/const handleDialogDeleted = useCallback\(\(connId\) => \{[\s\S]*?\n  \}, \[[^\]]*\]\)/)?.[0] ?? ''
+  assert.match(source, /deleteConfirmId/)
+  assert.match(source, /isDeleting/)
+  assert.match(confirmDelete, /await deleteSavedConnection\(id\)/)
+  assert.doesNotMatch(confirmDelete, /handleNew\(\)/)
+  assert.match(confirmDelete, /onClose\(\)/)
+  assert.doesNotMatch(source, /window\.confirm/)
+  assert.match(handleDelete, /const id = selectedId/)
+  assert.match(handleDelete, /setDeleteConfirmId\(id\)/)
+  assert.match(source, /setDeletedIds\(\(prev\) => new Set\(\[\.\.\.prev, id\]\)\)/)
+  assert.match(source, /setSavedList\(\(prev\) => prev\.filter\(\(conn\) => conn\.id !== id\)\)/)
+  assert.match(source, /onDeleted\?\.\(id\)/)
+  assert.match(app, /onDeleted=\{handleDialogDeleted\}/)
+  assert.match(handleDialogDeleted, /const next = prev\.filter\(\(conn\) => conn\.id !== connId\)/)
+  assert.match(handleDialogDeleted, /return next/)
+  assert.match(handleDialogDeleted, /reloadConnections\(\)/)
+  assert.match(source, /setDeletedIds\(\(prev\) => \{/)
+  assert.match(source, /role="dialog"/)
+  assert.match(source, /Delete data source\?/)
+  assert.doesNotMatch(source, /m-2 rounded-md border border-danger\/30/)
+}
+
+function testConnectionDialogOkDoesNotSavePristineBlankConnection() {
+  const source = readFileSync(new URL('../src/components/ConnectionDialog.jsx', import.meta.url), 'utf8')
+  const handleOK = source.match(/const handleOK = \(\) => \{[\s\S]*?\n  \}/)?.[0] ?? ''
+  assert.match(handleOK, /if \(!selectedId && !isDirty\) \{/)
+  assert.match(handleOK, /onClose\(\)/)
+  assert.match(handleOK, /return/)
+  assert.match(handleOK, /saveConnection\(payload\)/)
+}
+
+function testConnectionDialogSupportsCustomColorPicker() {
+  const source = readFileSync(new URL('../src/components/ConnectionDialog.jsx', import.meta.url), 'utf8')
+  assert.match(source, /useRef/)
+  assert.match(source, /customColorInputRef/)
+  assert.match(source, /type="color"/)
+  assert.match(source, /title="Custom color"/)
+  assert.match(source, /customColorInputRef\.current\?\.click\(\)/)
+  assert.match(source, /onChange=\{\(e\) => setForm\(f => \(\{ \.\.\.f, color: e\.target\.value \}\)\)\}/)
+}
+
+function testDatabaseExplorerDoesNotExposeConnectionGroups() {
+  const explorer = readFileSync(new URL('../src/components/DatabaseExplorer.jsx', import.meta.url), 'utf8')
+  const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
+
+  assert.match(explorer, /\bPlug\b/)
+  assert.doesNotMatch(bridge, /export async function listConnectionGroups/)
+  assert.doesNotMatch(bridge, /export async function createConnectionGroup/)
+  assert.doesNotMatch(bridge, /export async function renameConnectionGroup/)
+  assert.doesNotMatch(bridge, /export async function deleteConnectionGroup/)
+  assert.doesNotMatch(bridge, /export async function moveConnectionToGroup/)
+  assert.doesNotMatch(explorer, /ConnectionGroupActionModal/)
+  assert.doesNotMatch(explorer, /New Group/)
+  assert.doesNotMatch(explorer, /Rename Group/)
+  assert.doesNotMatch(explorer, /Delete Group/)
+  assert.doesNotMatch(explorer, /kind: 'blank'/)
+  assert.doesNotMatch(explorer, /handleConnectionDrop/)
+  assert.doesNotMatch(explorer, /moveConnectionToGroup/)
+}
+
+function testConnectionDialogSelectionAndSaveAreResponsive() {
+  const source = readFileSync(new URL('../src/components/ConnectionDialog.jsx', import.meta.url), 'utf8')
+  const handleOK = source.match(/const handleOK = (?:async )?\(\) => \{[\s\S]*?\n  \}/)?.[0] ?? ''
+  const handleSave = source.match(/const handleSave = async \(\) => \{[\s\S]*?\n  \}/)?.[0] ?? ''
+
+  assert.match(source, /selectionRequestRef/)
+  assert.match(source, /isOpenRef/)
+  assert.match(source, /const requestId = \+\+selectionRequestRef\.current/)
+  assert.match(source, /const fallback = visibleConnections\.find\(\(conn\) => conn\.id === id\) \?\? null/)
+  assert.match(source, /if \(fallback\) applyConnectionForm\(fallback, \{ dirty: false \}\)/)
+  assert.match(source, /if \(requestId !== selectionRequestRef\.current \|\| !isOpenRef\.current\) return/)
+  assert.doesNotMatch(handleOK, /connectSaved/)
+  assert.doesNotMatch(handleOK, /await saveConnection/)
+  assert.match(handleOK, /const payload = \{ \.\.\.form \}/)
+  assert.match(handleOK, /const savePromise = saveConnection\(payload\)/)
+  assert.match(handleOK, /onClose\(\)/)
+  assert.doesNotMatch(handleSave, /await loadList\(\)/)
 }
 
 function testMongoCollectionTextModeHidesMySQLFormatToggle() {
@@ -338,10 +439,25 @@ function testMongoCollectionTextModeHidesMySQLFormatToggle() {
 function testMongoTableViewerInfersCollectionFromConnectionKind() {
   const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
   const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  const explorer = readFileSync(new URL('../src/components/DatabaseExplorer.jsx', import.meta.url), 'utf8')
   assert.match(app, /tableConnectionKind === 'mongodb' \? 'collection' : 'table'/)
   assert.match(app, /connectionKind=\{tableConnectionKind\}/)
   assert.match(tableViewer, /connectionKind = 'mysql'/)
   assert.match(tableViewer, /objectKind === 'collection' \|\| connectionKind === 'mongodb'/)
+  assert.match(explorer, /function groupsForConnectionKind/)
+  assert.match(explorer, /kind === 'mongodb' \? CONN_GROUPS\.filter\(\(g\) => g\.kind === 'databases'\) : CONN_GROUPS/)
+  assert.match(explorer, /groupsForConnectionKind\(connectionKindByIdRef\.current\.get\(connId\)\)/)
+}
+
+function testTableTabsAndBreadcrumbIncludeConnectionName() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  assert.match(app, /const tableConnectionName =/)
+  assert.match(app, /label: buildTableTabLabel\(tableConnectionName, dbName, tableName\)/)
+  assert.match(app, /connectionName=\{tableConnectionName\}/)
+  assert.match(app, /📋 \{activeTab\.connectionName \? `\$\{activeTab\.connectionName\} \/ ` : ''\}\{activeTab\.dbName\}\.\{activeTab\.tableName\}/)
+  assert.match(tableViewer, /connectionName = ''/)
+  assert.match(tableViewer, /connectionName && \(\s*<>\s*<span className="text-syntax-keyword">\{connectionName\}<\/span>/)
 }
 
 function testMongoCollectionInlineEditingUsesMongoApplier() {
@@ -510,8 +626,14 @@ testCreateTableSqlBuildsColumnsAndOptions()
 testColumnTypeOptionsIncludeCommonMySQLTypes()
 testRenameAndDropTableSqlQuoteIdentifiers()
 testConnectionDialogHasExplicitDatabaseCreateEntries()
+testConnectionDialogDeleteUpdatesVisibleListAndParent()
+testConnectionDialogOkDoesNotSavePristineBlankConnection()
+testConnectionDialogSupportsCustomColorPicker()
+testDatabaseExplorerDoesNotExposeConnectionGroups()
+testConnectionDialogSelectionAndSaveAreResponsive()
 testMongoCollectionTextModeHidesMySQLFormatToggle()
 testMongoTableViewerInfersCollectionFromConnectionKind()
+testTableTabsAndBreadcrumbIncludeConnectionName()
 testMongoCollectionInlineEditingUsesMongoApplier()
 testMongoCollectionFindQueryBuildsDatagripStyleFilterAndSort()
 testMongoFieldSuggestionsUseCollectionFields()

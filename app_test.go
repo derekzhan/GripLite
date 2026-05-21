@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +138,23 @@ func TestConnectionSuccessMessageUsesDriverKind(t *testing.T) {
 	mongoMsg := connectionSuccessMessage(driver.DriverMongoDB, "8.0.23")
 	if mongoMsg != "Successfully connected · MongoDB 8.0.23" {
 		t.Fatalf("mongo message = %q", mongoMsg)
+	}
+}
+
+func TestMainWindowStartsMaximised(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	if !strings.Contains(string(source), "WindowStartState: options.Maximised") {
+		t.Fatalf("main window should start maximised")
+	}
+}
+
+func TestBuildInfoUsesSupportEmail(t *testing.T) {
+	info := (&App{}).GetBuildInfo()
+	if info.Email != "alexzhan037@gmail.com" {
+		t.Fatalf("build info email = %q", info.Email)
 	}
 }
 

@@ -43,7 +43,7 @@ func (a *App) GetBuildInfo() BuildInfo {
 		GoVersion: runtime.Version(),
 		License:   "MIT",
 		Author:    "derek",
-		Email:     "zhanweichun@gmail.com",
+		Email:     "alexzhan037@gmail.com",
 		Homepage:  "https://github.com/derekzhan",
 	}
 }

@@ -17,9 +17,10 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "GripLite",
-		Width:  1024,
-		Height: 768,
+		Title:            "GripLite",
+		Width:            1024,
+		Height:           768,
+		WindowStartState: options.Maximised,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

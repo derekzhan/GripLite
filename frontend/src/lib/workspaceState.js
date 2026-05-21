@@ -1,6 +1,16 @@
 export const WORKSPACE_STORAGE_KEY = 'griplite_workspace_v1'
 
 const TAB_TYPES = new Set(['console', 'table', 'dbviewer', 'query'])
+const CONNECTION_KINDS = new Set(['mysql', 'mongodb'])
+const OBJECT_KINDS = new Set(['table', 'collection'])
+
+function cleanConnectionFields(tab) {
+  const out = {}
+  if (tab.connId) out.connId = String(tab.connId)
+  if (CONNECTION_KINDS.has(tab.connectionKind)) out.connectionKind = tab.connectionKind
+  if (tab.connectionName) out.connectionName = String(tab.connectionName)
+  return out
+}
 
 function cleanTab(tab) {
   if (!tab || typeof tab !== 'object') return null
@@ -16,6 +26,7 @@ function cleanTab(tab) {
     case 'console':
       return {
         ...base,
+        ...cleanConnectionFields(tab),
         initialSql: tab.initialSql ?? undefined,
         defaultDb: tab.defaultDb ?? undefined,
       }
@@ -24,15 +35,18 @@ function cleanTab(tab) {
       return {
         ...base,
         connId: String(tab.connId),
+        ...cleanConnectionFields(tab),
         dbName: String(tab.dbName),
         tableName: String(tab.tableName),
         defaultView: tab.defaultView === 'data' ? 'data' : 'properties',
+        objectKind: OBJECT_KINDS.has(tab.objectKind) ? tab.objectKind : undefined,
       }
     case 'dbviewer':
       if (!tab.connId || !tab.dbName) return null
       return {
         ...base,
         connId: String(tab.connId),
+        ...cleanConnectionFields(tab),
         dbName: String(tab.dbName),
       }
     case 'query':
@@ -40,6 +54,7 @@ function cleanTab(tab) {
       return {
         ...base,
         connId: String(tab.connId),
+        ...cleanConnectionFields(tab),
         sql: String(tab.sql),
       }
     default:

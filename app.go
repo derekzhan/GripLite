@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1604,6 +1607,70 @@ func (a *App) OpenFileDialog(title string) (string, error) {
 		},
 	})
 	return path, err
+}
+
+// PickColor opens the macOS Colors panel and returns the selected color as #rrggbb.
+func (a *App) PickColor(initialColor string) (string, error) {
+	if runtime.GOOS != "darwin" {
+		return "", fmt.Errorf("native color picker is only available on macOS")
+	}
+	r, g, b := appleColorComponents(initialColor)
+	out, err := exec.CommandContext(
+		a.ctx,
+		"osascript",
+		"-e",
+		fmt.Sprintf("choose color default color {%d, %d, %d}", r, g, b),
+	).CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "User canceled") {
+			return "", nil
+		}
+		return "", fmt.Errorf("choose color: %w", err)
+	}
+	parts := strings.Split(strings.TrimSpace(string(out)), ",")
+	if len(parts) < 3 {
+		return "", fmt.Errorf("choose color returned %q", strings.TrimSpace(string(out)))
+	}
+	r8, err := appleComponentToByte(parts[0])
+	if err != nil {
+		return "", err
+	}
+	g8, err := appleComponentToByte(parts[1])
+	if err != nil {
+		return "", err
+	}
+	b8, err := appleComponentToByte(parts[2])
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("#%02x%02x%02x", r8, g8, b8), nil
+}
+
+func appleColorComponents(hexColor string) (int, int, int) {
+	if len(hexColor) != 7 || hexColor[0] != '#' {
+		return 0, 0, 65535
+	}
+	r, errR := strconv.ParseUint(hexColor[1:3], 16, 8)
+	g, errG := strconv.ParseUint(hexColor[3:5], 16, 8)
+	b, errB := strconv.ParseUint(hexColor[5:7], 16, 8)
+	if errR != nil || errG != nil || errB != nil {
+		return 0, 0, 65535
+	}
+	return int(r) * 257, int(g) * 257, int(b) * 257
+}
+
+func appleComponentToByte(raw string) (int, error) {
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("parse color component %q: %w", raw, err)
+	}
+	if v < 0 {
+		v = 0
+	}
+	if v > 65535 {
+		v = 65535
+	}
+	return v / 257, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

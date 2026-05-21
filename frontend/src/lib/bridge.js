@@ -955,6 +955,19 @@ export async function openFileDialog(title = 'Select file') {
   return '/home/user/.ssh/id_rsa'
 }
 
+/**
+ * PickColor — open the native color picker when available.
+ * @param {string} initialColor  #rrggbb starting color
+ * @returns {Promise<string>} selected #rrggbb color, or '' when cancelled
+ */
+export async function pickColor(initialColor = '#3b82f6') {
+  if (isWails()) {
+    const { PickColor } = await import('../../wailsjs/go/main/App.js')
+    return PickColor(initialColor)
+  }
+  return initialColor
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Phase 9: Connection Manager (direct connect + disconnect)
 // ─────────────────────────────────────────────────────────────────────────────

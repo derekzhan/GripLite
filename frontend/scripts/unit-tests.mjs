@@ -95,13 +95,18 @@ function testWorkspaceSnapshotRoundTrip() {
   const storage = new MemoryStorage()
   const snapshot = makeWorkspaceSnapshot({
     tabs: [
-      { id: 'console-3', type: 'console', label: 'SQL Console 3', initialSql: 'select 1' },
-      { id: 'table:conn:db:users', type: 'table', label: 'users', connId: 'conn', dbName: 'db', tableName: 'users', defaultView: 'data' },
+      { id: 'console-3', type: 'console', label: 'SQL Console 3', initialSql: 'select 1', connId: 'conn', connectionKind: 'mongodb' },
+      { id: 'table:conn:db:users', type: 'table', label: 'users', connId: 'conn', dbName: 'db', tableName: 'users', defaultView: 'data', objectKind: 'collection', connectionKind: 'mongodb', connectionName: 'QA' },
     ],
     activeTabId: 'table:conn:db:users',
     activeConnId: 'conn',
   })
 
+  assert.equal(snapshot.tabs[0].connId, 'conn')
+  assert.equal(snapshot.tabs[0].connectionKind, 'mongodb')
+  assert.equal(snapshot.tabs[1].objectKind, 'collection')
+  assert.equal(snapshot.tabs[1].connectionKind, 'mongodb')
+  assert.equal(snapshot.tabs[1].connectionName, 'QA')
   saveWorkspaceState(storage, snapshot)
   assert.deepEqual(loadWorkspaceState(storage), snapshot)
   assert.equal(getNextConsoleSeqFromTabs(snapshot.tabs), 4)
@@ -383,12 +388,22 @@ function testConnectionDialogOkDoesNotSavePristineBlankConnection() {
 
 function testConnectionDialogSupportsCustomColorPicker() {
   const source = readFileSync(new URL('../src/components/ConnectionDialog.jsx', import.meta.url), 'utf8')
+  const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
+  const app = readFileSync(new URL('../../app.go', import.meta.url), 'utf8')
   assert.match(source, /useRef/)
   assert.match(source, /customColorInputRef/)
   assert.match(source, /type="color"/)
-  assert.match(source, /title="Custom color"/)
+  assert.match(source, /pickColor\(form\.color \|\| '#3b82f6'\)/)
   assert.match(source, /customColorInputRef\.current\?\.click\(\)/)
+  assert.match(source, /title="Custom color"/)
+  assert.match(source, /relative flex h-5 w-5 items-center justify-center/)
+  assert.match(bridge, /export async function pickColor/)
+  assert.match(bridge, /PickColor\(initialColor\)/)
+  assert.match(app, /func \(a \*App\) PickColor\(initialColor string\) \(string, error\)/)
+  assert.match(app, /choose color default color/)
   assert.match(source, /onChange=\{\(e\) => setForm\(f => \(\{ \.\.\.f, color: e\.target\.value \}\)\)\}/)
+  assert.doesNotMatch(source, /showCustomColorPalette/)
+  assert.doesNotMatch(source, /CUSTOM_COLOR_SWATCHES/)
 }
 
 function testDatabaseExplorerDoesNotExposeConnectionGroups() {
@@ -446,7 +461,14 @@ function testMongoTableViewerInfersCollectionFromConnectionKind() {
   assert.match(tableViewer, /objectKind === 'collection' \|\| connectionKind === 'mongodb'/)
   assert.match(explorer, /function groupsForConnectionKind/)
   assert.match(explorer, /kind === 'mongodb' \? CONN_GROUPS\.filter\(\(g\) => g\.kind === 'databases'\) : CONN_GROUPS/)
-  assert.match(explorer, /groupsForConnectionKind\(connectionKindByIdRef\.current\.get\(connId\)\)/)
+  assert.match(explorer, /groupsForConnectionKind\(connectionKind\)/)
+  assert.match(explorer, /function databaseFoldersForConnectionKind/)
+  assert.match(explorer, /kind === 'mongodb' \? DATABASE_FOLDERS\.filter\(\(f\) => f\.kind === 'tables'\) : DATABASE_FOLDERS/)
+  assert.match(explorer, /const connectionKind = node\.kind \?\? connectionKindByIdRef\.current\.get\(connId\) \?\? 'mysql'/)
+  assert.match(explorer, /const connectionKind = node\.connectionKind \?\? connectionKindByIdRef\.current\.get\(connId\) \?\? 'mysql'/)
+  assert.match(explorer, /connectionKind, hasChildren: true/)
+  assert.match(explorer, /kind: conn\.kind/)
+  assert.match(explorer, /databaseFoldersForConnectionKind\(connectionKind\)/)
 }
 
 function testTableTabsAndBreadcrumbIncludeConnectionName() {
@@ -458,6 +480,21 @@ function testTableTabsAndBreadcrumbIncludeConnectionName() {
   assert.match(app, /📋 \{activeTab\.connectionName \? `\$\{activeTab\.connectionName\} \/ ` : ''\}\{activeTab\.dbName\}\.\{activeTab\.tableName\}/)
   assert.match(tableViewer, /connectionName = ''/)
   assert.match(tableViewer, /connectionName && \(\s*<>\s*<span className="text-syntax-keyword">\{connectionName\}<\/span>/)
+}
+
+function testTabBarScrollsActiveTabAndShowsDriverIcons() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  assert.match(app, /import \{ Database, Leaf, Zap \} from 'lucide-react'/)
+  assert.match(app, /\bconnectionKind,\s*\n/)
+  assert.match(app, /connectionKindById=\{connectionKindById\}/)
+  assert.match(app, /const activeTabRef = useRef\(null\)/)
+  assert.match(app, /activeTabRef\.current\?\.scrollIntoView\(\{\s*block: 'nearest',\s*inline: 'end'/m)
+  assert.match(app, /ref=\{active \? activeTabRef : null\}/)
+  assert.match(app, /data-tab-id=\{tab\.id\}/)
+  assert.match(app, /function TabIcon/)
+  assert.match(app, /kind === 'mongodb'/)
+  assert.match(app, /return <Leaf/)
+  assert.match(app, /return <Database/)
 }
 
 function testMongoCollectionInlineEditingUsesMongoApplier() {
@@ -634,6 +671,7 @@ testConnectionDialogSelectionAndSaveAreResponsive()
 testMongoCollectionTextModeHidesMySQLFormatToggle()
 testMongoTableViewerInfersCollectionFromConnectionKind()
 testTableTabsAndBreadcrumbIncludeConnectionName()
+testTabBarScrollsActiveTabAndShowsDriverIcons()
 testMongoCollectionInlineEditingUsesMongoApplier()
 testMongoCollectionFindQueryBuildsDatagripStyleFilterAndSort()
 testMongoFieldSuggestionsUseCollectionFields()

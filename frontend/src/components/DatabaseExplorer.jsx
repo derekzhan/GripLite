@@ -195,6 +195,17 @@ function groupsForConnectionKind(kind) {
   return kind === 'mongodb' ? CONN_GROUPS.filter((g) => g.kind === 'databases') : CONN_GROUPS
 }
 
+const DATABASE_FOLDERS = [
+  { kind: 'tables', label: 'Tables' },
+  { kind: 'routines', label: 'Procedures & Functions' },
+  { kind: 'triggers', label: 'Triggers' },
+  { kind: 'events', label: 'Events' },
+]
+
+function databaseFoldersForConnectionKind(kind) {
+  return kind === 'mongodb' ? DATABASE_FOLDERS.filter((f) => f.kind === 'tables') : DATABASE_FOLDERS
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Static catalogues for the Administer / System Info groups.
 //
@@ -566,12 +577,14 @@ export default function DatabaseExplorer({
         // Phase 22: a connection now exposes 4 fixed top-level groups that
         // mirror DBeaver's "navigator".  No backend call here — children are
         // synthesised locally and lazy-load their own contents on expansion.
-        children = groupsForConnectionKind(connectionKindByIdRef.current.get(connId)).map((g) => ({
+        const connectionKind = node.kind ?? connectionKindByIdRef.current.get(connId) ?? 'mysql'
+        children = groupsForConnectionKind(connectionKind).map((g) => ({
           id:        groupId(connId, g.kind),
           type:      'group',
           groupKind: g.kind,
           label:     g.label,
           connId,
+          connectionKind,
           hasChildren: true,
         }))
 
@@ -584,9 +597,10 @@ export default function DatabaseExplorer({
         // A successful fetchDatabases proves the connection is alive — refresh
         // the connection list so the status dot updates immediately.
         onConnectionsChangedRef.current?.()
+        const connectionKind = node.connectionKind ?? connectionKindByIdRef.current.get(connId) ?? 'mysql'
         children = dbs.map((db) => ({
           id: dbNodeId(connId, db), type: 'database', label: db,
-          connId, dbName: db, hasChildren: true,
+          connId, dbName: db, connectionKind, hasChildren: true,
         }))
 
       } else if (type === 'group' && node.groupKind === 'users') {
@@ -634,30 +648,17 @@ export default function DatabaseExplorer({
         }))
 
       } else if (type === 'database') {
-        const isMongo = connectionKindById.get(connId) === 'mongodb'
+        const connectionKind = node.connectionKind ?? connectionKindByIdRef.current.get(connId) ?? 'mysql'
         // Databases show virtual folder nodes so the tree mirrors DBeaver.
-        children = [
-          {
-            id: `folder::tables::${connId}::${dbName}`,
-            type: 'folder', folderKind: 'tables', label: isMongo ? 'Collections' : 'Tables',
-            connId, dbName, hasChildren: true,
-          },
-          {
-            id: `folder::routines::${connId}::${dbName}`,
-            type: 'folder', folderKind: 'routines', label: 'Procedures & Functions',
-            connId, dbName, hasChildren: true,
-          },
-          {
-            id: `folder::triggers::${connId}::${dbName}`,
-            type: 'folder', folderKind: 'triggers', label: 'Triggers',
-            connId, dbName, hasChildren: true,
-          },
-          {
-            id: `folder::events::${connId}::${dbName}`,
-            type: 'folder', folderKind: 'events', label: 'Events',
-            connId, dbName, hasChildren: true,
-          },
-        ]
+        children = databaseFoldersForConnectionKind(connectionKind).map((folder) => ({
+          id: `folder::${folder.kind}::${connId}::${dbName}`,
+          type: 'folder',
+          folderKind: folder.kind,
+          label: connectionKind === 'mongodb' && folder.kind === 'tables' ? 'Collections' : folder.label,
+          connId,
+          dbName,
+          hasChildren: true,
+        }))
 
       } else if (type === 'folder' && node.folderKind === 'tables') {
         const tables = (await fetchTables(connId, dbName)) ?? []
@@ -1268,7 +1269,7 @@ export default function DatabaseExplorer({
     const connLabel = conn.name || `${conn.host}:${conn.port}`
     const node = {
       id: nodeId, type: 'connection', label: connLabel,
-      connId: conn.id, hasChildren: true,
+      connId: conn.id, kind: conn.kind, hasChildren: true,
     }
 
     const handleContextMenu = (e) => {

@@ -35,6 +35,7 @@ import ThemeToggle        from './components/ThemeToggle'
 import AboutModal              from './components/AboutModal'
 import KeyboardShortcutsModal from './components/KeyboardShortcutsModal'
 import ErrorBoundary      from './components/ErrorBoundary'
+import { Database, Leaf, Zap } from 'lucide-react'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
 import { runQuery, runQueryPage, listConnections, getBuildInfo } from './lib/bridge'
@@ -195,11 +196,12 @@ export default function App() {
     setTabs((prev) => prev.map((tab) => {
       if (tab.type !== 'table') return tab
       const tableConnectionName = connectionNameById.get(tab.connId) ?? tab.connectionName ?? ''
+      const tableConnectionKind = connectionKindById.get(tab.connId) ?? tab.connectionKind ?? 'mysql'
       const label = buildTableTabLabel(tableConnectionName, tab.dbName, tab.tableName)
-      if (tab.connectionName === tableConnectionName && tab.label === label) return tab
-      return { ...tab, connectionName: tableConnectionName, label }
+      if (tab.connectionName === tableConnectionName && tab.connectionKind === tableConnectionKind && tab.label === label) return tab
+      return { ...tab, connectionName: tableConnectionName, connectionKind: tableConnectionKind, label }
     }))
-  }, [connectionNameById, connections.length])
+  }, [connectionKindById, connectionNameById, connections.length])
 
   // Monotonic id generator for result-set sub-tabs.  Module-level counter is
   // fine — we only need uniqueness within a single session.
@@ -456,6 +458,7 @@ export default function App() {
         id: tabId, type: 'table', label: buildTableTabLabel(tableConnectionName, dbName, tableName),
         tableName, dbName,
         connId:         effectiveConnId,
+        connectionKind,
         connectionName: tableConnectionName,
         defaultView:    defaultView ?? 'properties',
         objectKind:     objectKind ?? (connectionKind === 'mongodb' ? 'collection' : 'table'),
@@ -481,20 +484,22 @@ export default function App() {
    */
   const handleQueryOpen = useCallback(({ key, label, sql, connId }) => {
     const effectiveConnId = connId ?? connIdRef.current
+    const connectionKind = connectionKindById.get(effectiveConnId) ?? 'mysql'
     const tabId = `query:${effectiveConnId}:${key}`
     setTabs((prev) => {
       if (prev.some((t) => t.id === tabId)) return prev
       return [...prev, {
         id: tabId, type: 'query', label,
-        sql, connId: effectiveConnId,
+        sql, connId: effectiveConnId, connectionKind,
       }]
     })
     setActiveTabId(tabId)
-  }, [])
+  }, [connectionKindById])
 
   // ── Database viewer open ──────────────────────────────────────────────────
   const handleDatabaseOpen = useCallback(({ dbName, connId }) => {
     const effectiveConnId = connId ?? connIdRef.current
+    const connectionKind = connectionKindById.get(effectiveConnId) ?? 'mysql'
     const tabId = `db:${effectiveConnId}:${dbName}`
     setTabs((prev) => {
       if (prev.some((t) => t.id === tabId)) return prev   // already open → activate
@@ -503,10 +508,11 @@ export default function App() {
         label: `${dbName} — Tables`,
         dbName,
         connId: effectiveConnId,
+        connectionKind,
       }]
     })
     setActiveTabId(tabId)
-  }, [])
+  }, [connectionKindById])
 
   const [copyModalSource, setCopyModalSource] = useState(null)
 
@@ -525,6 +531,8 @@ export default function App() {
     if (opts?.initialSql) tab.initialSql = opts.initialSql
     if (opts?.label)      tab.label      = opts.label
     if (opts?.defaultDb)  tab.defaultDb  = opts.defaultDb
+    tab.connId = connIdRef.current
+    tab.connectionKind = connectionKindById.get(connIdRef.current) ?? 'mysql'
     setTabs((prev) => [...prev, tab])
     // NOTE: this seed MUST match the shape expected by the ResultPanel
     // render path (see `activeResult` derivation below).  The old shape
@@ -715,6 +723,7 @@ export default function App() {
               onCloseTab={handleCloseTabById}
               onCloseAll={handleCloseAllTabs}
               onNewConsole={handleNewConsole}
+              connectionKindById={connectionKindById}
             />
 
             {/* ── Tab content area ─────────────────────────────────────── */}
@@ -986,8 +995,30 @@ function WelcomePane({ hasConnections, onNewConsole, onNewConnection }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // TabBar
 // ─────────────────────────────────────────────────────────────────────────────
-function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab, onCloseAll, onNewConsole }) {
+function TabIcon({ tab, connectionKindById }) {
+  const kind = tab.connectionKind ?? connectionKindById.get(tab.connId) ?? 'mysql'
+  const className = 'flex-shrink-0 opacity-75'
+  if (kind === 'mongodb' || tab.objectKind === 'collection') {
+    return <Leaf size={12} strokeWidth={1.8} className={className} />
+  }
+  if (tab.connectionKind || tab.connId) {
+    return <Database size={12} strokeWidth={1.8} className={className} />
+  }
+  if (tab.type === 'console') return <Zap size={12} strokeWidth={1.8} className={className} />
+  return <Database size={12} strokeWidth={1.8} className={className} />
+}
+
+function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab, onCloseAll, onNewConsole, connectionKindById }) {
   const [contextMenu, setContextMenu] = useState(null)
+  const activeTabRef = useRef(null)
+
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({
+      block: 'nearest',
+      inline: 'end',
+      behavior: 'smooth',
+    })
+  }, [activeTabId, tabs.length])
 
   useEffect(() => {
     if (!contextMenu) return undefined
@@ -1026,13 +1057,11 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
         const data       = consolesData[tab.id]
         const running    = isConsole && data?.isRunning
 
-        const tabIcon = isTable    ? '📋'
-                      : isDbViewer ? '🗄'
-                      : '⚡'
-
         return (
           <div
             key={tab.id}
+            ref={active ? activeTabRef : null}
+            data-tab-id={tab.id}
             onClick={() => onSwitch(tab.id)}
             onContextMenu={(e) => openContextMenu(e, tab.id)}
             title={tab.label}
@@ -1046,7 +1075,7 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
             ].join(' ')}
           >
             {/* Tab icon */}
-            <span className="text-[10px] flex-shrink-0 opacity-70">{tabIcon}</span>
+            <TabIcon tab={tab} connectionKindById={connectionKindById} />
 
             {/* Label */}
             <span className="truncate flex-1 text-[12px]">{tab.label}</span>

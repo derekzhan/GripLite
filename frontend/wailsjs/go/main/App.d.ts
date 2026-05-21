@@ -86,6 +86,8 @@ export function ListSavedConnections():Promise<Array<store.SavedConnection>>;
 
 export function OpenFileDialog(arg1:string):Promise<string>;
 
+export function PickColor(arg1:string):Promise<string>;
+
 export function PreviewConstraintAlter(arg1:string,arg2:driver.ConstraintChangeRequest):Promise<driver.SchemaChangePreview>;
 
 export function PreviewIndexAlter(arg1:string,arg2:driver.IndexChangeRequest):Promise<driver.SchemaChangePreview>;

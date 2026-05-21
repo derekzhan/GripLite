@@ -162,6 +162,10 @@ export function OpenFileDialog(arg1) {
   return window['go']['main']['App']['OpenFileDialog'](arg1);
 }
 
+export function PickColor(arg1) {
+  return window['go']['main']['App']['PickColor'](arg1);
+}
+
 export function PreviewConstraintAlter(arg1, arg2) {
   return window['go']['main']['App']['PreviewConstraintAlter'](arg1, arg2);
 }

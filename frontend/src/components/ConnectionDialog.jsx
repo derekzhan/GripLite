@@ -21,6 +21,7 @@ import {
   deleteSavedConnection,
   testConnection,
   openFileDialog,
+  pickColor,
 } from '../lib/bridge'
 import { toast } from '../lib/toast'
 import { normalizeError } from '../lib/errors'
@@ -208,6 +209,14 @@ function GeneralTab({ form, setForm }) {
   const previewUrl = isMongo
     ? `${mongoMode === 'srv' ? 'mongodb+srv' : 'mongodb'}://${form.host || 'host'}${mongoMode === 'srv' ? '' : `:${form.port || 27017}`}/${form.database || ''}`
     : `jdbc:mysql://${form.host || 'host'}:${form.port || 3306}/${form.database || ''}`
+  const handleCustomColorClick = async () => {
+    try {
+      const color = await pickColor(form.color || '#3b82f6')
+      if (color) setForm(f => ({ ...f, color }))
+    } catch {
+      customColorInputRef.current?.click()
+    }
+  }
 
   return (
     <div className="space-y-3">
@@ -315,31 +324,33 @@ function GeneralTab({ form, setForm }) {
               style={color ? { backgroundColor: color } : {}}
             />
           ))}
-          <button
-            type="button"
-            title="Custom color"
-            onClick={() => customColorInputRef.current?.click()}
-            className={[
-              'relative w-5 h-5 rounded-full border-2 transition-all overflow-hidden',
-              isCustomColor
-                ? 'border-fg-primary scale-110'
-                : 'border-transparent hover:border-fg-secondary',
-            ].join(' ')}
-            style={{
-              background: isCustomColor
-                ? form.color
-                : 'linear-gradient(135deg, #ef4444 0%, #f97316 18%, #eab308 34%, #22c55e 50%, #06b6d4 66%, #3b82f6 82%, #8b5cf6 100%)',
-            }}
-          />
-          <input
-            ref={customColorInputRef}
-            type="color"
-            value={form.color || '#3b82f6'}
-            onChange={(e) => setForm(f => ({ ...f, color: e.target.value }))}
-            className="sr-only"
-            tabIndex={-1}
-            aria-label="Custom color picker"
-          />
+          <div className="relative flex h-5 w-5 items-center justify-center">
+            <button
+              type="button"
+              title="Custom color"
+              onClick={handleCustomColorClick}
+              className={[
+                'relative w-5 h-5 rounded-full border-2 transition-all overflow-hidden',
+                isCustomColor
+                  ? 'border-fg-primary scale-110'
+                  : 'border-transparent hover:border-fg-secondary',
+              ].join(' ')}
+              style={{
+                background: isCustomColor
+                  ? form.color
+                  : 'linear-gradient(135deg, #ef4444 0%, #f97316 18%, #eab308 34%, #22c55e 50%, #06b6d4 66%, #3b82f6 82%, #8b5cf6 100%)',
+              }}
+            />
+            <input
+              ref={customColorInputRef}
+              type="color"
+              value={form.color || '#3b82f6'}
+              onChange={(e) => setForm(f => ({ ...f, color: e.target.value }))}
+              className="sr-only"
+              tabIndex={-1}
+              aria-label="Custom color picker"
+            />
+          </div>
         </div>
       </div>
 

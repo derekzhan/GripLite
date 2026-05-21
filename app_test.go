@@ -82,6 +82,17 @@ func (d *blockingQueryDriver) ExecuteQueryOnDB(ctx context.Context, dbName, quer
 func (d *blockingQueryDriver) Kind() driver.DriverKind { return driver.DriverMySQL }
 func (d *blockingQueryDriver) ServerVersion() string   { return "8.0-test" }
 
+type slowPingDriver struct {
+	queryContextDriver
+	pingStarted chan struct{}
+}
+
+func (d *slowPingDriver) Ping(ctx context.Context) error {
+	close(d.pingStarted)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func appWithDriver(id string, drv driver.DatabaseDriver) *App {
 	app := NewApp()
 	app.ctx = context.Background()
@@ -201,6 +212,39 @@ func TestListConnectionsKeepsClearedSavedDatabaseOverLiveConfig(t *testing.T) {
 		return
 	}
 	t.Fatalf("connection %q not found in %#v", id, connections)
+}
+
+func TestListConnectionsUsesShortPingTimeout(t *testing.T) {
+	oldTimeout := connectionPingTimeout
+	connectionPingTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { connectionPingTimeout = oldTimeout })
+
+	drv := &slowPingDriver{pingStarted: make(chan struct{})}
+	app := appWithDriver("conn-1", drv)
+	app.configs["conn-1"] = driver.ConnectionConfig{
+		ID:   "conn-1",
+		Name: "Slow ping",
+		Kind: driver.DriverMySQL,
+		Host: "127.0.0.1",
+		Port: 3306,
+	}
+
+	start := time.Now()
+	connections := app.ListConnections()
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("ListConnections took %s; ping should be short-timeout bounded", elapsed)
+	}
+	if len(connections) != 1 {
+		t.Fatalf("ListConnections returned %d connections, want 1", len(connections))
+	}
+	if connections[0].Connected {
+		t.Fatalf("slow ping connection should be reported disconnected")
+	}
+	select {
+	case <-drv.pingStarted:
+	default:
+		t.Fatal("Ping was not attempted")
+	}
 }
 
 func TestRunQueryDoesNotSetAutomaticQueryDeadline(t *testing.T) {

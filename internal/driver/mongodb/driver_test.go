@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"GripLite/internal/driver"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func TestNewRegistersMongoDBDriver(t *testing.T) {
@@ -70,3 +72,41 @@ func TestEffectiveFindLimitDefaultsWhenUnset(t *testing.T) {
 		t.Fatalf("effectiveFindLimit(25) = %d, want 25", got)
 	}
 }
+
+func TestServerCursorLimitUsesSentinelOnlyForDefaultLimit(t *testing.T) {
+	if got := serverCursorLimit(0); got != defaultFindLimit+1 {
+		t.Fatalf("serverCursorLimit(0) = %d, want %d", got, defaultFindLimit+1)
+	}
+	if got := serverCursorLimit(25); got != 25 {
+		t.Fatalf("serverCursorLimit(25) = %d, want 25", got)
+	}
+}
+
+func TestAggregatePipelineAddsDefaultLimitWhenUnset(t *testing.T) {
+	pipeline := cappedAggregatePipeline([]any{
+		map[string]any{"$match": map[string]any{"status": "active"}},
+	}, 0)
+
+	if len(pipeline) != 2 {
+		t.Fatalf("pipeline len = %d, want 2", len(pipeline))
+	}
+	limit, ok := pipeline[1].(bson.D)
+	if !ok || len(limit) != 1 || limit[0].Key != "$limit" || limit[0].Value != defaultFindLimit+1 {
+		t.Fatalf("limit stage = %#v, want $limit default+1", pipeline[1])
+	}
+}
+
+func TestAggregatePipelinePreservesExplicitLimit(t *testing.T) {
+	pipeline := cappedAggregatePipeline([]any{
+		map[string]any{"$match": map[string]any{"status": "active"}},
+		map[string]any{"$limit": int64(25)},
+	}, 0)
+
+	if len(pipeline) != 2 {
+		t.Fatalf("pipeline len = %d, want 2", len(pipeline))
+	}
+	if hasSyntheticLimit(pipeline[:1]) {
+		t.Fatalf("synthetic limit detection should not trigger before explicit limit")
+	}
+}
+

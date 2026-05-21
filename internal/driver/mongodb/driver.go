@@ -246,7 +246,7 @@ func (d *mongoDriver) executeOperation(ctx context.Context, op mongoOperation) (
 	switch op.Kind {
 	case opFind:
 		opts := options.Find()
-		opts.SetLimit(effectiveFindLimit(op.Limit))
+		opts.SetLimit(serverCursorLimit(op.Limit))
 		if op.Skip > 0 {
 			opts.SetSkip(op.Skip)
 		}
@@ -267,7 +267,7 @@ func (d *mongoDriver) executeOperation(ctx context.Context, op mongoOperation) (
 		}
 		return documentsToResultSet(docs, 0), nil
 	case opAggregate:
-		cur, err := coll.Aggregate(ctx, normalizePipeline(op.Pipeline))
+		cur, err := coll.Aggregate(ctx, cappedAggregatePipeline(op.Pipeline, op.Limit))
 		if err != nil {
 			return nil, fmt.Errorf("mongodb: aggregate: %w", err)
 		}
@@ -290,13 +290,14 @@ func (d *mongoDriver) executeOperation(ctx context.Context, op mongoOperation) (
 		}
 		return writeSummaryResult(0, 0, map[string]any{"count": n}), nil
 	case opDistinct:
-		var vals []any
-		if err := coll.Distinct(ctx, op.DistinctField, toBSONDocument(op.Filter)).Decode(&vals); err != nil {
+		cur, err := coll.Aggregate(ctx, distinctAggregationPipeline(op.DistinctField, op.Filter, op.Limit))
+		if err != nil {
 			return nil, fmt.Errorf("mongodb: distinct: %w", err)
 		}
-		docs := make([]bson.M, 0, len(vals))
-		for _, val := range vals {
-			docs = append(docs, bson.M{"value": val})
+		defer cur.Close(ctx)
+		var docs []bson.M
+		if err := cur.All(ctx, &docs); err != nil {
+			return nil, fmt.Errorf("mongodb: read cursor: %w", err)
 		}
 		return documentsToResultSet(docs, 0), nil
 	case opCommand:
@@ -377,6 +378,56 @@ func effectiveFindLimit(limit int64) int64 {
 		return limit
 	}
 	return defaultFindLimit
+}
+
+func cappedAggregatePipeline(pipeline []any, limit int64) []any {
+	normalized := normalizePipeline(pipeline)
+	if hasSyntheticLimit(normalized) {
+		return normalized
+	}
+	return append(normalized, bson.D{{Key: "$limit", Value: serverCursorLimit(limit)}})
+}
+
+func hasSyntheticLimit(pipeline []any) bool {
+	for _, stage := range pipeline {
+		switch s := stage.(type) {
+		case bson.D:
+			if len(s) > 0 && strings.EqualFold(s[0].Key, "$limit") {
+				return true
+			}
+		case bson.M:
+			if _, ok := s["$limit"]; ok {
+				return true
+			}
+		case map[string]any:
+			for key := range s {
+				if strings.EqualFold(key, "$limit") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func distinctAggregationPipeline(field string, filter map[string]any, limit int64) []any {
+	pipeline := make([]any, 0, 4)
+	if len(filter) > 0 {
+		pipeline = append(pipeline, bson.D{{Key: "$match", Value: toBSONDocument(filter)}})
+	}
+	pipeline = append(pipeline,
+		bson.D{{Key: "$group", Value: bson.D{{Key: "_id", Value: "$" + field}}}},
+		bson.D{{Key: "$limit", Value: serverCursorLimit(limit)}},
+		bson.D{{Key: "$project", Value: bson.D{{Key: "_id", Value: 0}, {Key: "value", Value: "$_id"}}}},
+	)
+	return pipeline
+}
+
+func serverCursorLimit(limit int64) int64 {
+	if limit > 0 {
+		return limit
+	}
+	return defaultFindLimit + 1
 }
 
 func normalizePipeline(in []any) []any {

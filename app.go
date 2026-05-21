@@ -82,6 +82,10 @@ type ConnectionInfo struct {
 // Large result sets should be paginated at the SQL level (LIMIT / OFFSET).
 const maxQueryRows = 1000
 
+// connectionPingTimeout keeps Explorer refreshes responsive when a live socket
+// is half-open or the remote host is slow to answer health checks.
+var connectionPingTimeout = 750 * time.Millisecond
+
 func stripTrailingSemicolons(sqlText string) string {
 	s := strings.TrimSpace(sqlText)
 	for strings.HasSuffix(s, ";") {
@@ -429,11 +433,27 @@ func (a *App) ListConnections() []ConnectionInfo {
 		}
 	}
 
-	// 2. Overlay with any live drivers (serverVersion + Connected flag).
-	// Unsaved live connections (edge case) are appended after saved ones.
+	// 2. Snapshot live drivers under the lock, then ping outside the lock. A
+	// slow network health check must not block Add/RemoveConnection or other
+	// readers that need the app connection map.
+	type liveConnection struct {
+		id  string
+		drv driver.DatabaseDriver
+		cfg driver.ConnectionConfig
+	}
+	var live []liveConnection
 	a.mu.RLock()
 	for id, drv := range a.connections {
-		cfg := a.configs[id]
+		live = append(live, liveConnection{id: id, drv: drv, cfg: a.configs[id]})
+	}
+	a.mu.RUnlock()
+
+	// Overlay with any live drivers (serverVersion + Connected flag).
+	// Unsaved live connections (edge case) are appended after saved ones.
+	for _, item := range live {
+		id := item.id
+		cfg := item.cfg
+		drv := item.drv
 		info, known := byID[id] // zero value when not saved
 		if !known {
 			order = append(order, id)
@@ -445,10 +465,9 @@ func (a *App) ListConnections() []ConnectionInfo {
 			info.Database = cfg.Database
 		}
 		info.ServerVersion = drv.ServerVersion()
-		info.Connected = drv.Ping(a.ctx) == nil
+		info.Connected = pingConnection(a.ctx, drv)
 		byID[id] = info
 	}
-	a.mu.RUnlock()
 
 	result := make([]ConnectionInfo, 0, len(order))
 	for _, id := range order {
@@ -457,6 +476,15 @@ func (a *App) ListConnections() []ConnectionInfo {
 		}
 	}
 	return result
+}
+
+func pingConnection(parent context.Context, drv driver.DatabaseDriver) bool {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, connectionPingTimeout)
+	defer cancel()
+	return drv.Ping(ctx) == nil
 }
 
 // GetDBPath returns the absolute path of griplite.db.  Exposed so the

@@ -16,9 +16,8 @@
  *
  * State isolation strategy
  * ────────────────────────
- * All tab types are kept permanently mounted; only `display` CSS changes
- * when switching tabs. React therefore never unmounts any component on a
- * tab switch, so every piece of internal state is preserved automatically.
+ * Recently used tab contents stay mounted and are CSS-switched; older inactive
+ * tabs are unmounted to keep Monaco/DataGrid memory bounded.
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import SplitPane          from './components/SplitPane'
@@ -54,6 +53,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 const DEFAULT_CONN_ID = 'mock-conn'
 const DEFAULT_RESULT_PAGE_SIZE = DEFAULT_PAGE_SIZE
+const MAX_MOUNTED_TABS = 8
 let   nextConsoleSeq  = 1
 
 function isPageableSql(sql) {
@@ -158,6 +158,12 @@ export default function App() {
   const [tabs,        setTabs]        = useState(() => initialWorkspaceRef.current?.tabs ?? [])
   const [activeTabId, setActiveTabId] = useState(() => initialWorkspaceRef.current?.activeTabId ?? '')
   const activeTabIdRef = useRef(activeTabId)
+  const [mountedTabIds, setMountedTabIds] = useState(() => {
+    const ids = (initialWorkspaceRef.current?.tabs ?? []).map((tab) => tab.id)
+    const active = initialWorkspaceRef.current?.activeTabId ?? ''
+    const ordered = active ? [...ids.filter((id) => id !== active), active] : ids
+    return ordered.slice(-MAX_MOUNTED_TABS)
+  })
 
   /**
    * consolesData: {
@@ -186,6 +192,21 @@ export default function App() {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
 
   useEffect(() => { activeTabIdRef.current = activeTabId }, [activeTabId])
+
+  useEffect(() => {
+    setMountedTabIds((prev) => {
+      const open = new Set(tabs.map((tab) => tab.id))
+      const next = prev.filter((id) => open.has(id) && id !== activeTabId)
+      if (activeTabId && open.has(activeTabId)) next.push(activeTabId)
+      const bounded = next.slice(-MAX_MOUNTED_TABS)
+      if (bounded.length === prev.length && bounded.every((id, idx) => id === prev[idx])) return prev
+      return bounded
+    })
+  }, [activeTabId, tabs])
+
+  const shouldMountTab = useCallback((tabId) => (
+    tabId === activeTabId || mountedTabIds.includes(tabId)
+  ), [activeTabId, mountedTabIds])
 
   useEffect(() => {
     saveWorkspaceState(undefined, makeWorkspaceSnapshot({ tabs, activeTabId, activeConnId }))
@@ -544,7 +565,7 @@ export default function App() {
       [tab.id]: { resultSets: [], activeResultId: null, isRunning: false },
     }))
     setActiveTabId(tab.id)
-  }, [])
+  }, [connectionKindById])
 
   // ── Tab close ─────────────────────────────────────────────────────────────
   //
@@ -738,8 +759,8 @@ export default function App() {
                 />
               )}
 
-              {/* SQL Console tabs — ALL kept mounted, CSS-switched */}
-              {tabs.filter((t) => t.type === 'console').map((tab) => {
+              {/* SQL Console tabs — bounded keep-alive, CSS-switched */}
+              {tabs.filter((t) => t.type === 'console' && shouldMountTab(t.id)).map((tab) => {
                 // Defensive normalisation — any pre-existing console data
                 // that was seeded with the legacy shape ({queryResult,
                 // isRunning}) still has `resultSets === undefined`, which
@@ -792,8 +813,8 @@ export default function App() {
                 )
               })}
 
-              {/* Table viewer tabs — ALL kept mounted, CSS-switched */}
-              {tabs.filter((t) => t.type === 'table').map((tab) => {
+              {/* Table viewer tabs — bounded keep-alive, CSS-switched */}
+              {tabs.filter((t) => t.type === 'table' && shouldMountTab(t.id)).map((tab) => {
                 const tableConnectionKind = connectionKindById.get(tab.connId) ?? 'mysql'
                 const tableObjectKind = tab.objectKind ?? (tableConnectionKind === 'mongodb' ? 'collection' : 'table')
                 const tableConnectionName = tab.connectionName ?? connectionNameById.get(tab.connId) ?? ''
@@ -819,7 +840,7 @@ export default function App() {
               })}
 
               {/* Read-only query tabs (Phase 22 — Explorer system info) */}
-              {tabs.filter((t) => t.type === 'query').map((tab) => (
+              {tabs.filter((t) => t.type === 'query' && shouldMountTab(t.id)).map((tab) => (
                 <div
                   key={tab.id}
                   className="absolute inset-0"
@@ -835,8 +856,8 @@ export default function App() {
                 </div>
               ))}
 
-              {/* Database viewer tabs — ALL kept mounted, CSS-switched */}
-              {tabs.filter((t) => t.type === 'dbviewer').map((tab) => (
+              {/* Database viewer tabs — bounded keep-alive, CSS-switched */}
+              {tabs.filter((t) => t.type === 'dbviewer' && shouldMountTab(t.id)).map((tab) => (
                 <div
                   key={tab.id}
                   className="absolute inset-0"

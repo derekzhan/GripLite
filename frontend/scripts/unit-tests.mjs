@@ -497,6 +497,18 @@ function testTabBarScrollsActiveTabAndShowsDriverIcons() {
   assert.match(app, /return <Database/)
 }
 
+function testTabsUseBoundedKeepAliveMounting() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  assert.match(app, /const MAX_MOUNTED_TABS = \d+/)
+  assert.match(app, /const \[mountedTabIds, setMountedTabIds\] = useState/)
+  assert.match(app, /next\.slice\(-MAX_MOUNTED_TABS\)/)
+  assert.match(app, /const shouldMountTab = useCallback/)
+  assert.match(app, /tabs\.filter\(\(t\) => t\.type === 'console' && shouldMountTab\(t\.id\)\)/)
+  assert.match(app, /tabs\.filter\(\(t\) => t\.type === 'table' && shouldMountTab\(t\.id\)\)/)
+  assert.match(app, /tabs\.filter\(\(t\) => t\.type === 'query' && shouldMountTab\(t\.id\)\)/)
+  assert.match(app, /tabs\.filter\(\(t\) => t\.type === 'dbviewer' && shouldMountTab\(t\.id\)\)/)
+}
+
 function testMongoCollectionInlineEditingUsesMongoApplier() {
   const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
   const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
@@ -672,6 +684,7 @@ testMongoCollectionTextModeHidesMySQLFormatToggle()
 testMongoTableViewerInfersCollectionFromConnectionKind()
 testTableTabsAndBreadcrumbIncludeConnectionName()
 testTabBarScrollsActiveTabAndShowsDriverIcons()
+testTabsUseBoundedKeepAliveMounting()
 testMongoCollectionInlineEditingUsesMongoApplier()
 testMongoCollectionFindQueryBuildsDatagripStyleFilterAndSort()
 testMongoFieldSuggestionsUseCollectionFields()

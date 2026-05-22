@@ -271,14 +271,14 @@ export default function App() {
       let queryResult
       try {
         if (!opts.multi && isPageableSql(sql)) {
-          const page = await runQueryPage(connIdRef.current, opts.dbName ?? '', sql, 0, DEFAULT_RESULT_PAGE_SIZE)
+          const page = await runQueryPage(connIdRef.current, opts.dbName ?? '', sql, 0, DEFAULT_RESULT_PAGE_SIZE, tabId)
           queryResult = appendResultPage(null, page, {
             offset: 0,
             pageSize: DEFAULT_RESULT_PAGE_SIZE,
             source: { sql, dbName: opts.dbName ?? '', pageSize: DEFAULT_RESULT_PAGE_SIZE },
           })
         } else {
-          queryResult = await runQuery(connIdRef.current, opts.dbName ?? '', sql)
+          queryResult = await runQuery(connIdRef.current, opts.dbName ?? '', sql, tabId)
         }
       } catch (err) {
         // Two separate hardening steps here:
@@ -354,7 +354,7 @@ export default function App() {
     const source = qr.source
     const offset = qr.nextOffset ?? qr.rows?.length ?? 0
     try {
-      const page = await runQueryPage(connIdRef.current, source.dbName ?? '', source.sql, offset, source.pageSize ?? DEFAULT_RESULT_PAGE_SIZE)
+      const page = await runQueryPage(connIdRef.current, source.dbName ?? '', source.sql, offset, source.pageSize ?? DEFAULT_RESULT_PAGE_SIZE, `${consoleId}:${resultId}:page`)
       setConsolesData((prev) => {
         const d = prev[consoleId]
         if (!d) return prev
@@ -418,7 +418,7 @@ export default function App() {
     const source = target.queryResult.source
     const nextSource = { ...source, pageSize }
     try {
-      const page = await runQueryPage(connIdRef.current, source.dbName ?? '', source.sql, 0, pageSize)
+      const page = await runQueryPage(connIdRef.current, source.dbName ?? '', source.sql, 0, pageSize, `${consoleId}:${resultId}:page-size`)
       setConsolesData((prev) => {
         const d = prev[consoleId]
         if (!d) return prev
@@ -790,6 +790,7 @@ export default function App() {
                           onRunQuery={(sql, meta) => handleRunQuery(sql, tab.id, meta)}
                           isRunning={data.isRunning}
                           connectionId={connIdRef.current}
+                          queryId={tab.id}
                           initialSql={tab.initialSql}
                           defaultDb={tab.defaultDb ?? connInfo?.database ?? ''}
                           connectionLabel={connInfo
@@ -833,6 +834,7 @@ export default function App() {
                         defaultView={tab.defaultView}
                         objectKind={tableObjectKind}
                         connectionKind={tableConnectionKind}
+                        isActive={activeTabId === tab.id}
                       />
                     </ErrorBoundary>
                   </div>

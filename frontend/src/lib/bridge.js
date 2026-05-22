@@ -62,20 +62,20 @@ function mockQueryResult(sql) {
  *   even with a connection pool.  Pass '' to skip.
  * @param {string} sql
  */
-export async function runQuery(connectionID, dbName, sql) {
+export async function runQuery(connectionID, dbName, sql, queryID = '') {
   if (isWails()) {
-    const { RunQuery } = await import('../../wailsjs/go/main/App.js')
-    return RunQuery(connectionID, dbName ?? '', sql)
+    const { RunQueryWithID } = await import('../../wailsjs/go/main/App.js')
+    return RunQueryWithID(queryID, connectionID, dbName ?? '', sql)
   }
   // Browser dev mock
   await delay(150 + Math.random() * 200)
   return mockQueryResult(sql)
 }
 
-export async function runQueryPage(connectionID, dbName, sql, offset = 0, limit = 100) {
+export async function runQueryPage(connectionID, dbName, sql, offset = 0, limit = 100, queryID = '') {
   if (isWails()) {
-    const { RunQueryPage } = await import('../../wailsjs/go/main/App.js')
-    return RunQueryPage(connectionID, dbName ?? '', sql, offset, limit)
+    const { RunQueryPageWithID } = await import('../../wailsjs/go/main/App.js')
+    return RunQueryPageWithID(queryID, connectionID, dbName ?? '', sql, offset, limit)
   }
   await delay(120 + Math.random() * 120)
   const mock = mockQueryResult(sql)
@@ -1255,10 +1255,10 @@ export async function clearQueryHistory(connectionID) {
 // Cancel running query
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function cancelQuery(connectionID) {
+export async function cancelQuery(queryID) {
   if (isWails()) {
     const { CancelQuery } = await import('../../wailsjs/go/main/App.js')
-    return CancelQuery(connectionID)
+    return CancelQuery(queryID)
   }
 }
 

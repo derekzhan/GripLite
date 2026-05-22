@@ -1376,9 +1376,16 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
         </div>
         <div className="flex-1 overflow-y-auto">
           {Array.from({ length: totalRows }).map((_, rowIdx) => {
-            const rowData  = columns.map((_, c) => getCellValue(c, rowIdx))
             const isAdded  = !!editState?.isAdded(rowIdx)
             const isDelRow = !!editState?.isDeleted(rowIdx)
+            const previewData = []
+            for (let c = 0; c < Math.min(columns.length, 3); c++) {
+              previewData.push(getCellValue(c, rowIdx))
+            }
+            const isAddedEmpty = isAdded && columns.every((_, c) => {
+              const v = getCellValue(c, rowIdx)
+              return v === null || v === undefined || v === ''
+            })
             return (
               <div
                 key={rowIdx}
@@ -1399,9 +1406,9 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
                   {rowIdx + 1}
                 </span>
                 <span className="truncate text-[12px]">
-                  {isAdded && rowData.every((v) => v === null || v === undefined || v === '')
+                  {isAddedEmpty
                     ? <span className="italic">new row</span>
-                    : rowPreview(rowData)}
+                    : rowPreview(previewData)}
                 </span>
               </div>
             )
@@ -1691,9 +1698,11 @@ export default function DataViewer({
     () => getVisibleColumnIndices(columns.length, hiddenCols),
     [columns.length, hiddenCols],
   )
+  const hasHiddenColumns = hiddenCols.size > 0
+  const needsNonEmptyColumnSet = showColPicker || showNonEmptyColumnsOnly
   const nonEmptyColumnSet = useMemo(() => {
-    return buildNonEmptyColumnSet(rows, columns)
-  }, [columns, rows])
+    return needsNonEmptyColumnSet ? buildNonEmptyColumnSet(rows, columns) : new Set()
+  }, [columns, rows, needsNonEmptyColumnSet])
   useEffect(() => {
     if (showNonEmptyColumnsOnly) {
       setHiddenCols((prev) => {
@@ -1715,13 +1724,13 @@ export default function DataViewer({
     [columns, visibleColumnIndices],
   )
   const allVisibleRows = useMemo(
-    () => projectVisibleRows(rows, visibleColumnIndices),
-    [rows, visibleColumnIndices],
+    () => (hasHiddenColumns ? projectVisibleRows(rows, visibleColumnIndices) : rows),
+    [hasHiddenColumns, rows, visibleColumnIndices],
   )
 
   const filteredSourceRows = useMemo(() => {
     if (!searchFilterRows || !searchCompiled.re) {
-      return rows.map((_, i) => i)
+      return null
     }
     const out = []
     for (let r = 0; r < rows.length; r++) {
@@ -1734,19 +1743,19 @@ export default function DataViewer({
     return out
   }, [rows, allVisibleRows, searchFilterRows, searchCompiled])
 
-  const filteredSourceSet = useMemo(() => new Set(filteredSourceRows), [filteredSourceRows])
-  const displayRows = searchFilterRows
-    ? filteredSourceRows.map((sourceRow) => rows[sourceRow]).filter(Boolean)
+  const filteredSourceSet = useMemo(() => filteredSourceRows ? new Set(filteredSourceRows) : null, [filteredSourceRows])
+  const displayRows = searchFilterRows && filteredSourceRows
+    ? (filteredSourceRows ?? []).map((sourceRow) => rows[sourceRow]).filter(Boolean)
     : rows
-  const visibleRows = searchFilterRows
-    ? filteredSourceRows.map((sourceRow) => allVisibleRows[sourceRow]).filter(Boolean)
+  const visibleRows = searchFilterRows && filteredSourceRows
+    ? (filteredSourceRows ?? []).map((sourceRow) => allVisibleRows[sourceRow]).filter(Boolean)
     : allVisibleRows
 
   const searchMatches = useMemo(() => {
     if (!searchCompiled.re) return []
     const out = []
     for (let r = 0; r < allVisibleRows.length; r++) {
-      if (searchFilterRows && !filteredSourceSet.has(r)) continue
+      if (searchFilterRows && !filteredSourceSet?.has(r)) continue
       for (let c = 0; c < visibleColumns.length; c++) {
         const value = allVisibleRows[r]?.[c]
         const text = value === null || value === undefined ? 'NULL' : String(value)
@@ -2007,7 +2016,7 @@ export default function DataViewer({
           {execMs !== undefined && <span>· {execMs} ms</span>}
           {mode === 'record' && !noColumns && !noRows && (
             <span className="text-fg-secondary">
-              · row {Math.min((searchFilterRows ? Math.max(0, filteredSourceRows.indexOf(selectedRow)) : selectedRow) + 1, displayRows.length)} of {displayRows.length}
+              · row {Math.min((searchFilterRows && filteredSourceRows ? Math.max(0, filteredSourceRows.indexOf(selectedRow)) : selectedRow) + 1, displayRows.length)} of {displayRows.length}
             </span>
           )}
         </span>
@@ -2098,7 +2107,7 @@ export default function DataViewer({
                 exportFilename={exportFilename}
                 searchMatchCells={searchMatchCells}
                 currentSearchMatch={currentSearchMatch}
-                sourceRowOrder={searchFilterRows ? filteredSourceRows : undefined}
+                sourceRowOrder={searchFilterRows && filteredSourceRows ? filteredSourceRows : undefined}
                 sourceColumnOrder={visibleColumnIndices}
                 onNearBottom={searchFilterRows ? undefined : onNearBottom}
               />
@@ -2110,8 +2119,8 @@ export default function DataViewer({
               <RecordView
                 columns={columns}
                 rows={displayRows}
-                selectedIdx={searchFilterRows ? Math.max(0, filteredSourceRows.indexOf(selectedRow)) : selectedRow}
-                onSelectIdx={(idx) => setSelectedRow(searchFilterRows ? (filteredSourceRows[idx] ?? 0) : idx)}
+                selectedIdx={searchFilterRows && filteredSourceRows ? Math.max(0, filteredSourceRows.indexOf(selectedRow)) : selectedRow}
+                onSelectIdx={(idx) => setSelectedRow(searchFilterRows && filteredSourceRows ? (filteredSourceRows[idx] ?? 0) : idx)}
                 editState={searchFilterRows ? null : editState}
               />
             )}

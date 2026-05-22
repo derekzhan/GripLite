@@ -623,6 +623,13 @@ func (a *App) ensureLive(connectionID string) (driver.DatabaseDriver, error) {
 //	if (result.error) { showError(result.error) }
 //	else { displayGrid(result.columns, result.rows) }
 func (a *App) RunQuery(connectionID, dbName, sql string) (*QueryResult, error) {
+	return a.RunQueryWithID(connectionID, connectionID, dbName, sql)
+}
+
+// RunQueryWithID executes a SQL statement and registers cancellation under
+// queryID. Different tabs can run queries on the same connection concurrently
+// without overwriting each other's cancel function.
+func (a *App) RunQueryWithID(queryID, connectionID, dbName, sql string) (*QueryResult, error) {
 	// Phase 16: transparently reopen a saved connection if it was not yet
 	// re-established after an app restart.
 	drv, err := a.ensureLive(connectionID)
@@ -650,12 +657,13 @@ func (a *App) RunQuery(connectionID, dbName, sql string) (*QueryResult, error) {
 	// and should only stop on user cancel or app shutdown.
 	cancelCtx, cancelFn := context.WithCancel(a.ctx)
 	defer cancelFn()
+	cancelKey := queryCancelKey(queryID, connectionID)
 	a.queryMu.Lock()
-	a.queryCancels[connectionID] = cancelFn
+	a.queryCancels[cancelKey] = cancelFn
 	a.queryMu.Unlock()
 	defer func() {
 		a.queryMu.Lock()
-		delete(a.queryCancels, connectionID)
+		delete(a.queryCancels, cancelKey)
 		a.queryMu.Unlock()
 	}()
 	ctx := cancelCtx
@@ -737,6 +745,11 @@ func (a *App) RunQuery(connectionID, dbName, sql string) (*QueryResult, error) {
 // The user SQL remains the inner query, so an explicit LIMIT/OFFSET written by
 // the user is preserved while GripLite adds an outer paging window.
 func (a *App) RunQueryPage(connectionID, dbName, sqlText string, offset, limit int) (*QueryResult, error) {
+	return a.RunQueryPageWithID(connectionID, connectionID, dbName, sqlText, offset, limit)
+}
+
+// RunQueryPageWithID is the paged-query variant of RunQueryWithID.
+func (a *App) RunQueryPageWithID(queryID, connectionID, dbName, sqlText string, offset, limit int) (*QueryResult, error) {
 	drv, err := a.ensureLive(connectionID)
 	if err != nil {
 		return nil, err
@@ -761,12 +774,13 @@ func (a *App) RunQueryPage(connectionID, dbName, sqlText string, offset, limit i
 	// automatic deadline. CancelQuery and app shutdown remain the cancellation paths.
 	cancelCtx, cancelFn := context.WithCancel(a.ctx)
 	defer cancelFn()
+	cancelKey := queryCancelKey(queryID, connectionID)
 	a.queryMu.Lock()
-	a.queryCancels[connectionID] = cancelFn
+	a.queryCancels[cancelKey] = cancelFn
 	a.queryMu.Unlock()
 	defer func() {
 		a.queryMu.Lock()
-		delete(a.queryCancels, connectionID)
+		delete(a.queryCancels, cancelKey)
 		a.queryMu.Unlock()
 	}()
 
@@ -809,6 +823,13 @@ func (a *App) RunQueryPage(connectionID, dbName, sqlText string, offset, limit i
 		RowsAffected: rs.RowsAffected,
 		ExecMs:       rs.ExecutionTime.Milliseconds(),
 	}, nil
+}
+
+func queryCancelKey(queryID, connectionID string) string {
+	if strings.TrimSpace(queryID) != "" {
+		return queryID
+	}
+	return connectionID
 }
 
 // FetchDatabases returns all database names visible to the given connection.
@@ -1761,14 +1782,14 @@ func (a *App) ClearQueryHistory(connID string) error {
 // Cancel running query
 // ─────────────────────────────────────────────────────────────────────────────
 
-// CancelQuery cancels the in-flight RunQuery for the given connection.
+// CancelQuery cancels the in-flight RunQuery for the given query ID.
 // Returns nil when a query was cancelled; returns an error if none was running.
-func (a *App) CancelQuery(connectionID string) error {
+func (a *App) CancelQuery(queryID string) error {
 	a.queryMu.Lock()
-	fn, ok := a.queryCancels[connectionID]
+	fn, ok := a.queryCancels[queryID]
 	a.queryMu.Unlock()
 	if !ok {
-		return fmt.Errorf("no running query for connection %q", connectionID)
+		return fmt.Errorf("no running query for %q", queryID)
 	}
 	fn()
 	return nil

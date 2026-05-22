@@ -3587,7 +3587,7 @@ function DataView({ tableName, dbName, connId, schema, objectKind = 'table' }) {
  * Falls back to getMockSchema when the cache is not yet synced (found=false).
  * In that case a badge on the Properties tab signals that data is stale.
  */
-function useTableSchema(connId, dbName, tableName) {
+function useTableSchema(connId, dbName, tableName, isActive = true) {
   const [schemaState, setSchemaState] = useState({
     schema:    getMockSchema(tableName), // optimistic default while loading
     loading:   true,
@@ -3601,12 +3601,12 @@ function useTableSchema(connId, dbName, tableName) {
 
   useEffect(() => {
     const onVisibilityChange = () => {
-      if (document.visibilityState !== 'visible') return
+      if (!isActive || document.visibilityState !== 'visible') return
       reload()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [reload])
+  }, [isActive, reload])
 
   useEffect(() => {
     let cancelled = false   // ← local closure flag, never shared across renders
@@ -3690,10 +3690,15 @@ function useTableSchema(connId, dbName, tableName) {
  *   This prop is consumed once on mount; subsequent changes are ignored
  *   because the component owns its own tab state after that.
  */
-export default function TableViewer({ tableName = 'users', dbName = 'db1', connId = 'mock-conn', connectionName = '', defaultView, objectKind = 'table', connectionKind = 'mysql' }) {
+export default function TableViewer({ tableName = 'users', dbName = 'db1', connId = 'mock-conn', connectionName = '', defaultView, objectKind = 'table', connectionKind = 'mysql', isActive = true }) {
   const isCollection = objectKind === 'collection' || connectionKind === 'mongodb'
   const [mainTab, setMainTab] = useState(defaultView === 'data' || isCollection ? 'data' : 'properties')
-  const { schema, loading: schemaLoading, fromCache, reload: reloadSchema } = useTableSchema(connId, dbName, tableName)
+  const [hasVisitedData, setHasVisitedData] = useState(defaultView === 'data' || isCollection)
+  const { schema, loading: schemaLoading, fromCache, reload: reloadSchema } = useTableSchema(connId, dbName, tableName, isActive)
+
+  useEffect(() => {
+    if (mainTab === 'data') setHasVisitedData(true)
+  }, [mainTab])
 
   const TabBtn = ({ id, label, badge }) => (
     <button
@@ -3757,9 +3762,11 @@ export default function TableViewer({ tableName = 'users', dbName = 'db1', connI
           />
         </div>
       )}
-      <div className="flex-1 overflow-hidden" style={{ display: mainTab === 'data' ? 'flex' : 'none', flexDirection: 'column' }}>
-        <DataView tableName={tableName} dbName={dbName} connId={connId} schema={schema} objectKind={objectKind} />
-      </div>
+      {hasVisitedData && (
+        <div className="flex-1 overflow-hidden" style={{ display: mainTab === 'data' ? 'flex' : 'none', flexDirection: 'column' }}>
+          <DataView tableName={tableName} dbName={dbName} connId={connId} schema={schema} objectKind={objectKind} />
+        </div>
+      )}
     </div>
   )
 }

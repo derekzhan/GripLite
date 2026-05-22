@@ -509,6 +509,44 @@ function testTabsUseBoundedKeepAliveMounting() {
   assert.match(app, /tabs\.filter\(\(t\) => t\.type === 'dbviewer' && shouldMountTab\(t\.id\)\)/)
 }
 
+function testConsoleQueriesUseTabScopedQueryIds() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
+  const sqlEditor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
+
+  assert.match(bridge, /export async function runQuery\(connectionID, dbName, sql, queryID = ''\)/)
+  assert.match(bridge, /RunQueryWithID\(queryID, connectionID, dbName \?\? '', sql\)/)
+  assert.match(bridge, /export async function cancelQuery\(queryID\)/)
+  assert.match(app, /runQuery\(connIdRef\.current, opts\.dbName \?\? '', sql, tabId\)/)
+  assert.match(app, /runQueryPage\(connIdRef\.current, opts\.dbName \?\? '', sql, 0, DEFAULT_RESULT_PAGE_SIZE, tabId\)/)
+  assert.match(app, /queryId=\{tab\.id\}/)
+  assert.match(sqlEditor, /queryId/)
+  assert.match(sqlEditor, /cancelQuery\(queryId \|\| connectionId\)/)
+}
+
+function testTableDataViewAndSchemaRefreshAreActiveOnly() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+
+  assert.match(app, /isActive=\{activeTabId === tab\.id\}/)
+  assert.match(tableViewer, /isActive = true/)
+  assert.match(tableViewer, /useTableSchema\(connId, dbName, tableName, isActive\)/)
+  assert.match(tableViewer, /if \(!isActive \|\| document\.visibilityState !== 'visible'\) return/)
+  assert.match(tableViewer, /hasVisitedData/)
+  assert.match(tableViewer, /setHasVisitedData\(true\)/)
+  assert.match(tableViewer, /\{hasVisitedData && \(/)
+}
+
+function testDataViewerAvoidsIdleFullTableScans() {
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+  assert.match(dataViewer, /const needsNonEmptyColumnSet = showColPicker \|\| showNonEmptyColumnsOnly/)
+  assert.match(dataViewer, /needsNonEmptyColumnSet\s*\?\s*buildNonEmptyColumnSet\(rows, columns\)\s*:\s*new Set\(\)/m)
+  assert.match(dataViewer, /const hasHiddenColumns = hiddenCols\.size > 0/)
+  assert.match(dataViewer, /hasHiddenColumns \? projectVisibleRows\(rows, visibleColumnIndices\) : rows/)
+  assert.match(dataViewer, /return null\s*\n\s*\}/)
+  assert.match(dataViewer, /const filteredSourceSet = useMemo\(\(\) => filteredSourceRows \? new Set\(filteredSourceRows\) : null/)
+}
+
 function testMongoCollectionInlineEditingUsesMongoApplier() {
   const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
   const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
@@ -685,6 +723,9 @@ testMongoTableViewerInfersCollectionFromConnectionKind()
 testTableTabsAndBreadcrumbIncludeConnectionName()
 testTabBarScrollsActiveTabAndShowsDriverIcons()
 testTabsUseBoundedKeepAliveMounting()
+testConsoleQueriesUseTabScopedQueryIds()
+testTableDataViewAndSchemaRefreshAreActiveOnly()
+testDataViewerAvoidsIdleFullTableScans()
 testMongoCollectionInlineEditingUsesMongoApplier()
 testMongoCollectionFindQueryBuildsDatagripStyleFilterAndSort()
 testMongoFieldSuggestionsUseCollectionFields()

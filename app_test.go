@@ -82,6 +82,17 @@ func (d *blockingQueryDriver) ExecuteQueryOnDB(ctx context.Context, dbName, quer
 func (d *blockingQueryDriver) Kind() driver.DriverKind { return driver.DriverMySQL }
 func (d *blockingQueryDriver) ServerVersion() string   { return "8.0-test" }
 
+type multiBlockingQueryDriver struct {
+	queryContextDriver
+	started chan string
+}
+
+func (d *multiBlockingQueryDriver) ExecuteQueryOnDB(ctx context.Context, dbName, query string) (*driver.ResultSet, error) {
+	d.started <- query
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 type slowPingDriver struct {
 	queryContextDriver
 	pingStarted chan struct{}
@@ -310,5 +321,68 @@ func TestCancelQueryCancelsRunningQuery(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("RunQuery did not return after CancelQuery")
+	}
+}
+
+func TestCancelQueryUsesQueryIDSoSameConnectionQueriesCanRunConcurrently(t *testing.T) {
+	drv := &multiBlockingQueryDriver{started: make(chan string, 2)}
+	app := appWithDriver("conn-1", drv)
+	q1Done := make(chan *QueryResult, 1)
+	q2Done := make(chan *QueryResult, 1)
+
+	go func() {
+		result, err := app.RunQueryWithID("tab-1", "conn-1", "shop", "SELECT SLEEP(100)")
+		if err != nil {
+			q1Done <- &QueryResult{Error: err.Error()}
+			return
+		}
+		q1Done <- result
+	}()
+	go func() {
+		result, err := app.RunQueryWithID("tab-2", "conn-1", "shop", "SELECT SLEEP(100)")
+		if err != nil {
+			q2Done <- &QueryResult{Error: err.Error()}
+			return
+		}
+		q2Done <- result
+	}()
+
+	started := 0
+	for started < 2 {
+		select {
+		case <-drv.started:
+			started++
+		case <-time.After(time.Second):
+			t.Fatal("both queries did not start")
+		}
+	}
+
+	if err := app.CancelQuery("tab-1"); err != nil {
+		t.Fatalf("CancelQuery(tab-1) returned error: %v", err)
+	}
+	select {
+	case result := <-q1Done:
+		if result == nil || result.Error == "" {
+			t.Fatalf("expected canceled tab-1 query to return an error, got %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tab-1 query did not cancel")
+	}
+	select {
+	case result := <-q2Done:
+		t.Fatalf("tab-2 query should still be running, got %#v", result)
+	default:
+	}
+
+	if err := app.CancelQuery("tab-2"); err != nil {
+		t.Fatalf("CancelQuery(tab-2) returned error: %v", err)
+	}
+	select {
+	case result := <-q2Done:
+		if result == nil || result.Error == "" {
+			t.Fatalf("expected canceled tab-2 query to return an error, got %#v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tab-2 query did not cancel")
 	}
 }

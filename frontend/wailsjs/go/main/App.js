@@ -198,6 +198,14 @@ export function RunQueryPage(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['RunQueryPage'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function RunQueryPageWithID(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['RunQueryPageWithID'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function RunQueryWithID(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['RunQueryWithID'](arg1, arg2, arg3, arg4);
+}
+
 export function SaveConnection(arg1) {
   return window['go']['main']['App']['SaveConnection'](arg1);
 }

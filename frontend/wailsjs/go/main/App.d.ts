@@ -104,6 +104,10 @@ export function RunQuery(arg1:string,arg2:string,arg3:string):Promise<main.Query
 
 export function RunQueryPage(arg1:string,arg2:string,arg3:string,arg4:number,arg5:number):Promise<main.QueryResult>;
 
+export function RunQueryPageWithID(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number):Promise<main.QueryResult>;
+
+export function RunQueryWithID(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.QueryResult>;
+
 export function SaveConnection(arg1:store.SavedConnection):Promise<void>;
 
 export function SaveTextFile(arg1:string,arg2:string):Promise<string>;

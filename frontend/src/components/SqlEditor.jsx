@@ -346,6 +346,7 @@ export default function SqlEditor({
   onRunQuery,
   isRunning = false,
   connectionId = 'mock-conn',
+  queryId = '',
   initialSql,
   defaultDb = '',
   connectionLabel = '',
@@ -1013,8 +1014,8 @@ export default function SqlEditor({
   // ── Cancel running query ────────────────────────────────────────────────
   const handleCancelQuery = useCallback(async () => {
     if (!connectionId) return
-    try { await cancelQuery(connectionId) } catch { /* ignore */ }
-  }, [connectionId])
+    try { await cancelQuery(queryId || connectionId) } catch { /* ignore */ }
+  }, [connectionId, queryId])
 
   return (
     <div className="flex flex-col h-full bg-app">

@@ -524,6 +524,21 @@ function testConsoleQueriesUseTabScopedQueryIds() {
   assert.match(sqlEditor, /cancelQuery\(queryId \|\| connectionId\)/)
 }
 
+function testSqlConsoleResultEditsCanBeSavedForSimpleSelects() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const resultPanel = readFileSync(new URL('../src/components/ResultPanel.jsx', import.meta.url), 'utf8')
+
+  assert.match(app, /source: \{ sql, dbName: opts\.dbName \?\? '', connId: connIdRef\.current, pageSize: DEFAULT_RESULT_PAGE_SIZE \}/)
+  assert.match(app, /connectionId=\{activeResult\?\.queryResult\?\.source\?\.connId \?\? connIdRef\.current\}/)
+  assert.match(resultPanel, /import \{ applyChanges \} from '\.\.\/lib\/bridge'/)
+  assert.match(resultPanel, /function inferSimpleSelectTarget\(sql, columns, fallbackDb = ''\)/)
+  assert.match(resultPanel, /const canSaveQueryEdits = !!queryEditTarget && !!connectionId/)
+  assert.match(resultPanel, /const handleSaveQueryEdits = useCallback\(async \(\) =>/)
+  assert.match(resultPanel, /editState\.buildChangeSet\(\{\s*connectionId,\s*database: queryEditTarget\.dbName,\s*tableName: queryEditTarget\.tableName,\s*primaryKey: queryEditTarget\.primaryKey,/m)
+  assert.match(resultPanel, /const result = await applyChanges\(changeSet\)/)
+  assert.match(resultPanel, /onSave=\{canSaveQueryEdits \? handleSaveQueryEdits : undefined\}/)
+}
+
 function testTableDataViewAndSchemaRefreshAreActiveOnly() {
   const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
   const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
@@ -724,6 +739,7 @@ testTableTabsAndBreadcrumbIncludeConnectionName()
 testTabBarScrollsActiveTabAndShowsDriverIcons()
 testTabsUseBoundedKeepAliveMounting()
 testConsoleQueriesUseTabScopedQueryIds()
+testSqlConsoleResultEditsCanBeSavedForSimpleSelects()
 testTableDataViewAndSchemaRefreshAreActiveOnly()
 testDataViewerAvoidsIdleFullTableScans()
 testMongoCollectionInlineEditingUsesMongoApplier()

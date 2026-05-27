@@ -1,7 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import PagedResultViewer from './PagedResultViewer'
 import { useEditState } from '../hooks/useEditState'
+import { applyChanges } from '../lib/bridge'
+import { normalizeError } from '../lib/errors'
 import { DEFAULT_PAGE_SIZE } from '../lib/queryPaging'
+import { toast } from '../lib/toast'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pagination helpers
@@ -11,6 +14,67 @@ import { DEFAULT_PAGE_SIZE } from '../lib/queryPaging'
 // ResultPanel
 // ─────────────────────────────────────────────────────────────────────────────
 const STATUS_TABS = ['Result', 'Messages', 'Plan']
+
+function unquoteIdentifier(identifier) {
+  const text = String(identifier ?? '').trim()
+  if (!text) return ''
+  if ((text.startsWith('`') && text.endsWith('`')) || (text.startsWith('"') && text.endsWith('"'))) {
+    return text.slice(1, -1).replace(/``/g, '`').replace(/""/g, '"')
+  }
+  return text
+}
+
+function splitQualifiedIdentifier(identifier) {
+  const parts = []
+  let current = ''
+  let quote = ''
+  for (const ch of String(identifier ?? '').trim()) {
+    if (quote) {
+      current += ch
+      if (ch === quote) quote = ''
+      continue
+    }
+    if (ch === '`' || ch === '"') {
+      quote = ch
+      current += ch
+      continue
+    }
+    if (ch === '.') {
+      parts.push(current.trim())
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (current.trim()) parts.push(current.trim())
+  return parts.map(unquoteIdentifier).filter(Boolean)
+}
+
+function inferPrimaryKey(columns) {
+  const explicit = columns.find((col) => col?.isPrimaryKey || col?.key === 'PRI')
+  if (explicit?.name) return explicit.name
+  const id = columns.find((col) => String(col?.name ?? '').toLowerCase() === 'id')
+  return id?.name ?? ''
+}
+
+function inferSimpleSelectTarget(sql, columns, fallbackDb = '') {
+  const text = String(sql ?? '').trim().replace(/;+$/g, '')
+  if (!/^select\b/i.test(text)) return null
+  if (/\b(join|union)\b/i.test(text)) return null
+
+  const match = text.match(/\bfrom\s+((?:`[^`]+`|"[^"]+"|[A-Za-z_][\w$]*)(?:\s*\.\s*(?:`[^`]+`|"[^"]+"|[A-Za-z_][\w$]*))?)/i)
+  if (!match) return null
+
+  const afterFrom = text.slice(match.index + match[0].length)
+  if (/^\s*,/.test(afterFrom)) return null
+
+  const parts = splitQualifiedIdentifier(match[1])
+  const tableName = parts.length === 2 ? parts[1] : parts[0]
+  const dbName = parts.length === 2 ? parts[0] : fallbackDb
+  const primaryKey = inferPrimaryKey(columns)
+  if (!tableName || !primaryKey) return null
+  return { dbName, tableName, primaryKey }
+}
 
 /**
  * @param {object} props
@@ -36,6 +100,8 @@ export default function ResultPanel({
   onSelectResult,
   onLoadMore,
   onPageSizeChange,
+  connectionId = '',
+  fallbackDb = '',
 }) {
   const [activeTab,    setActiveTab]    = useState('Result')
   const [fetchStats,   setFetchStats]   = useState(null)
@@ -87,6 +153,41 @@ export default function ResultPanel({
   // ── Edit state (Phase 6.8) ─────────────────────────────────────────────
   // queryResult is used as resetKey: every new query clears all pending edits.
   const editState = useEditState(cols, allRows, queryResult)
+  const queryEditTarget = useMemo(
+    () => inferSimpleSelectTarget(queryResult?.source?.sql, cols, queryResult?.source?.dbName || queryResult?.dbName || fallbackDb),
+    [cols, fallbackDb, queryResult?.dbName, queryResult?.source?.dbName, queryResult?.source?.sql],
+  )
+  const canSaveQueryEdits = !!queryEditTarget && !!connectionId
+  const handleSaveQueryEdits = useCallback(async () => {
+    if (!queryEditTarget || !connectionId || !editState.isDirty) return
+    const changeSet = editState.buildChangeSet({
+      connectionId,
+      database: queryEditTarget.dbName,
+      tableName: queryEditTarget.tableName,
+      primaryKey: queryEditTarget.primaryKey,
+    })
+    if (!changeSet) return
+
+    try {
+      const result = await applyChanges(changeSet)
+      if (result?.error) {
+        toast.error(`Save failed: ${result.error}`)
+        return
+      }
+      toast.success('Saved changes')
+      if (onPageSizeChange && queryResult?.source) {
+        const reloadSize = Math.max(
+          queryResult.rows?.length ?? 0,
+          queryResult.pageSize ?? queryResult.source.pageSize ?? DEFAULT_PAGE_SIZE,
+        )
+        await onPageSizeChange(reloadSize)
+      } else {
+        editState.clear()
+      }
+    } catch (err) {
+      toast.error(`Save failed: ${normalizeError(err)}`)
+    }
+  }, [connectionId, editState, onPageSizeChange, queryEditTarget, queryResult])
 
   return (
     <div className="flex flex-col h-full bg-app border-t border-line">
@@ -213,16 +314,13 @@ export default function ResultPanel({
                 onPageSizeChange={queryResult.source ? onPageSizeChange : undefined}
                 exportFilename="query_result.csv"
                 fetchStats={fetchStats}
-                editState={editState}
-                isDirty={editState.isDirty}
-                hasSelection={editState.selectedRow !== null}
-                onAddRow={editState.addRow}
-                onDuplicateRow={() => editState.duplicateRow()}
-                onDeleteRow={() => editState.deleteRow()}
-                // Ad-hoc query results (possibly joins / aliases) lack a
-                // single owning table, so inline-save is disabled here.
-                // Open the table via the Explorer to get an editable grid.
-                onSave={undefined}
+                editState={canSaveQueryEdits ? editState : undefined}
+                isDirty={canSaveQueryEdits && editState.isDirty}
+                hasSelection={canSaveQueryEdits && editState.selectedRow !== null}
+                onAddRow={canSaveQueryEdits ? editState.addRow : undefined}
+                onDuplicateRow={canSaveQueryEdits ? () => editState.duplicateRow() : undefined}
+                onDeleteRow={canSaveQueryEdits ? () => editState.deleteRow() : undefined}
+                onSave={canSaveQueryEdits ? handleSaveQueryEdits : undefined}
                 onCancel={editState.cancel}
               />
             )}

@@ -275,7 +275,7 @@ export default function App() {
           queryResult = appendResultPage(null, page, {
             offset: 0,
             pageSize: DEFAULT_RESULT_PAGE_SIZE,
-            source: { sql, dbName: opts.dbName ?? '', pageSize: DEFAULT_RESULT_PAGE_SIZE },
+            source: { sql, dbName: opts.dbName ?? '', connId: connIdRef.current, pageSize: DEFAULT_RESULT_PAGE_SIZE },
           })
         } else {
           queryResult = await runQuery(connIdRef.current, opts.dbName ?? '', sql, tabId)
@@ -354,7 +354,7 @@ export default function App() {
     const source = qr.source
     const offset = qr.nextOffset ?? qr.rows?.length ?? 0
     try {
-      const page = await runQueryPage(connIdRef.current, source.dbName ?? '', source.sql, offset, source.pageSize ?? DEFAULT_RESULT_PAGE_SIZE, `${consoleId}:${resultId}:page`)
+      const page = await runQueryPage(source.connId ?? connIdRef.current, source.dbName ?? '', source.sql, offset, source.pageSize ?? DEFAULT_RESULT_PAGE_SIZE, `${consoleId}:${resultId}:page`)
       setConsolesData((prev) => {
         const d = prev[consoleId]
         if (!d) return prev
@@ -418,7 +418,7 @@ export default function App() {
     const source = target.queryResult.source
     const nextSource = { ...source, pageSize }
     try {
-      const page = await runQueryPage(connIdRef.current, source.dbName ?? '', source.sql, 0, pageSize, `${consoleId}:${resultId}:page-size`)
+      const page = await runQueryPage(source.connId ?? connIdRef.current, source.dbName ?? '', source.sql, 0, pageSize, `${consoleId}:${resultId}:page-size`)
       setConsolesData((prev) => {
         const d = prev[consoleId]
         if (!d) return prev
@@ -804,6 +804,8 @@ export default function App() {
                           isRunning={data.isRunning}
                           resultSets={data.resultSets}
                           activeResultId={activeResult?.id ?? null}
+                          connectionId={activeResult?.queryResult?.source?.connId ?? connIdRef.current}
+                          fallbackDb={connInfo?.database ?? ''}
                           onSelectResult={(rid) => handleSelectResult(tab.id, rid)}
                           onLoadMore={() => activeResult?.id && handleLoadNextResultPage(tab.id, activeResult.id)}
                           onPageSizeChange={(size) => activeResult?.id && handleResultPageSizeChange(tab.id, activeResult.id, size)}

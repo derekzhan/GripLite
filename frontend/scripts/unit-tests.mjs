@@ -539,6 +539,13 @@ function testSqlConsoleResultEditsCanBeSavedForSimpleSelects() {
   assert.match(resultPanel, /onSave=\{canSaveQueryEdits \? handleSaveQueryEdits : undefined\}/)
 }
 
+function testValuePanelSyncsMonacoReadOnlyWhenEditabilityChanges() {
+  const valuePanel = readFileSync(new URL('../src/components/ValuePanel.jsx', import.meta.url), 'utf8')
+  assert.match(valuePanel, /editorRef\.current\?\.updateOptions\(\{\s*readOnly:\s*!editable,\s*domReadOnly:\s*!editable,/m)
+  assert.match(valuePanel, /renderLineHighlight:\s*editable \? 'line' : 'none'/)
+  assert.match(valuePanel, /\}, \[editable\]\)/)
+}
+
 function testTableDataViewAndSchemaRefreshAreActiveOnly() {
   const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
   const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
@@ -740,6 +747,7 @@ testTabBarScrollsActiveTabAndShowsDriverIcons()
 testTabsUseBoundedKeepAliveMounting()
 testConsoleQueriesUseTabScopedQueryIds()
 testSqlConsoleResultEditsCanBeSavedForSimpleSelects()
+testValuePanelSyncsMonacoReadOnlyWhenEditabilityChanges()
 testTableDataViewAndSchemaRefreshAreActiveOnly()
 testDataViewerAvoidsIdleFullTableScans()
 testMongoCollectionInlineEditingUsesMongoApplier()

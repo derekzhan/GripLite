@@ -176,10 +176,17 @@ export default function ValuePanel({ value, columnName, rowIndex, onClose, editS
   const onEditorMount = useCallback((editor, monaco) => {
     editorRef.current = editor
     monacoRef.current = monaco
-    if (!editable || !monaco) return
-    // Cmd/Ctrl+S inside the editor commits the draft and keeps the panel open.
+    if (!monaco) return
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
       commitDraftRef.current?.()
+    })
+  }, [])
+
+  useEffect(() => {
+    editorRef.current?.updateOptions({
+      readOnly: !editable,
+      domReadOnly: !editable,
+      renderLineHighlight: editable ? 'line' : 'none',
     })
   }, [editable])
 

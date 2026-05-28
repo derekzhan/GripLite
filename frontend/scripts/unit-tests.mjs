@@ -627,6 +627,12 @@ function testTableViewerDoesNotExposeMockBadgeInReleaseUI() {
   assert.doesNotMatch(tableViewer, /badge=\{\s*schemaLoading \? '…'\s*:\s*fromCache\s*\?\s*null\s*:\s*'[^']*mock[^']*'/m)
 }
 
+function testTableViewerDataTabDoesNotShowStaticRowBadge() {
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(tableViewer, /<TabBtn id="data" label="Data" badge="100 rows" \/>/)
+  assert.match(tableViewer, /<TabBtn id="data" label="Data" \/>/)
+}
+
 function testTableViewerFallbackSchemaHasUsefulColumnsForUnknownTables() {
   const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
   assert.match(tableViewer, /function genericFallbackColumns\(\)/)
@@ -842,6 +848,7 @@ testResultPanelPreservesValuePanelOpenStateAcrossRuns()
 testValuePanelSyncsMonacoReadOnlyWhenEditabilityChanges()
 testTableDataViewAndSchemaRefreshAreActiveOnly()
 testTableViewerDoesNotExposeMockBadgeInReleaseUI()
+testTableViewerDataTabDoesNotShowStaticRowBadge()
 testTableViewerFallbackSchemaHasUsefulColumnsForUnknownTables()
 testDataViewerAvoidsIdleFullTableScans()
 testMongoCollectionInlineEditingUsesMongoApplier()

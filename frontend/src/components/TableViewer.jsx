@@ -3764,7 +3764,7 @@ export default function TableViewer({ tableName = 'users', dbName = 'db1', connI
             }
           />
         )}
-        <TabBtn id="data" label="Data" badge="100 rows" />
+        <TabBtn id="data" label="Data" />
       </div>
 
       {/* Tab content — BOTH panels stay mounted; only CSS visibility changes.

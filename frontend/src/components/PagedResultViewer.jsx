@@ -40,6 +40,10 @@ export default function PagedResultViewer({
   onModeChange,
   initialTextFormat,
   textFormatOptions,
+  valuePanelOpen,
+  onValuePanelOpenChange,
+  valuePanelCell,
+  onValuePanelCellChange,
 }) {
   const statusLabel = makeStatus({
     shown: rows.length,
@@ -66,6 +70,10 @@ export default function PagedResultViewer({
           onModeChange={onModeChange}
           initialTextFormat={initialTextFormat}
           textFormatOptions={textFormatOptions}
+          valuePanelOpen={valuePanelOpen}
+          onValuePanelOpenChange={onValuePanelOpenChange}
+          valuePanelCell={valuePanelCell}
+          onValuePanelCellChange={onValuePanelCellChange}
         />
       </div>
       <ActionFooter

@@ -4,6 +4,7 @@ import { useEditState } from '../hooks/useEditState'
 import { applyChanges } from '../lib/bridge'
 import { normalizeError } from '../lib/errors'
 import { DEFAULT_PAGE_SIZE } from '../lib/queryPaging'
+import { stripLeadingSqlComments } from '../lib/sqlText'
 import { toast } from '../lib/toast'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,7 +59,7 @@ function inferPrimaryKey(columns) {
 }
 
 function inferSimpleSelectTarget(sql, columns, fallbackDb = '') {
-  const text = String(sql ?? '').trim().replace(/;+$/g, '')
+  const text = stripLeadingSqlComments(sql).replace(/;+$/g, '')
   if (!/^select\b/i.test(text)) return null
   if (/\b(join|union)\b/i.test(text)) return null
 
@@ -105,6 +106,7 @@ export default function ResultPanel({
 }) {
   const [activeTab,    setActiveTab]    = useState('Result')
   const [fetchStats,   setFetchStats]   = useState(null)
+  const [valuePanelStateByResult, setValuePanelStateByResult] = useState({})
 
   // ── Timing tracking ────────────────────────────────────────────────────
   // Record the JS-side start time when isRunning flips to true, then compute
@@ -153,9 +155,30 @@ export default function ResultPanel({
   // ── Edit state (Phase 6.8) ─────────────────────────────────────────────
   // queryResult is used as resetKey: every new query clears all pending edits.
   const editState = useEditState(cols, allRows, queryResult)
+  const activeResultEntry = Array.isArray(resultSets)
+    ? (resultSets.find((entry) => entry.id === activeResultId) ?? resultSets[resultSets.length - 1])
+    : null
+  const activeResultIndex = Array.isArray(resultSets)
+    ? resultSets.findIndex((entry) => entry.id === activeResultEntry?.id)
+    : 0
+  const activeResultPanelKey = String(Math.max(activeResultIndex, 0))
+  const valuePanelState = valuePanelStateByResult[activeResultPanelKey] ?? {}
+  const setActiveValuePanelOpen = useCallback((open) => {
+    setValuePanelStateByResult((prev) => ({
+      ...prev,
+      [activeResultPanelKey]: { ...prev[activeResultPanelKey], open },
+    }))
+  }, [activeResultPanelKey])
+  const setActiveValuePanelCell = useCallback((cell) => {
+    setValuePanelStateByResult((prev) => ({
+      ...prev,
+      [activeResultPanelKey]: { ...prev[activeResultPanelKey], cell },
+    }))
+  }, [activeResultPanelKey])
+  const activeResultSql = activeResultEntry?.sql ?? ''
   const queryEditTarget = useMemo(
-    () => inferSimpleSelectTarget(queryResult?.source?.sql, cols, queryResult?.source?.dbName || queryResult?.dbName || fallbackDb),
-    [cols, fallbackDb, queryResult?.dbName, queryResult?.source?.dbName, queryResult?.source?.sql],
+    () => inferSimpleSelectTarget(queryResult?.source?.sql ?? activeResultSql, cols, queryResult?.source?.dbName || queryResult?.dbName || fallbackDb),
+    [activeResultSql, cols, fallbackDb, queryResult?.dbName, queryResult?.source?.dbName, queryResult?.source?.sql],
   )
   const canSaveQueryEdits = !!queryEditTarget && !!connectionId
   const handleSaveQueryEdits = useCallback(async () => {
@@ -322,6 +345,10 @@ export default function ResultPanel({
                 onDeleteRow={canSaveQueryEdits ? () => editState.deleteRow() : undefined}
                 onSave={canSaveQueryEdits ? handleSaveQueryEdits : undefined}
                 onCancel={editState.cancel}
+                valuePanelOpen={!!valuePanelState.open}
+                onValuePanelOpenChange={setActiveValuePanelOpen}
+                valuePanelCell={valuePanelState.cell ?? null}
+                onValuePanelCellChange={setActiveValuePanelCell}
               />
             )}
           </>

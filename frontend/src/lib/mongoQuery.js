@@ -2,15 +2,17 @@ export function escapeMongoCollectionName(name) {
   return String(name).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
 }
 
+export const DEFAULT_MONGO_SORT = '{ _id: -1 }'
+
 export function normalizeMongoObjectInput(input, fallback = '{}') {
   const trimmed = String(input ?? '').trim()
   return trimmed || fallback
 }
 
-export function buildMongoCollectionFindQuery(tableName, pageSize, offset = 0, filter = '{}', sort = '') {
+export function buildMongoCollectionFindQuery(tableName, pageSize, offset = 0, filter = '{}', sort = DEFAULT_MONGO_SORT) {
   const coll = escapeMongoCollectionName(tableName)
   const find = normalizeMongoObjectInput(filter, '{}')
-  const sortDoc = normalizeMongoObjectInput(sort, '')
+  const sortDoc = normalizeMongoObjectInput(sort, DEFAULT_MONGO_SORT)
   const sortClause = sortDoc ? `.sort(${sortDoc})` : ''
   const skip = offset > 0 ? `.skip(${offset})` : ''
   return `db.getCollection("${coll}").find(${find})${sortClause}${skip}.limit(${pageSize})`

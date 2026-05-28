@@ -199,6 +199,13 @@ function sameSet(a, b) {
   return true
 }
 
+function samePanelCell(a, b) {
+  return a?.col === b?.col
+    && a?.row === b?.row
+    && a?.colName === b?.colName
+    && Object.is(a?.value, b?.value)
+}
+
 /**
  * GridCanvas — canvas grid with integrated column-header sort.
  *
@@ -690,10 +697,29 @@ function GridWithPanel({
   sourceRowOrder,
   sourceColumnOrder,
   onNearBottom,
+  valuePanelOpen,
+  onValuePanelOpenChange,
+  valuePanelCell,
+  onValuePanelCellChange,
 }) {
-  const [panelOpen,  setPanelOpen]  = useState(false)
+  const defaultPanelCell = { col: 0, row: 0, value: null, colName: '' }
+  const isPanelOpenControlled = typeof valuePanelOpen === 'boolean'
+  const [internalPanelOpen, setInternalPanelOpen] = useState(false)
+  const panelOpen = isPanelOpenControlled ? valuePanelOpen : internalPanelOpen
+  const setPanelOpen = useCallback((next) => {
+    const resolved = typeof next === 'function' ? next(panelOpen) : next
+    if (!isPanelOpenControlled) setInternalPanelOpen(resolved)
+    onValuePanelOpenChange?.(resolved)
+  }, [isPanelOpenControlled, onValuePanelOpenChange, panelOpen])
   const [panelWidth, setPanelWidth] = useState(340)
-  const [panelCell,  setPanelCell]  = useState({ col: 0, row: 0, value: null, colName: '' })
+  const isPanelCellControlled = valuePanelCell !== undefined
+  const [internalPanelCell, setInternalPanelCell] = useState(defaultPanelCell)
+  const panelCell = isPanelCellControlled ? (valuePanelCell ?? defaultPanelCell) : internalPanelCell
+  const setPanelCell = useCallback((next) => {
+    const resolved = typeof next === 'function' ? next(panelCell) : next
+    if (!isPanelCellControlled) setInternalPanelCell(resolved)
+    onValuePanelCellChange?.(resolved)
+  }, [isPanelCellControlled, onValuePanelCellChange, panelCell])
 
   // ── Row colours (user-assigned) ─────────────────────────────────────────
   const [rowColors, setRowColors] = useState(() => new Map())
@@ -759,6 +785,41 @@ function GridWithPanel({
     const colName = columns[col]?.name ?? `col_${col}`
     setPanelCell({ col: sourceCol, row, value, colName })
   }, [rows, columns, onSelectRow, editState, mapDisplayCol])
+
+  const resolvePanelCell = useCallback((cell) => {
+    const row = Math.min(
+      Math.max(Number.isInteger(cell?.row) ? cell.row : 0, 0),
+      Math.max(rows.length - 1, 0),
+    )
+    const displayColByName = columns.findIndex((col) => col?.name === cell?.colName)
+    let displayCol = displayColByName
+    if (displayCol < 0) {
+      const sourceCol = Number.isInteger(cell?.col) ? cell.col : 0
+      displayCol = sourceColumnOrder ? sourceColumnOrder.indexOf(sourceCol) : sourceCol
+    }
+    if (!Number.isInteger(displayCol) || displayCol < 0 || displayCol >= columns.length) {
+      displayCol = 0
+    }
+    const sourceCol = mapDisplayCol(displayCol)
+    const value = editState ? editState.getCellValue(sourceCol, row) : (rows[row]?.[displayCol] ?? null)
+    const colName = columns[displayCol]?.name ?? `col_${displayCol}`
+    return { col: sourceCol, row, value, colName }
+  }, [columns, editState, mapDisplayCol, rows, sourceColumnOrder])
+
+  useEffect(() => {
+    if (!panelOpen || !columns.length) return
+    const nextCell = resolvePanelCell(panelCell)
+    if (samePanelCell(panelCell, nextCell)) return
+    setPanelCell(nextCell)
+  }, [columns.length, panelCell, panelOpen, resolvePanelCell, setPanelCell])
+
+  useEffect(() => {
+    if (!panelOpen || panelCell.colName || !columns.length) return
+    const sourceCol = mapDisplayCol(0)
+    const value = editState ? editState.getCellValue(sourceCol, 0) : (rows[0]?.[0] ?? null)
+    const colName = columns[0]?.name ?? 'col_0'
+    setPanelCell({ col: sourceCol, row: 0, value, colName })
+  }, [columns, editState, mapDisplayCol, panelCell.colName, panelOpen, rows])
 
   // ── Drag-to-resize the ValuePanel ────────────────────────────────────────
   const isDragging  = useRef(false)
@@ -1588,6 +1649,10 @@ export default function DataViewer({
   onModeChange,
   initialTextFormat = 'table',
   textFormatOptions = TEXT_FORMATS,
+  valuePanelOpen,
+  onValuePanelOpenChange,
+  valuePanelCell,
+  onValuePanelCellChange,
 }) {
   const [mode,        setModeState]   = useState(initialMode)
   const [textFormat,  setTextFormat]  = useState(initialTextFormat)
@@ -2110,6 +2175,10 @@ export default function DataViewer({
                 sourceRowOrder={searchFilterRows && filteredSourceRows ? filteredSourceRows : undefined}
                 sourceColumnOrder={visibleColumnIndices}
                 onNearBottom={searchFilterRows ? undefined : onNearBottom}
+                valuePanelOpen={valuePanelOpen}
+                onValuePanelOpenChange={onValuePanelOpenChange}
+                valuePanelCell={valuePanelCell}
+                onValuePanelCellChange={onValuePanelCellChange}
               />
             )}
             {mode === 'text' && (

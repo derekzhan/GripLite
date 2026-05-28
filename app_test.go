@@ -133,6 +133,17 @@ func TestBuildPagedQueryPreservesInnerLimit(t *testing.T) {
 	}
 }
 
+func TestBuildPagedQueryAllowsLeadingComments(t *testing.T) {
+	sql, err := buildPagedQuery("-- GripLite SQL Console\n-- Tip\n\nselect * from uni_config where id = 340;", 100, 0)
+	if err != nil {
+		t.Fatalf("buildPagedQuery returned error: %v", err)
+	}
+	want := "SELECT * FROM (-- GripLite SQL Console\n-- Tip\n\nselect * from uni_config where id = 340) _griplite_page LIMIT 100 OFFSET 0"
+	if sql != want {
+		t.Fatalf("buildPagedQuery() = %q, want %q", sql, want)
+	}
+}
+
 func TestBuildPagedQueryRejectsNonSelect(t *testing.T) {
 	if _, err := buildPagedQuery("SHOW TABLES", 200, 0); err == nil {
 		t.Fatal("expected non-select query to be rejected")

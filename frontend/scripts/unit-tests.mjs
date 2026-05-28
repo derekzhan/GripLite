@@ -20,8 +20,9 @@ import {
 import { getVisibleColumnIndices, projectVisibleRows } from '../src/lib/dataSearch.js'
 import { buildFilterSuggestionColumns, getWhereFilterSuggestions } from '../src/lib/filterAutocomplete.js'
 import { databaseScopeFromSelection, tablesFolderIdForScope } from '../src/lib/explorerSearch.js'
-import { buildMongoCollectionFindQuery, getMongoFieldSuggestions } from '../src/lib/mongoQuery.js'
+import { DEFAULT_MONGO_SORT, buildMongoCollectionFindQuery, getMongoFieldSuggestions } from '../src/lib/mongoQuery.js'
 import { appendResultPage, normalizePageSize, pageSlice, shouldLoadMore } from '../src/lib/queryPaging.js'
+import { stripLeadingSqlComments } from '../src/lib/sqlText.js'
 import {
   closeAllTabsInWorkspace,
   closeTabInWorkspace,
@@ -514,29 +515,90 @@ function testConsoleQueriesUseTabScopedQueryIds() {
   const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
   const sqlEditor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
 
+  assert.match(app, /import \{ stripLeadingSqlComments \} from '\.\/lib\/sqlText'/)
+  assert.match(app, /const executable = stripLeadingSqlComments\(trimmed\)/)
+  assert.match(app, /return \/\^\(select\|with\)\\b\/i\.test\(executable\)/)
   assert.match(bridge, /export async function runQuery\(connectionID, dbName, sql, queryID = ''\)/)
   assert.match(bridge, /RunQueryWithID\(queryID, connectionID, dbName \?\? '', sql\)/)
   assert.match(bridge, /export async function cancelQuery\(queryID\)/)
-  assert.match(app, /runQuery\(connIdRef\.current, opts\.dbName \?\? '', sql, tabId\)/)
-  assert.match(app, /runQueryPage\(connIdRef\.current, opts\.dbName \?\? '', sql, 0, DEFAULT_RESULT_PAGE_SIZE, tabId\)/)
+  assert.match(app, /const queryConnId = consoleTab\?\.connId \?\? connIdRef\.current/)
+  assert.match(app, /runQuery\(queryConnId, opts\.dbName \?\? '', sql, tabId\)/)
+  assert.match(app, /runQueryPage\(queryConnId, opts\.dbName \?\? '', sql, 0, DEFAULT_RESULT_PAGE_SIZE, tabId\)/)
   assert.match(app, /queryId=\{tab\.id\}/)
   assert.match(sqlEditor, /queryId/)
   assert.match(sqlEditor, /cancelQuery\(queryId \|\| connectionId\)/)
+}
+
+function testSqlCommentStrippingKeepsCommentedSelectEditable() {
+  const resultPanel = readFileSync(new URL('../src/components/ResultPanel.jsx', import.meta.url), 'utf8')
+  assert.equal(
+    stripLeadingSqlComments('-- GripLite SQL Console\n-- Tip\n\nselect * from uni_config where id = 340'),
+    'select * from uni_config where id = 340',
+  )
+  assert.equal(
+    stripLeadingSqlComments('/* heading */\nWITH cte AS (SELECT 1) SELECT * FROM cte'),
+    'WITH cte AS (SELECT 1) SELECT * FROM cte',
+  )
+  assert.match(resultPanel, /import \{ stripLeadingSqlComments \} from '\.\.\/lib\/sqlText'/)
+  assert.match(resultPanel, /const text = stripLeadingSqlComments\(sql\)\.replace\(/)
+}
+
+function testNewConsoleInheritsActiveDatabaseContext() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+
+  assert.match(app, /function defaultDatabaseForNewConsole\(tab, fallbackDb = ''\)/)
+  assert.match(app, /if \(tab\?\.type === 'table' \|\| tab\?\.type === 'dbviewer'\) return tab\.dbName \?\? fallbackDb/)
+  assert.match(app, /const effectiveConnId = opts\?\.connId \?\? activeTab\?\.connId \?\? connIdRef\.current/)
+  assert.match(app, /const defaultDb = opts\?\.defaultDb \?\? defaultDatabaseForNewConsole\(activeTab, connInfo\?\.database \?\? ''\)/)
+  assert.match(app, /tab\.defaultDb = defaultDb/)
+  assert.match(app, /const consoleConnId = tab\.connId \?\? connIdRef\.current/)
+  assert.match(app, /connectionId=\{consoleConnId\}/)
+  assert.match(app, /defaultDb=\{tab\.defaultDb \?\? consoleConnInfo\?\.database \?\? ''\}/)
 }
 
 function testSqlConsoleResultEditsCanBeSavedForSimpleSelects() {
   const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
   const resultPanel = readFileSync(new URL('../src/components/ResultPanel.jsx', import.meta.url), 'utf8')
 
-  assert.match(app, /source: \{ sql, dbName: opts\.dbName \?\? '', connId: connIdRef\.current, pageSize: DEFAULT_RESULT_PAGE_SIZE \}/)
-  assert.match(app, /connectionId=\{activeResult\?\.queryResult\?\.source\?\.connId \?\? connIdRef\.current\}/)
+  assert.match(app, /source: \{ sql, dbName: opts\.dbName \?\? '', connId: queryConnId, pageSize: DEFAULT_RESULT_PAGE_SIZE \}/)
+  assert.match(app, /connectionId=\{activeResult\?\.queryResult\?\.source\?\.connId \?\? consoleConnId\}/)
   assert.match(resultPanel, /import \{ applyChanges \} from '\.\.\/lib\/bridge'/)
   assert.match(resultPanel, /function inferSimpleSelectTarget\(sql, columns, fallbackDb = ''\)/)
+  assert.match(resultPanel, /const activeResultSql = activeResultEntry\?\.sql \?\? ''/)
+  assert.match(resultPanel, /queryResult\?\.source\?\.sql \?\? activeResultSql/)
   assert.match(resultPanel, /const canSaveQueryEdits = !!queryEditTarget && !!connectionId/)
   assert.match(resultPanel, /const handleSaveQueryEdits = useCallback\(async \(\) =>/)
   assert.match(resultPanel, /editState\.buildChangeSet\(\{\s*connectionId,\s*database: queryEditTarget\.dbName,\s*tableName: queryEditTarget\.tableName,\s*primaryKey: queryEditTarget\.primaryKey,/m)
   assert.match(resultPanel, /const result = await applyChanges\(changeSet\)/)
   assert.match(resultPanel, /onSave=\{canSaveQueryEdits \? handleSaveQueryEdits : undefined\}/)
+}
+
+function testResultPanelPreservesValuePanelOpenStateAcrossRuns() {
+  const resultPanel = readFileSync(new URL('../src/components/ResultPanel.jsx', import.meta.url), 'utf8')
+  const pagedViewer = readFileSync(new URL('../src/components/PagedResultViewer.jsx', import.meta.url), 'utf8')
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+
+  assert.match(resultPanel, /const activeResultPanelKey = String\(Math\.max\(activeResultIndex, 0\)\)/)
+  assert.match(resultPanel, /const \[valuePanelStateByResult, setValuePanelStateByResult\] = useState\(\{\}\)/)
+  assert.match(resultPanel, /const valuePanelState = valuePanelStateByResult\[activeResultPanelKey\] \?\? \{\}/)
+  assert.match(resultPanel, /valuePanelOpen=\{!!valuePanelState\.open\}/)
+  assert.match(resultPanel, /onValuePanelOpenChange=\{setActiveValuePanelOpen\}/)
+  assert.match(resultPanel, /valuePanelCell=\{valuePanelState\.cell \?\? null\}/)
+  assert.match(resultPanel, /onValuePanelCellChange=\{setActiveValuePanelCell\}/)
+  assert.match(resultPanel, /\[activeResultPanelKey\]: \{ \.\.\.prev\[activeResultPanelKey\], open \}/)
+  assert.match(resultPanel, /\[activeResultPanelKey\]: \{ \.\.\.prev\[activeResultPanelKey\], cell \}/)
+  assert.match(pagedViewer, /valuePanelOpen/)
+  assert.match(pagedViewer, /onValuePanelOpenChange/)
+  assert.match(pagedViewer, /valuePanelCell/)
+  assert.match(pagedViewer, /onValuePanelCellChange/)
+  assert.match(dataViewer, /valuePanelOpen,\s+onValuePanelOpenChange,/)
+  assert.match(dataViewer, /valuePanelCell,\s+onValuePanelCellChange,/)
+  assert.match(dataViewer, /const isPanelOpenControlled = typeof valuePanelOpen === 'boolean'/)
+  assert.match(dataViewer, /const panelOpen = isPanelOpenControlled \? valuePanelOpen : internalPanelOpen/)
+  assert.match(dataViewer, /onValuePanelOpenChange\?\.\(resolved\)/)
+  assert.match(dataViewer, /const displayColByName = columns\.findIndex\(\(col\) => col\?\.name === cell\?\.colName\)/)
+  assert.match(dataViewer, /const panelCell = isPanelCellControlled \? \(valuePanelCell \?\? defaultPanelCell\) : internalPanelCell/)
+  assert.match(dataViewer, /onValuePanelCellChange\?\.\(resolved\)/)
 }
 
 function testValuePanelSyncsMonacoReadOnlyWhenEditabilityChanges() {
@@ -557,6 +619,19 @@ function testTableDataViewAndSchemaRefreshAreActiveOnly() {
   assert.match(tableViewer, /hasVisitedData/)
   assert.match(tableViewer, /setHasVisitedData\(true\)/)
   assert.match(tableViewer, /\{hasVisitedData && \(/)
+}
+
+function testTableViewerDoesNotExposeMockBadgeInReleaseUI() {
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(tableViewer, /⚠ mock/)
+  assert.doesNotMatch(tableViewer, /badge=\{\s*schemaLoading \? '…'\s*:\s*fromCache\s*\?\s*null\s*:\s*'[^']*mock[^']*'/m)
+}
+
+function testTableViewerFallbackSchemaHasUsefulColumnsForUnknownTables() {
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  assert.match(tableViewer, /function genericFallbackColumns\(\)/)
+  assert.match(tableViewer, /columns: genericFallbackColumns\(\)/)
+  assert.doesNotMatch(tableViewer, /columns: \[\], indexes: \[\], constraints: \[\], foreignKeys: \[\]/)
 }
 
 function testDataViewerAvoidsIdleFullTableScans() {
@@ -586,8 +661,22 @@ function testMongoCollectionFindQueryBuildsDatagripStyleFilterAndSort() {
   )
   assert.equal(
     buildMongoCollectionFindQuery('prm_order', 100, 100, '{}', ''),
-    'db.getCollection("prm_order").find({}).skip(100).limit(100)',
+    'db.getCollection("prm_order").find({}).sort({ _id: -1 }).skip(100).limit(100)',
   )
+  assert.equal(DEFAULT_MONGO_SORT, '{ _id: -1 }')
+}
+
+function testMongoCollectionDefaultsSortByIdAndFocusesInsideFindBraces() {
+  const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
+  assert.match(tableViewer, /import \{ buildMongoCollectionFindQuery, DEFAULT_MONGO_SORT,/)
+  assert.match(tableViewer, /const \[mongoSortClause, setMongoSortClause\] = useState\(DEFAULT_MONGO_SORT\)/)
+  assert.match(tableViewer, /const \[mongoSortDraft,\s+setMongoSortDraft\]\s+= useState\(DEFAULT_MONGO_SORT\)/)
+  assert.match(tableViewer, /setMongoSortClause\(DEFAULT_MONGO_SORT\)/)
+  assert.match(tableViewer, /setMongoSortDraft\(DEFAULT_MONGO_SORT\)/)
+  assert.match(tableViewer, /placeholder=("\{ _id: -1 \}"|'\{ _id: -1 \}')/)
+  assert.match(tableViewer, /focusInsideBracesOnFocus/)
+  assert.match(tableViewer, /if \(focusInsideBracesOnFocus && e\.target\.value === '\{\}'\)/)
+  assert.match(tableViewer, /e\.target\.setSelectionRange\(1, 1\)/)
 }
 
 function testMongoFieldSuggestionsUseCollectionFields() {
@@ -746,12 +835,18 @@ testTableTabsAndBreadcrumbIncludeConnectionName()
 testTabBarScrollsActiveTabAndShowsDriverIcons()
 testTabsUseBoundedKeepAliveMounting()
 testConsoleQueriesUseTabScopedQueryIds()
+testSqlCommentStrippingKeepsCommentedSelectEditable()
+testNewConsoleInheritsActiveDatabaseContext()
 testSqlConsoleResultEditsCanBeSavedForSimpleSelects()
+testResultPanelPreservesValuePanelOpenStateAcrossRuns()
 testValuePanelSyncsMonacoReadOnlyWhenEditabilityChanges()
 testTableDataViewAndSchemaRefreshAreActiveOnly()
+testTableViewerDoesNotExposeMockBadgeInReleaseUI()
+testTableViewerFallbackSchemaHasUsefulColumnsForUnknownTables()
 testDataViewerAvoidsIdleFullTableScans()
 testMongoCollectionInlineEditingUsesMongoApplier()
 testMongoCollectionFindQueryBuildsDatagripStyleFilterAndSort()
+testMongoCollectionDefaultsSortByIdAndFocusesInsideFindBraces()
 testMongoFieldSuggestionsUseCollectionFields()
 testMongoCollectionDefaultsToGridAndLabelsRecordMode()
 testRecordViewRendersJsonValuesVisually()

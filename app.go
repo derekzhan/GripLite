@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -94,8 +95,32 @@ func stripTrailingSemicolons(sqlText string) string {
 	return s
 }
 
+func stripLeadingSQLComments(sqlText string) string {
+	s := strings.TrimLeftFunc(sqlText, unicode.IsSpace)
+	for s != "" {
+		switch {
+		case strings.HasPrefix(s, "--"), strings.HasPrefix(s, "#"):
+			if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+				s = strings.TrimLeftFunc(s[idx+1:], unicode.IsSpace)
+				continue
+			}
+			return ""
+		case strings.HasPrefix(s, "/*"):
+			idx := strings.Index(s[2:], "*/")
+			if idx < 0 {
+				return ""
+			}
+			s = strings.TrimLeftFunc(s[idx+4:], unicode.IsSpace)
+			continue
+		default:
+			return s
+		}
+	}
+	return s
+}
+
 func isPageableQuery(sqlText string) bool {
-	s := strings.TrimSpace(sqlText)
+	s := stripLeadingSQLComments(strings.TrimSpace(sqlText))
 	if s == "" || strings.Contains(s, ";") {
 		return false
 	}

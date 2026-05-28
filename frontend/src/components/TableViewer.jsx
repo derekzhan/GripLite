@@ -44,12 +44,22 @@ import { normalizeError } from '../lib/errors'
 import { toast } from '../lib/toast'
 import { buildFilterSuggestionColumns, getWhereFilterSuggestions, getWordBeforeCursor } from '../lib/filterAutocomplete'
 import { DEFAULT_PAGE_SIZE } from '../lib/queryPaging'
-import { buildMongoCollectionFindQuery, getMongoFieldSuggestions, normalizeMongoObjectInput } from '../lib/mongoQuery'
+import { buildMongoCollectionFindQuery, DEFAULT_MONGO_SORT, getMongoFieldSuggestions, normalizeMongoObjectInput } from '../lib/mongoQuery'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mock schema metadata (Properties tab)
 // In production these come from the Go UDAL backend via IPC.
 // ─────────────────────────────────────────────────────────────────────────────
+function genericFallbackColumns() {
+  return [
+    { ord: 1, name: 'id',         type: 'bigint',       notNull: true,  ai: false, key: 'PRI', default: null,                comment: 'Primary key' },
+    { ord: 2, name: 'name',       type: 'varchar(255)', notNull: false, ai: false, key: '',    default: null,                comment: '' },
+    { ord: 3, name: 'status',     type: 'varchar(64)',  notNull: false, ai: false, key: '',    default: null,                comment: '' },
+    { ord: 4, name: 'created_at', type: 'datetime',     notNull: false, ai: false, key: 'MUL', default: 'CURRENT_TIMESTAMP', comment: '' },
+    { ord: 5, name: 'updated_at', type: 'datetime',     notNull: false, ai: false, key: '',    default: null,                comment: '' },
+  ]
+}
+
 function getMockSchema(tableName = 'users') {
   const schemas = {
     users: {
@@ -116,7 +126,11 @@ function getMockSchema(tableName = 'users') {
   if (base) return base
   return {
     info: { name: tableName, engine: 'InnoDB', collation: 'utf8mb4_unicode_ci', charset: 'utf8mb4', autoIncrement: 1, comment: '' },
-    columns: [], indexes: [], constraints: [], foreignKeys: [], ddl: `-- DDL not available for ${tableName}`,
+    columns: genericFallbackColumns(),
+    indexes: [{ name: 'PRIMARY', type: 'BTREE', unique: true, columns: ['id'], comment: '' }],
+    constraints: [{ name: 'PRIMARY', type: 'PRIMARY KEY', columns: ['id'] }],
+    foreignKeys: [],
+    ddl: `-- DDL not available for ${tableName}`,
   }
 }
 
@@ -2770,7 +2784,7 @@ function FilterBar({
 // ─────────────────────────────────────────────────────────────────────────────
 // Data view — auto-loads on mount via runQuery IPC / mock
 // ─────────────────────────────────────────────────────────────────────────────
-function MongoQueryInput({ label, value, onChange, onKeyDown, placeholder, ariaLabel, columns }) {
+function MongoQueryInput({ label, value, onChange, onKeyDown, placeholder, ariaLabel, columns, focusInsideBracesOnFocus = false }) {
   const inputRef = useRef(null)
   const [focused, setFocused] = useState(false)
   const [suggestions, setSuggestions] = useState([])
@@ -2856,6 +2870,9 @@ function MongoQueryInput({ label, value, onChange, onKeyDown, placeholder, ariaL
         onKeyDown={handleKeyDown}
         onFocus={(e) => {
           setFocused(true)
+          if (focusInsideBracesOnFocus && e.target.value === '{}') {
+            e.target.setSelectionRange(1, 1)
+          }
           rebuild(e.target.value, e.target.selectionStart ?? e.target.value.length)
         }}
         onBlur={() => setTimeout(() => {
@@ -2935,8 +2952,8 @@ function DataView({ tableName, dbName, connId, schema, objectKind = 'table' }) {
   const [whereDraft,  setWhereDraft]  = useState('')
   const [mongoFindClause, setMongoFindClause] = useState('{}')
   const [mongoFindDraft,  setMongoFindDraft]  = useState('{}')
-  const [mongoSortClause, setMongoSortClause] = useState('')
-  const [mongoSortDraft,  setMongoSortDraft]  = useState('')
+  const [mongoSortClause, setMongoSortClause] = useState(DEFAULT_MONGO_SORT)
+  const [mongoSortDraft,  setMongoSortDraft]  = useState(DEFAULT_MONGO_SORT)
   const [history,     setHistory]     = useState([])
   const [historyOpen, setHistoryOpen] = useState(false)
   const [showSqlBar,  setShowSqlBar]  = useState(true)
@@ -3113,8 +3130,8 @@ function DataView({ tableName, dbName, connId, schema, objectKind = 'table' }) {
     setWhereDraft('')
     setMongoFindClause('{}')
     setMongoFindDraft('{}')
-    setMongoSortClause('')
-    setMongoSortDraft('')
+    setMongoSortClause(DEFAULT_MONGO_SORT)
+    setMongoSortDraft(DEFAULT_MONGO_SORT)
     setHistory([])
     setHistoryOpen(false)
     setSortConfig(null)
@@ -3325,7 +3342,7 @@ function DataView({ tableName, dbName, connId, schema, objectKind = 'table' }) {
 
   const commitMongoFilter = useCallback(() => {
     const nextFind = normalizeMongoObjectInput(mongoFindDraft, '{}')
-    const nextSort = normalizeMongoObjectInput(mongoSortDraft, '')
+    const nextSort = normalizeMongoObjectInput(mongoSortDraft, DEFAULT_MONGO_SORT)
     if (editStateRef.current?.isDirty) {
       const ok = typeof window !== 'undefined' && window.confirm
         ? window.confirm(
@@ -3358,10 +3375,10 @@ function DataView({ tableName, dbName, connId, schema, objectKind = 'table' }) {
 
   const clearMongoFilter = useCallback(() => {
     setMongoFindDraft('{}')
-    setMongoSortDraft('')
-    if (mongoFindClause !== '{}' || mongoSortClause !== '') {
+    setMongoSortDraft(DEFAULT_MONGO_SORT)
+    if (mongoFindClause !== '{}' || mongoSortClause !== DEFAULT_MONGO_SORT) {
       setMongoFindClause('{}')
-      setMongoSortClause('')
+      setMongoSortClause(DEFAULT_MONGO_SORT)
     }
   }, [mongoFindClause, mongoSortClause])
 
@@ -3392,13 +3409,14 @@ function DataView({ tableName, dbName, connId, schema, objectKind = 'table' }) {
           placeholder="{}"
           ariaLabel="MongoDB find filter"
           columns={filterSuggestionColumns}
+          focusInsideBracesOnFocus
         />
         <MongoQueryInput
           label="sort"
           value={mongoSortDraft}
           onChange={setMongoSortDraft}
           onKeyDown={handleMongoFilterKeyDown}
-          placeholder="{ createdAt: -1 }"
+          placeholder="{ _id: -1 }"
           ariaLabel="MongoDB sort document"
           columns={filterSuggestionColumns}
         />
@@ -3742,7 +3760,7 @@ export default function TableViewer({ tableName = 'users', dbName = 'db1', connI
             badge={
               schemaLoading ? '…'
               : fromCache   ? null
-              :               '⚠ mock'
+              :               null
             }
           />
         )}

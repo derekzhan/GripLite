@@ -39,6 +39,7 @@ import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
 import { runQuery, runQueryPage, listConnections, getBuildInfo } from './lib/bridge'
 import { appendResultPage, DEFAULT_PAGE_SIZE } from './lib/queryPaging'
+import { stripLeadingSqlComments } from './lib/sqlText'
 import {
   closeAllTabsInWorkspace,
   closeTabInWorkspace,
@@ -59,7 +60,8 @@ let   nextConsoleSeq  = 1
 function isPageableSql(sql) {
   const trimmed = String(sql ?? '').trim().replace(/;+$/g, '').trim()
   if (!trimmed || trimmed.includes(';')) return false
-  return /^(select|with)\b/i.test(trimmed)
+  const executable = stripLeadingSqlComments(trimmed)
+  return /^(select|with)\b/i.test(executable)
 }
 
 function makeConsoleTab() {
@@ -78,6 +80,11 @@ function connectionDisplayName(conn, fallbackId = '') {
 
 function buildTableTabLabel(connectionName, dbName, tableName) {
   return [connectionName, dbName, tableName].filter(Boolean).join(' / ')
+}
+
+function defaultDatabaseForNewConsole(tab, fallbackDb = '') {
+  if (tab?.type === 'table' || tab?.type === 'dbviewer') return tab.dbName ?? fallbackDb
+  return fallbackDb
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,6 +257,8 @@ export default function App() {
    */
   const handleRunQuery = useCallback(async (sqlOrList, consoleId, opts = {}) => {
     const tabId = consoleId ?? activeTabId
+    const consoleTab = tabs.find((tab) => tab.id === tabId)
+    const queryConnId = consoleTab?.connId ?? connIdRef.current
 
     const list = opts.multi && Array.isArray(sqlOrList)
       ? sqlOrList.filter((s) => s && s.trim())
@@ -271,14 +280,14 @@ export default function App() {
       let queryResult
       try {
         if (!opts.multi && isPageableSql(sql)) {
-          const page = await runQueryPage(connIdRef.current, opts.dbName ?? '', sql, 0, DEFAULT_RESULT_PAGE_SIZE, tabId)
+          const page = await runQueryPage(queryConnId, opts.dbName ?? '', sql, 0, DEFAULT_RESULT_PAGE_SIZE, tabId)
           queryResult = appendResultPage(null, page, {
             offset: 0,
             pageSize: DEFAULT_RESULT_PAGE_SIZE,
-            source: { sql, dbName: opts.dbName ?? '', connId: connIdRef.current, pageSize: DEFAULT_RESULT_PAGE_SIZE },
+            source: { sql, dbName: opts.dbName ?? '', connId: queryConnId, pageSize: DEFAULT_RESULT_PAGE_SIZE },
           })
         } else {
-          queryResult = await runQuery(connIdRef.current, opts.dbName ?? '', sql, tabId)
+          queryResult = await runQuery(queryConnId, opts.dbName ?? '', sql, tabId)
         }
       } catch (err) {
         // Two separate hardening steps here:
@@ -320,7 +329,7 @@ export default function App() {
       ...prev,
       [tabId]: { ...prev[tabId], isRunning: false },
     }))
-  }, [activeTabId])
+  }, [activeTabId, tabs])
 
   const handleSelectResult = useCallback((consoleId, resultId) => {
     setConsolesData((prev) => {
@@ -551,9 +560,11 @@ export default function App() {
     const tab = makeConsoleTab()
     if (opts?.initialSql) tab.initialSql = opts.initialSql
     if (opts?.label)      tab.label      = opts.label
-    if (opts?.defaultDb)  tab.defaultDb  = opts.defaultDb
-    tab.connId = connIdRef.current
-    tab.connectionKind = connectionKindById.get(connIdRef.current) ?? 'mysql'
+    const effectiveConnId = opts?.connId ?? activeTab?.connId ?? connIdRef.current
+    const defaultDb = opts?.defaultDb ?? defaultDatabaseForNewConsole(activeTab, connInfo?.database ?? '')
+    tab.defaultDb = defaultDb
+    tab.connId = effectiveConnId
+    tab.connectionKind = connectionKindById.get(effectiveConnId) ?? 'mysql'
     setTabs((prev) => [...prev, tab])
     // NOTE: this seed MUST match the shape expected by the ResultPanel
     // render path (see `activeResult` derivation below).  The old shape
@@ -565,7 +576,7 @@ export default function App() {
       [tab.id]: { resultSets: [], activeResultId: null, isRunning: false },
     }))
     setActiveTabId(tab.id)
-  }, [connectionKindById])
+  }, [activeTab, connectionKindById, connInfo?.database])
 
   // ── Tab close ─────────────────────────────────────────────────────────────
   //
@@ -761,6 +772,8 @@ export default function App() {
 
               {/* SQL Console tabs — bounded keep-alive, CSS-switched */}
               {tabs.filter((t) => t.type === 'console' && shouldMountTab(t.id)).map((tab) => {
+                const consoleConnId = tab.connId ?? connIdRef.current
+                const consoleConnInfo = connections.find((conn) => conn.id === consoleConnId)
                 // Defensive normalisation — any pre-existing console data
                 // that was seeded with the legacy shape ({queryResult,
                 // isRunning}) still has `resultSets === undefined`, which
@@ -789,23 +802,23 @@ export default function App() {
                         <SqlEditor
                           onRunQuery={(sql, meta) => handleRunQuery(sql, tab.id, meta)}
                           isRunning={data.isRunning}
-                          connectionId={connIdRef.current}
+                          connectionId={consoleConnId}
                           queryId={tab.id}
                           initialSql={tab.initialSql}
-                          defaultDb={tab.defaultDb ?? connInfo?.database ?? ''}
-                          connectionLabel={connInfo
-                            ? (connInfo.name || `${connInfo.host}:${connInfo.port}`)
+                          defaultDb={tab.defaultDb ?? consoleConnInfo?.database ?? ''}
+                          connectionLabel={consoleConnInfo
+                            ? (consoleConnInfo.name || `${consoleConnInfo.host}:${consoleConnInfo.port}`)
                             : ''}
                           storageKey={`griplite_sql_editor_${tab.id}_v1`}
-                          connectionKind={connInfo?.kind ?? 'mysql'}
+                          connectionKind={tab.connectionKind ?? consoleConnInfo?.kind ?? 'mysql'}
                         />
                         <ResultPanel
                           queryResult={activeResult?.queryResult ?? null}
                           isRunning={data.isRunning}
                           resultSets={data.resultSets}
                           activeResultId={activeResult?.id ?? null}
-                          connectionId={activeResult?.queryResult?.source?.connId ?? connIdRef.current}
-                          fallbackDb={connInfo?.database ?? ''}
+                          connectionId={activeResult?.queryResult?.source?.connId ?? consoleConnId}
+                          fallbackDb={tab.defaultDb ?? consoleConnInfo?.database ?? ''}
                           onSelectResult={(rid) => handleSelectResult(tab.id, rid)}
                           onLoadMore={() => activeResult?.id && handleLoadNextResultPage(tab.id, activeResult.id)}
                           onPageSizeChange={(size) => activeResult?.id && handleResultPageSizeChange(tab.id, activeResult.id, size)}

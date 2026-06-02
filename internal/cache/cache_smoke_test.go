@@ -266,6 +266,76 @@ func TestCache_SearchColumns(t *testing.T) {
 	}
 }
 
+// TestCache_SearchColumns_PrefixTablesRankFirst reproduces the bug where a
+// table that literally starts with the typed prefix (e.g. "uni_tracking_spath"
+// for keyword "uni_trac") was crowded out of the result set by a large number
+// of token-matched backup tables ("_uni_tracking_info_<date>_del").  The
+// prefix matches must always be present (and ranked first).
+func TestCache_SearchColumns_PrefixTablesRankFirst(t *testing.T) {
+	c := newTestCache(t)
+
+	var tables []driver.TableInfo
+	details := map[string]*driver.TableDetail{}
+
+	// Many backup tables that sort BEFORE the real ones (leading underscore)
+	// and share the "uni"/"tracking" tokens.  They are crawled first (lower
+	// rowids), so a naive "LIMIT 20 with no ordering" FTS query returns only
+	// these and crowds out the real prefix tables.
+	for i := 0; i < 30; i++ {
+		name := fmt.Sprintf("_uni_tracking_info_2026043000%02d_del", i)
+		tables = append(tables, driver.TableInfo{Name: name, Schema: "kuaisong", Kind: driver.ObjectTable})
+		details["kuaisong."+name] = &driver.TableDetail{
+			TableInfo: driver.TableInfo{Name: name, Schema: "kuaisong", Kind: driver.ObjectTable},
+			Columns:   []driver.ColumnInfo{{Name: "order_id", DatabaseType: "int", Ordinal: 0}},
+		}
+	}
+
+	// The real tables the user can see in the sidebar — inserted last.
+	tables = append(tables,
+		driver.TableInfo{Name: "uni_tracking_spath", Schema: "kuaisong", Kind: driver.ObjectTable},
+		driver.TableInfo{Name: "uni_tracking_addon_spath", Schema: "kuaisong", Kind: driver.ObjectTable},
+	)
+	details["kuaisong.uni_tracking_spath"] = &driver.TableDetail{
+		TableInfo: driver.TableInfo{Name: "uni_tracking_spath", Schema: "kuaisong", Kind: driver.ObjectTable},
+		Columns:   []driver.ColumnInfo{{Name: "order_id", DatabaseType: "int", PrimaryKey: true, Ordinal: 0}},
+	}
+	details["kuaisong.uni_tracking_addon_spath"] = &driver.TableDetail{
+		TableInfo: driver.TableInfo{Name: "uni_tracking_addon_spath", Schema: "kuaisong", Kind: driver.ObjectTable},
+		Columns:   []driver.ColumnInfo{{Name: "order_id", DatabaseType: "int", PrimaryKey: true, Ordinal: 0}},
+	}
+
+	drv := &fakeDriver{
+		databases: []string{"kuaisong"},
+		tables:    map[string][]driver.TableInfo{"kuaisong": tables},
+		details:   details,
+	}
+
+	c.SyncSchema(context.Background(), "conn-prefix", drv)
+	waitForSyncDone(t, c, "conn-prefix", 3*time.Second)
+
+	items, err := c.SearchColumns(context.Background(), "conn-prefix", "kuaisong", "uni_trac")
+	if err != nil {
+		t.Fatalf("SearchColumns: %v", err)
+	}
+
+	foundSpath := false
+	foundAddon := false
+	for _, it := range items {
+		if it.Kind == "table" && it.Label == "uni_tracking_spath" {
+			foundSpath = true
+		}
+		if it.Kind == "table" && it.Label == "uni_tracking_addon_spath" {
+			foundAddon = true
+		}
+	}
+	if !foundSpath {
+		t.Error("expected 'uni_tracking_spath' table in results for prefix 'uni_trac'")
+	}
+	if !foundAddon {
+		t.Error("expected 'uni_tracking_addon_spath' table in results for prefix 'uni_trac'")
+	}
+}
+
 // TestCache_SyncSchema_Comment verifies that TABLE_COMMENT / COLUMN_COMMENT
 // survive the full sync pipeline and are retrievable via GetTableSchema
 // (Phase 15).

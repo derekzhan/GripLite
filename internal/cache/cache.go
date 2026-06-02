@@ -812,12 +812,36 @@ func (c *MetadataCache) SearchColumns(ctx context.Context, connID, dbName, keywo
 		return nil, nil
 	}
 
-	items, err := c.ftsSearch(ctx, connID, dbName, keyword)
-	if err != nil || len(items) == 0 {
-		// Fall back to LIKE for robustness (FTS may still be building).
-		return c.likeSearch(ctx, connID, dbName, keyword)
+	// Prefix (LIKE 'keyword%') matches are the most relevant for identifier
+	// completion: typing "uni_trac" should always surface "uni_tracking_spath".
+	// The FTS path tokenises on underscores, so it both misses exact-prefix
+	// intent and — combined with an arbitrary LIMIT — can crowd out the real
+	// table behind dozens of token-matched backup tables.  We therefore run the
+	// prefix search first and rank its hits ahead of the fuzzier FTS results.
+	likeItems, likeErr := c.likeSearch(ctx, connID, dbName, keyword)
+	ftsItems, ftsErr := c.ftsSearch(ctx, connID, dbName, keyword)
+	if likeErr != nil && ftsErr != nil {
+		return nil, likeErr
 	}
-	return items, nil
+	return mergeCompletionItems(likeItems, ftsItems), nil
+}
+
+// mergeCompletionItems concatenates two result sets, keeping `primary` ahead of
+// `secondary` and dropping duplicates keyed by (kind, table, label).
+func mergeCompletionItems(primary, secondary []CompletionItem) []CompletionItem {
+	seen := make(map[string]bool, len(primary)+len(secondary))
+	out := make([]CompletionItem, 0, len(primary)+len(secondary))
+	for _, group := range [][]CompletionItem{primary, secondary} {
+		for _, it := range group {
+			key := it.Kind + ":" + it.TableName + "." + it.Label
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // ftsSearch uses the FTS5 virtual table for prefix matching.
@@ -909,7 +933,8 @@ func (c *MetadataCache) likeSearch(ctx context.Context, connID, dbName, keyword 
 		    WHERE conn_id = ?
 		      AND (column_name LIKE ? COLLATE NOCASE
 		        OR table_name  LIKE ? COLLATE NOCASE)%s
-		    LIMIT 40
+		    ORDER BY column_name COLLATE NOCASE
+		    LIMIT 50
 		)
 		UNION ALL
 		SELECT * FROM (
@@ -923,7 +948,8 @@ func (c *MetadataCache) likeSearch(ctx context.Context, connID, dbName, keyword 
 		    FROM metadata_columns
 		    WHERE conn_id = ?
 		      AND table_name LIKE ? COLLATE NOCASE%s
-		    LIMIT 20
+		    ORDER BY table_name COLLATE NOCASE
+		    LIMIT 50
 		)`, dbFilter, dbFilter)
 
 	var args []any

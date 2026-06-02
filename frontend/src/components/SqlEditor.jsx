@@ -324,6 +324,38 @@ function resolveTableAlias(sql, alias) {
   return null
 }
 
+/**
+ * extractReferencedTables — collect the real table names referenced in the
+ * FROM / JOIN clauses of a SQL statement, so column completion can be scoped
+ * to those tables only (instead of every table that happens to share a column
+ * name).
+ *
+ * Handles backtick-quoted identifiers, `db.table` qualifiers, and comma-
+ * separated table lists (`FROM a, b`).  Aliases are ignored — we only need
+ * the underlying table names.
+ *
+ *   FROM `db`.uni_tracking_spath s   → ["uni_tracking_spath"]
+ *   FROM a JOIN b ON …               → ["a", "b"]
+ *   FROM a, b                        → ["a", "b"]
+ */
+function extractReferencedTables(sql) {
+  if (!sql) return []
+  const out = []
+  // Match the table reference immediately following FROM / JOIN, plus any
+  // additional comma-separated tables in the same FROM list.
+  const re = /\b(?:FROM|JOIN)\s+((?:`?\w+`?\.)?`?\w+`?(?:\s*,\s*(?:`?\w+`?\.)?`?\w+`?)*)/gi
+  let m
+  // eslint-disable-next-line no-cond-assign
+  while ((m = re.exec(sql)) !== null) {
+    for (const ref of m[1].split(',')) {
+      const parts = ref.trim().replace(/`/g, '').split('.')
+      const name = parts[parts.length - 1]
+      if (name) out.push(name)
+    }
+  }
+  return out
+}
+
 // ── Saved SQL Snippets ───────────────────────────────────────────────────────
 const SNIPPETS_KEY = 'griplite_snippets_v1'
 
@@ -667,25 +699,95 @@ export default function SqlEditor({
           // Cache unavailable — still return keyword suggestions.
         }
 
-        const cacheSuggestions = cacheItems.map((item) => ({
+        // Determine which tables the current statement references in its
+        // FROM / JOIN clauses so column completion can be scoped to them.
+        const offset = model.getOffsetAt(position)
+        const currentStmt = findStatementAt(model.getValue(), offset)?.sql ?? model.getValue()
+        const referencedTables = extractReferencedTables(currentStmt)
+
+        // Column candidates.  When the statement references tables, fetch each
+        // table's full column list directly (search by table name) and keep
+        // only the columns whose name matches the typed prefix.  This is far
+        // more reliable than filtering a global keyword search, whose LIMIT can
+        // crowd out the very column the user is typing when the prefix (e.g.
+        // `order_`) matches columns in hundreds of unrelated tables.
+        let columnItems = []
+        if (referencedTables.length > 0) {
+          const kwLower = keyword.toLowerCase()
+          const seenCol = new Set()
+          try {
+            const perTable = await Promise.all(
+              referencedTables.map((t) =>
+                searchCompletions(connectionId, selectedDbRef.current, t).catch(() => [])),
+            )
+            perTable.forEach((list, i) => {
+              const tbl = referencedTables[i]
+              for (const it of list) {
+                if (it.kind !== 'column' || it.tableName !== tbl) continue
+                if (!it.label.toLowerCase().startsWith(kwLower)) continue
+                const key = `${it.tableName}.${it.label}`
+                if (seenCol.has(key)) continue
+                seenCol.add(key)
+                columnItems.push(it)
+              }
+            })
+          } catch {
+            // Per-table fetch failed — fall back to keyword-cache columns
+            // scoped to the referenced tables.
+            columnItems = cacheItems.filter(
+              (it) => it.kind === 'column' && referencedTables.includes(it.tableName),
+            )
+          }
+        } else {
+          columnItems = cacheItems.filter((it) => it.kind === 'column')
+        }
+
+        // Only offer table-name suggestions when the cursor is in a position
+        // where a table name is expected — right after FROM / JOIN / UPDATE /
+        // INTO (optionally within a comma-separated list).  In the SELECT
+        // projection or WHERE clause the user wants columns, not unrelated
+        // tables that merely share the typed prefix (e.g. `prm_cp_rate_code_*`
+        // when typing the column `code`).  When no tables are referenced yet we
+        // keep tables visible so an initial `FROM`-less draft still completes.
+        const expectingTable = /\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+(?:[\w.`]+\s*,\s*)*[\w.`]*$/i.test(textUntilCursor)
+        const showTables = expectingTable || referencedTables.length === 0
+        const tableItems = showTables
+          ? cacheItems.filter((it) => it.kind === 'table')
+          : []
+
+        // When the statement references tables the user is most likely
+        // completing a column, so rank columns ahead of table names.
+        const colRank   = referencedTables.length > 0 ? '0' : '1'
+        const tableRank = referencedTables.length > 0 ? '2' : '0'
+
+        const colSuggestions = columnItems.map((item) => ({
           label: {
             label:       item.label,
             description: item.tableName ? `${item.tableName}.${item.label}` : item.label,
             detail:      ` ${item.detail}`,
           },
-          kind: item.kind === 'table'
-            ? monaco.languages.CompletionItemKind.Class
-            : monaco.languages.CompletionItemKind.Field,
-          insertText:   item.label,
-          detail:       item.kind === 'table'
-            ? `table · ${item.dbName}`
-            : `${item.tableName} · ${item.detail}`,
+          kind:          monaco.languages.CompletionItemKind.Field,
+          insertText:    item.label,
+          detail:        `${item.tableName} · ${item.detail}`,
           documentation: item.isPrimaryKey ? '🔑 Primary Key' : undefined,
-          sortText: item.kind === 'table' ? '0' + item.label : '1' + item.label,
+          sortText:      colRank + item.label,
           range,
         }))
 
-        return { suggestions: [...cacheSuggestions, ...kwSuggestions] }
+        const tableSuggestions = tableItems.map((item) => ({
+          label: {
+            label:       item.label,
+            description: item.label,
+            detail:      ` ${item.detail}`,
+          },
+          kind:       monaco.languages.CompletionItemKind.Class,
+          insertText: item.label,
+          detail:     `table · ${item.dbName}`,
+          sortText:   tableRank + item.label,
+          range,
+        }))
+
+        return { suggestions: [...colSuggestions, ...tableSuggestions, ...kwSuggestions] }
       },
     })
   }
@@ -1363,6 +1465,10 @@ export default function SqlEditor({
             smoothScrolling: true,
             cursorBlinking: 'smooth',
             padding: { top: 12 },
+            // Render suggestion/hover popups in a fixed overflow guard so they
+            // are not clipped by the editor's overflow-hidden container or the
+            // result panel below.
+            fixedOverflowWidgets: true,
           }}
         />
       </div>

@@ -523,7 +523,7 @@ function testConsoleQueriesUseTabScopedQueryIds() {
   assert.match(bridge, /export async function cancelQuery\(queryID\)/)
   assert.match(app, /const queryConnId = consoleTab\?\.connId \?\? connIdRef\.current/)
   assert.match(app, /runQuery\(queryConnId, opts\.dbName \?\? '', sql, tabId\)/)
-  assert.match(app, /runQueryPage\(queryConnId, opts\.dbName \?\? '', sql, 0, DEFAULT_RESULT_PAGE_SIZE, tabId\)/)
+  assert.match(app, /runQueryPage\(queryConnId, opts\.dbName \?\? '', sql, 0, preferredPageSizeRef\.current, tabId\)/)
   assert.match(app, /queryId=\{tab\.id\}/)
   assert.match(sqlEditor, /queryId/)
   assert.match(sqlEditor, /cancelQuery\(queryId \|\| connectionId\)/)
@@ -560,7 +560,7 @@ function testSqlConsoleResultEditsCanBeSavedForSimpleSelects() {
   const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
   const resultPanel = readFileSync(new URL('../src/components/ResultPanel.jsx', import.meta.url), 'utf8')
 
-  assert.match(app, /source: \{ sql, dbName: opts\.dbName \?\? '', connId: queryConnId, pageSize: DEFAULT_RESULT_PAGE_SIZE \}/)
+  assert.match(app, /source: \{ sql, dbName: opts\.dbName \?\? '', connId: queryConnId, pageSize \}/)
   assert.match(app, /connectionId=\{activeResult\?\.queryResult\?\.source\?\.connId \?\? consoleConnId\}/)
   assert.match(resultPanel, /import \{ applyChanges \} from '\.\.\/lib\/bridge'/)
   assert.match(resultPanel, /function inferSimpleSelectTarget\(sql, columns, fallbackDb = ''\)/)
@@ -599,6 +599,66 @@ function testResultPanelPreservesValuePanelOpenStateAcrossRuns() {
   assert.match(dataViewer, /const displayColByName = columns\.findIndex\(\(col\) => col\?\.name === cell\?\.colName\)/)
   assert.match(dataViewer, /const panelCell = isPanelCellControlled \? \(valuePanelCell \?\? defaultPanelCell\) : internalPanelCell/)
   assert.match(dataViewer, /onValuePanelCellChange\?\.\(resolved\)/)
+}
+
+function testColumnSuggestionsAreScopedToReferencedTables() {
+  const sqlEditor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
+  // A helper extracts the tables referenced in FROM/JOIN clauses.
+  assert.match(sqlEditor, /function extractReferencedTables/)
+  // The general completion path computes referenced tables for the current
+  // statement.
+  assert.match(sqlEditor, /const referencedTables = extractReferencedTables/)
+  assert.match(sqlEditor, /referencedTables\.length > 0/)
+  // Columns are fetched per referenced table (so a global LIMIT can't crowd
+  // out the typed column) and filtered by the typed prefix.
+  assert.match(sqlEditor, /referencedTables\.map\(\(t\) =>/)
+  assert.match(sqlEditor, /it\.label\.toLowerCase\(\)\.startsWith\(kwLower\)/)
+  // Columns rank ahead of table names when tables are referenced.
+  assert.match(sqlEditor, /const colRank\s+= referencedTables\.length > 0 \? '0' : '1'/)
+  assert.match(sqlEditor, /const tableRank = referencedTables\.length > 0 \? '2' : '0'/)
+  // Table suggestions only appear where a table name is expected (after
+  // FROM/JOIN/etc.) — not in the SELECT projection / WHERE clause.
+  assert.match(sqlEditor, /const expectingTable = .*FROM\|JOIN\|UPDATE\|INTO\|TABLE/)
+  assert.match(sqlEditor, /const showTables = expectingTable \|\| referencedTables\.length === 0/)
+}
+
+function testSqlEditorRendersSuggestWidgetOnTop() {
+  const sqlEditor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
+  // fixedOverflowWidgets escapes the editor's overflow-hidden container so the
+  // completion popup is not clipped by the result panel below it.
+  assert.match(sqlEditor, /fixedOverflowWidgets:\s*true/)
+}
+
+function testResultPageSizePreferenceIsRemembered() {
+  const paging = readFileSync(new URL('../src/lib/queryPaging.js', import.meta.url), 'utf8')
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+
+  // queryPaging exposes persistence helpers backed by localStorage.
+  assert.match(paging, /export function loadPreferredPageSize/)
+  assert.match(paging, /export function savePreferredPageSize/)
+  assert.match(paging, /localStorage\.getItem\(PAGE_SIZE_STORAGE_KEY\)/)
+  assert.match(paging, /localStorage\.setItem\(PAGE_SIZE_STORAGE_KEY/)
+
+  // App seeds a remembered page size and uses it for new console queries.
+  assert.match(app, /loadPreferredPageSize/)
+  assert.match(app, /savePreferredPageSize/)
+  assert.match(app, /preferredPageSizeRef/)
+  // The hard-coded default must no longer drive the pageable query branch.
+  assert.match(app, /runQueryPage\(queryConnId, opts\.dbName \?\? '', sql, 0, preferredPageSizeRef\.current, tabId\)/)
+}
+
+function testResultPanelOffersCancelWhileQueryIsRunning() {
+  const resultPanel = readFileSync(new URL('../src/components/ResultPanel.jsx', import.meta.url), 'utf8')
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+
+  // ResultPanel accepts an onCancelQuery callback and exposes a cancel control
+  // while the query is executing.
+  assert.match(resultPanel, /onCancelQuery/)
+  assert.match(resultPanel, /isRunning && onCancelQuery && \(/)
+  assert.match(resultPanel, /onClick=\{onCancelQuery\}/)
+  // App wires the cancel handler to the tab-scoped cancelQuery bridge call.
+  assert.match(app, /import \{ runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo \} from '\.\/lib\/bridge'/)
+  assert.match(app, /onCancelQuery=\{\(\) => cancelQuery\(tab\.id\)\}/)
 }
 
 function testValuePanelSyncsMonacoReadOnlyWhenEditabilityChanges() {
@@ -729,6 +789,8 @@ function testRecordViewContextMenuSupportsDatagripActions() {
   assert.match(dataViewer, /window\.getSelection\(\)\?\.toString\(\)/)
   assert.match(dataViewer, /editRequestKey/)
   assert.match(dataViewer, /setEditRequest\(/)
+  assert.match(dataViewer, /hover:bg-hover hover:text-fg-primary/)
+  assert.match(dataViewer, /focus-visible:bg-hover focus-visible:text-fg-primary/)
 }
 
 function testGridContextMenuSeparatesRowMarkerAndDataCell() {
@@ -845,6 +907,10 @@ testSqlCommentStrippingKeepsCommentedSelectEditable()
 testNewConsoleInheritsActiveDatabaseContext()
 testSqlConsoleResultEditsCanBeSavedForSimpleSelects()
 testResultPanelPreservesValuePanelOpenStateAcrossRuns()
+testResultPanelOffersCancelWhileQueryIsRunning()
+testResultPageSizePreferenceIsRemembered()
+testSqlEditorRendersSuggestWidgetOnTop()
+testColumnSuggestionsAreScopedToReferencedTables()
 testValuePanelSyncsMonacoReadOnlyWhenEditabilityChanges()
 testTableDataViewAndSchemaRefreshAreActiveOnly()
 testTableViewerDoesNotExposeMockBadgeInReleaseUI()

@@ -37,8 +37,8 @@ import ErrorBoundary      from './components/ErrorBoundary'
 import { Database, Leaf, Zap } from 'lucide-react'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
-import { runQuery, runQueryPage, listConnections, getBuildInfo } from './lib/bridge'
-import { appendResultPage, DEFAULT_PAGE_SIZE } from './lib/queryPaging'
+import { runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo } from './lib/bridge'
+import { appendResultPage, DEFAULT_PAGE_SIZE, loadPreferredPageSize, savePreferredPageSize } from './lib/queryPaging'
 import { stripLeadingSqlComments } from './lib/sqlText'
 import {
   closeAllTabsInWorkspace,
@@ -119,6 +119,9 @@ export default function App() {
   )
   const [connectionsReloadKey, setConnectionsReloadKey] = useState(0)
   const connIdRef = useRef(initialWorkspaceRef.current?.activeConnId || DEFAULT_CONN_ID)
+  // Remembered result fetch size — seeded from localStorage and updated
+  // whenever the user changes the page size in the result footer.
+  const preferredPageSizeRef = useRef(loadPreferredPageSize(DEFAULT_RESULT_PAGE_SIZE))
 
   /** Trigger Explorer + local connection list refresh. */
   const reloadConnections = useCallback(() => {
@@ -280,11 +283,12 @@ export default function App() {
       let queryResult
       try {
         if (!opts.multi && isPageableSql(sql)) {
-          const page = await runQueryPage(queryConnId, opts.dbName ?? '', sql, 0, DEFAULT_RESULT_PAGE_SIZE, tabId)
+          const pageSize = preferredPageSizeRef.current
+          const page = await runQueryPage(queryConnId, opts.dbName ?? '', sql, 0, preferredPageSizeRef.current, tabId)
           queryResult = appendResultPage(null, page, {
             offset: 0,
-            pageSize: DEFAULT_RESULT_PAGE_SIZE,
-            source: { sql, dbName: opts.dbName ?? '', connId: queryConnId, pageSize: DEFAULT_RESULT_PAGE_SIZE },
+            pageSize,
+            source: { sql, dbName: opts.dbName ?? '', connId: queryConnId, pageSize },
           })
         } else {
           queryResult = await runQuery(queryConnId, opts.dbName ?? '', sql, tabId)
@@ -423,6 +427,9 @@ export default function App() {
       }
     })
     if (!target) return
+
+    // Remember the chosen fetch size for subsequent queries / sessions.
+    preferredPageSizeRef.current = savePreferredPageSize(pageSize)
 
     const source = target.queryResult.source
     const nextSource = { ...source, pageSize }
@@ -822,6 +829,7 @@ export default function App() {
                           onSelectResult={(rid) => handleSelectResult(tab.id, rid)}
                           onLoadMore={() => activeResult?.id && handleLoadNextResultPage(tab.id, activeResult.id)}
                           onPageSizeChange={(size) => activeResult?.id && handleResultPageSizeChange(tab.id, activeResult.id, size)}
+                          onCancelQuery={() => cancelQuery(tab.id)}
                         />
                       </SplitPane>
                     </ErrorBoundary>

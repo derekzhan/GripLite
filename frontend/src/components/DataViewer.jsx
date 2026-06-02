@@ -672,10 +672,10 @@ function CtxItem({ label, onClick, disabled }) {
       onClick={disabled ? undefined : onClick}
       disabled={disabled}
       className={[
-        'w-full text-left px-3 py-1.5 transition-colors',
+        'w-full text-left px-3 py-1.5 transition-colors rounded-sm',
         disabled
           ? 'opacity-40 cursor-not-allowed'
-          : 'hover:bg-[color:var(--hover)] cursor-pointer',
+          : 'cursor-pointer hover:bg-hover hover:text-fg-primary focus-visible:bg-hover focus-visible:text-fg-primary focus-visible:outline-none',
       ].join(' ')}
     >
       {label}

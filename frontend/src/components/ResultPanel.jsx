@@ -101,6 +101,7 @@ export default function ResultPanel({
   onSelectResult,
   onLoadMore,
   onPageSizeChange,
+  onCancelQuery,
   connectionId = '',
   fallbackDb = '',
 }) {
@@ -234,6 +235,16 @@ export default function ResultPanel({
 
         <div className="ml-auto flex items-center gap-3 px-3 text-[11px] text-fg-muted">
           {isRunning && <span className="text-accent animate-pulse">Running…</span>}
+          {isRunning && onCancelQuery && (
+            <button
+              onClick={onCancelQuery}
+              title="Cancel running query"
+              className="text-[11px] px-2 py-0.5 rounded border border-danger text-danger
+                         hover:bg-danger hover:text-white transition-colors select-none"
+            >
+              ✕ Cancel
+            </button>
+          )}
           {activeTab === 'Result' && hasResult && !hasError && !isEmptyResultSet && (
             <span className={queryResult.truncated && !queryResult.hasMore ? 'text-warn' : ''}>
               {totalRows.toLocaleString()} rows shown
@@ -290,8 +301,18 @@ export default function ResultPanel({
         {activeTab === 'Result' && (
           <>
             {isRunning && (
-              <div className="flex-1 flex items-center justify-center text-fg-muted text-[13px]">
+              <div className="flex-1 flex flex-col items-center justify-center gap-4 text-fg-muted text-[13px]">
                 <span className="animate-pulse">Executing query…</span>
+                {onCancelQuery && (
+                  <button
+                    onClick={onCancelQuery}
+                    title="Cancel running query"
+                    className="text-[12px] px-3 py-1 rounded border border-danger text-danger
+                               hover:bg-danger hover:text-white transition-colors select-none"
+                  >
+                    ✕ Cancel query
+                  </button>
+                )}
               </div>
             )}
             {!isRunning && !hasResult && (

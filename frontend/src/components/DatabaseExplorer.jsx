@@ -31,6 +31,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import CreateDatabaseModal from './CreateDatabaseModal'
 import CreateTableModal from './CreateTableModal'
 import TableActionModal from './TableActionModal'
+import IndexActionModal from './IndexActionModal'
+import CreateIndexModal from './CreateIndexModal'
 import {
   LayoutGrid, Plus, Search, X,
   // Tree-node glyphs.  All of these are thin-stroke Lucide icons (strokeWidth
@@ -359,6 +361,12 @@ export default function DatabaseExplorer({
   const [tableAction, setTableAction] = useState(null)
   const [tableActionBusy, setTableActionBusy] = useState(false)
   const [tableActionError, setTableActionError] = useState('')
+  const [indexAction, setIndexAction] = useState(null)
+  const [indexActionBusy, setIndexActionBusy] = useState(false)
+  const [indexActionError, setIndexActionError] = useState('')
+  const [createIndexTarget, setCreateIndexTarget] = useState(null)
+  const [createIndexBusy, setCreateIndexBusy] = useState(false)
+  const [createIndexError, setCreateIndexError] = useState('')
 
   // Keep the ref in sync so the keydown handler (closure) always reads the
   // latest index without requiring it to be in the effect's dep array.
@@ -1000,6 +1008,67 @@ export default function DatabaseExplorer({
     }
   }, [onConnectionsChanged, refreshTablesFolder, tableAction])
 
+  // Drop a MongoDB collection index via the shell-style dropIndex command,
+  // then refresh the `indexes` sub-folder so the tree reflects the change.
+  const handleDropIndex = useCallback(async () => {
+    if (!indexAction?.connId || !indexAction?.tableName || !indexAction?.indexName) return
+    setIndexActionBusy(true)
+    setIndexActionError('')
+    try {
+      const { connId, dbName, tableName, indexName } = indexAction
+      const sql = `db.${tableName}.dropIndex(${JSON.stringify(indexName)})`
+      const result = await runQuery(connId, dbName, sql)
+      if (result?.error) throw new Error(result.error)
+      toast.success(`Deleted index ${indexName}`)
+      setIndexAction(null)
+      // Invalidate the cached live properties so the count + list re-read.
+      advancedCacheRef.current.clear()
+      refreshNode({
+        id: collFolderId(connId, dbName, tableName, 'indexes'),
+        type: 'collfolder', folderKind: 'indexes', label: 'indexes',
+        connId, dbName, tableName, hasChildren: true,
+      }, null)
+    } catch (err) {
+      setIndexActionError(normalizeError(err))
+    } finally {
+      setIndexActionBusy(false)
+    }
+  }, [indexAction, refreshNode])
+
+  // Create a MongoDB index from the structured spec produced by the modal,
+  // preserving key order for compound indexes, then refresh the folder.
+  const handleCreateIndex = useCallback(async ({ keys, unique, name } = {}) => {
+    if (!createIndexTarget?.connId || !createIndexTarget?.tableName) return
+    if (!keys || keys.length === 0) return
+    setCreateIndexBusy(true)
+    setCreateIndexError('')
+    try {
+      const { connId, dbName, tableName } = createIndexTarget
+      const keySpec = keys.map((k) => `${JSON.stringify(k.name)}: ${k.dir}`).join(', ')
+      const opts = []
+      if (unique) opts.push('unique: true')
+      if (name) opts.push(`name: ${JSON.stringify(name)}`)
+      const optsArg = opts.length ? `, { ${opts.join(', ')} }` : ''
+      // getCollection(...) tolerates collection names the bare db.<name>
+      // accessor cannot (dots, hyphens, leading digits).
+      const sql = `db.getCollection(${JSON.stringify(tableName)}).createIndex({ ${keySpec} }${optsArg})`
+      const result = await runQuery(connId, dbName, sql)
+      if (result?.error) throw new Error(result.error)
+      toast.success(`Created index on ${tableName}`)
+      setCreateIndexTarget(null)
+      advancedCacheRef.current.clear()
+      refreshNode({
+        id: collFolderId(connId, dbName, tableName, 'indexes'),
+        type: 'collfolder', folderKind: 'indexes', label: 'indexes',
+        connId, dbName, tableName, hasChildren: true,
+      }, null)
+    } catch (err) {
+      setCreateIndexError(normalizeError(err))
+    } finally {
+      setCreateIndexBusy(false)
+    }
+  }, [createIndexTarget, refreshNode])
+
   // ── Table open handler ────────────────────────────────────────────────────
   /**
    * openTable — open (or activate) the table's TableViewer tab.
@@ -1141,6 +1210,33 @@ export default function DatabaseExplorer({
           dbName:    node.dbName,
           tableName: node.tableName,
           tableKind: node.kind,
+          nodeRef:   node,
+        })
+      } else if (node.type === 'index') {
+        e.preventDefault()
+        e.stopPropagation()
+        setSelected(node.id)
+        setContextMenu({
+          kind:      'index',
+          x:         e.clientX,
+          y:         e.clientY,
+          connId:    node.connId,
+          dbName:    node.dbName,
+          tableName: node.tableName,
+          indexName: node.label,
+          primary:   node.isPK,
+        })
+      } else if (node.type === 'collfolder' && node.folderKind === 'indexes') {
+        e.preventDefault()
+        e.stopPropagation()
+        setSelected(node.id)
+        setContextMenu({
+          kind:      'indexes-folder',
+          x:         e.clientX,
+          y:         e.clientY,
+          connId:    node.connId,
+          dbName:    node.dbName,
+          tableName: node.tableName,
           nodeRef:   node,
         })
       }
@@ -1657,6 +1753,32 @@ export default function DatabaseExplorer({
         }}
         onConfirm={handleTableAction}
       />
+
+      <IndexActionModal
+        target={indexAction}
+        isBusy={indexActionBusy}
+        error={indexActionError}
+        onCancel={() => {
+          if (!indexActionBusy) {
+            setIndexAction(null)
+            setIndexActionError('')
+          }
+        }}
+        onConfirm={handleDropIndex}
+      />
+
+      <CreateIndexModal
+        target={createIndexTarget}
+        isBusy={createIndexBusy}
+        error={createIndexError}
+        onCancel={() => {
+          if (!createIndexBusy) {
+            setCreateIndexTarget(null)
+            setCreateIndexError('')
+          }
+        }}
+        onConfirm={handleCreateIndex}
+      />
     </div>
   )
 
@@ -1732,6 +1854,41 @@ export default function DatabaseExplorer({
             label: `SELECT — ${tableName}`,
             defaultDb: dbName,
           }),
+        },
+      ]
+    }
+
+    if (ctx.kind === 'indexes-folder') {
+      const { connId, dbName, tableName, nodeRef } = ctx
+      return [
+        {
+          label:  <MenuLabel icon={Plus} text="Add Index..." />,
+          key: 'n',
+          action: () => setCreateIndexTarget({ connId, dbName, tableName }),
+        },
+        { divider: true },
+        {
+          label:    <MenuLabel icon={RotateCw} text="Refresh" />,
+          shortcut: 'F5', key: 'F5',
+          action:   () => {
+            advancedCacheRef.current.clear()
+            refreshNode(nodeRef ?? {
+              id: collFolderId(connId, dbName, tableName, 'indexes'),
+              type: 'collfolder', folderKind: 'indexes', label: 'indexes',
+              connId, dbName, tableName, hasChildren: true,
+            }, null)
+          },
+        },
+      ]
+    }
+
+    if (ctx.kind === 'index') {
+      const { connId, dbName, tableName, indexName, primary } = ctx
+      return [
+        {
+          label:  <MenuLabel icon={Trash2} text="Delete Index..." />,
+          key: 'x',
+          action: () => setIndexAction({ connId, dbName, tableName, indexName, primary }),
         },
       ]
     }

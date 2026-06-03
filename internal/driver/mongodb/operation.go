@@ -37,9 +37,14 @@ type mongoOperation struct {
 	Command       bson.D
 	DistinctField string
 	IndexKeys     map[string]any
-	IndexName     string
-	Skip          int64
-	Limit         int64
+	// IndexKeysOrdered preserves the field order of a compound index (a plain
+	// map scrambles it). When set it takes precedence over IndexKeys.
+	IndexKeysOrdered bson.D
+	IndexUnique      bool
+	IndexNameOpt     string
+	IndexName        string
+	Skip             int64
+	Limit            int64
 }
 
 func (op mongoOperation) IsWrite() bool {

@@ -129,8 +129,29 @@ func collectionObject(vm *goja.Runtime, dbName, coll string, capture func(*mongo
 	_ = obj.Set("deleteMany", func(filter map[string]any) *mongoOperation {
 		return capture(&mongoOperation{Kind: opDeleteMany, Database: dbName, Collection: coll, Filter: filter})
 	})
-	_ = obj.Set("createIndex", func(keys map[string]any) *mongoOperation {
-		return capture(&mongoOperation{Kind: opCreateIndex, Database: dbName, Collection: coll, IndexKeys: keys})
+	_ = obj.Set("createIndex", func(call goja.FunctionCall) goja.Value {
+		op := &mongoOperation{
+			Kind:             opCreateIndex,
+			Database:         dbName,
+			Collection:       coll,
+			IndexKeysOrdered: exportDocument(vm, call.Argument(0)),
+		}
+		if optsArg := call.Argument(1); !goja.IsUndefined(optsArg) && !goja.IsNull(optsArg) {
+			for _, e := range exportDocument(vm, optsArg) {
+				switch e.Key {
+				case "unique":
+					if b, ok := e.Value.(bool); ok {
+						op.IndexUnique = b
+					}
+				case "name":
+					if s, ok := e.Value.(string); ok {
+						op.IndexNameOpt = s
+					}
+				}
+			}
+		}
+		capture(op)
+		return vm.ToValue(op)
 	})
 	_ = obj.Set("dropIndex", func(name string) *mongoOperation {
 		return capture(&mongoOperation{Kind: opDropIndex, Database: dbName, Collection: coll, IndexName: name})

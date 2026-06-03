@@ -425,7 +425,31 @@ func (d *mongoDriver) executeOperation(ctx context.Context, op mongoOperation) (
 		}
 		return writeSummaryResult(res.DeletedCount, 0, map[string]any{"deletedCount": res.DeletedCount}), nil
 	case opCreateIndex:
-		name, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: toBSONDocument(op.IndexKeys)})
+		keys := op.IndexKeysOrdered
+		if keys == nil {
+			keys = toBSONDocument(op.IndexKeys)
+		}
+		// goja exports JS numbers as float64/int64; normalize the common
+		// ascending/descending directions (1 / -1) back to int so the server
+		// stores them as plain index directions rather than doubles.
+		for i := range keys {
+			switch v := keys[i].Value.(type) {
+			case float64:
+				if v == float64(int64(v)) {
+					keys[i].Value = int32(v)
+				}
+			case int64:
+				keys[i].Value = int32(v)
+			}
+		}
+		idxOpts := options.Index()
+		if op.IndexUnique {
+			idxOpts.SetUnique(true)
+		}
+		if op.IndexNameOpt != "" {
+			idxOpts.SetName(op.IndexNameOpt)
+		}
+		name, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys, Options: idxOpts})
 		if err != nil {
 			return nil, fmt.Errorf("mongodb: createIndex: %w", err)
 		}

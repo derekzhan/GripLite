@@ -44,6 +44,31 @@ func TestParseJSONCommand(t *testing.T) {
 	}
 }
 
+func TestParseShellCreateIndexPreservesOrderAndOptions(t *testing.T) {
+	op, err := ParseMongoOperation("prm", `db.getCollection("prm_order").createIndex({ partner_id: 1, created_at: -1 }, { unique: true, name: "idx_partner_created" })`)
+	if err != nil {
+		t.Fatalf("ParseMongoOperation returned error: %v", err)
+	}
+	if op.Kind != opCreateIndex || op.Collection != "prm_order" {
+		t.Fatalf("op identity = %#v", op)
+	}
+	if len(op.IndexKeysOrdered) != 2 {
+		t.Fatalf("IndexKeysOrdered = %#v, want 2 ordered keys", op.IndexKeysOrdered)
+	}
+	if op.IndexKeysOrdered[0].Key != "partner_id" || op.IndexKeysOrdered[1].Key != "created_at" {
+		t.Fatalf("compound index field order scrambled: %#v", op.IndexKeysOrdered)
+	}
+	if !op.IndexUnique {
+		t.Fatalf("unique option not captured: %#v", op)
+	}
+	if op.IndexNameOpt != "idx_partner_created" {
+		t.Fatalf("name option = %q, want idx_partner_created", op.IndexNameOpt)
+	}
+	if !op.IsWrite() {
+		t.Fatalf("createIndex should be classified as a write op")
+	}
+}
+
 func TestWriteOperationsAreClassified(t *testing.T) {
 	for _, input := range []string{
 		`db.orders.insertOne({ status: "new" })`,

@@ -631,6 +631,57 @@ function testMongoCollectionExpandsIntoFieldsAndIndexes() {
   assert.match(explorer, /\(\$\{ix\.columns\.join\(', '\)\}\)/)
 }
 
+function testIndexNodeContextMenuSupportsDelete() {
+  const explorer = readFileSync(new URL('../src/components/DatabaseExplorer.jsx', import.meta.url), 'utf8')
+  // Right-clicking an index node opens a dedicated context menu.
+  assert.match(explorer, /node\.type === 'index'/)
+  assert.match(explorer, /kind:\s*'index'/)
+  // The menu offers a Delete action that stages the index for confirmation.
+  assert.match(explorer, /ctx\.kind === 'index'/)
+  assert.match(explorer, /text="Delete Index\.\.\."/)
+  assert.match(explorer, /setIndexAction\(\{ connId, dbName, tableName, indexName/)
+  // Confirming drops the index via the shell dropIndex command and refreshes.
+  assert.match(explorer, /dropIndex\(\$\{JSON\.stringify\(indexName\)\}\)/)
+  assert.match(explorer, /folderKind: 'indexes', label: 'indexes'/)
+  // The confirmation modal is wired up.
+  assert.match(explorer, /<IndexActionModal/)
+  assert.match(explorer, /onConfirm=\{handleDropIndex\}/)
+
+  const modal = readFileSync(new URL('../src/components/IndexActionModal.jsx', import.meta.url), 'utf8')
+  // The dialog is a yes/no destructive confirmation.
+  assert.match(modal, /Delete index/)
+  assert.match(modal, /'Deleting\.\.\.' : 'Yes'/)
+  assert.match(modal, /^\s*No\s*$/m)
+}
+
+function testIndexesFolderContextMenuSupportsAddIndex() {
+  const explorer = readFileSync(new URL('../src/components/DatabaseExplorer.jsx', import.meta.url), 'utf8')
+  // Right-clicking the `indexes` sub-folder opens an "Add Index" menu.
+  assert.match(explorer, /node\.type === 'collfolder' && node\.folderKind === 'indexes'/)
+  assert.match(explorer, /kind:\s*'indexes-folder'/)
+  assert.match(explorer, /ctx\.kind === 'indexes-folder'/)
+  assert.match(explorer, /text="Add Index\.\.\."/)
+  assert.match(explorer, /setCreateIndexTarget\(\{ connId, dbName, tableName \}\)/)
+  // Confirming builds an ordered createIndex shell command (compound-safe) and
+  // forwards unique + name options.
+  assert.match(explorer, /createIndex\(\{ \$\{keySpec\} \}/)
+  assert.match(explorer, /\$\{JSON\.stringify\(k\.name\)\}: \$\{k\.dir\}/)
+  assert.match(explorer, /opts\.push\('unique: true'\)/)
+  assert.match(explorer, /<CreateIndexModal/)
+  assert.match(explorer, /onConfirm=\{handleCreateIndex\}/)
+
+  const modal = readFileSync(new URL('../src/components/CreateIndexModal.jsx', import.meta.url), 'utf8')
+  // The dialog loads collection fields and lets the user order compound keys
+  // with per-key direction toggles + a unique option.
+  assert.match(modal, /getTableSchema\(target\.connId, target\.dbName, target\.tableName\)/)
+  assert.match(modal, /\[\.\.\.prev, \{ name: fieldName, dir: 1 \}\]/)
+  assert.match(modal, /onConfirm\?\.\(\{ keys, unique, name: name\.trim\(\) \}\)/)
+  assert.match(modal, /setDir\(k\.name, 1\)/)
+  assert.match(modal, /setDir\(k\.name, -1\)/)
+  assert.match(modal, /^\s*ASC\s*$/m)
+  assert.match(modal, /^\s*DESC\s*$/m)
+}
+
 function testGridAndTextModesSupportHighlightSearch() {
   const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
   // A shared helper builds highlighted nodes and marks the current match.
@@ -967,6 +1018,8 @@ testColumnSuggestionsAreScopedToReferencedTables()
 testRecordViewSupportsCtrlFHighlightSearch()
 testGridAndTextModesSupportHighlightSearch()
 testMongoCollectionExpandsIntoFieldsAndIndexes()
+testIndexNodeContextMenuSupportsDelete()
+testIndexesFolderContextMenuSupportsAddIndex()
 testValuePanelSyncsMonacoReadOnlyWhenEditabilityChanges()
 testTableDataViewAndSchemaRefreshAreActiveOnly()
 testTableViewerDoesNotExposeMockBadgeInReleaseUI()

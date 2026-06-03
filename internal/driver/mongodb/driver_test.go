@@ -8,6 +8,27 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
+func TestMongoIndexKeyLabel(t *testing.T) {
+	cases := []struct {
+		field string
+		value any
+		want  string
+	}{
+		{"created_at", int32(1), "created_at"},
+		{"created_at", int32(-1), "created_at desc"},
+		{"tno", int64(-1), "tno desc"},
+		{"score", float64(-1), "score desc"},
+		{"tracking.internal_account_number", int32(1), "tracking.internal_account_number"},
+		{"description", "text", "description text"},
+		{"loc", "2dsphere", "loc 2dsphere"},
+	}
+	for _, c := range cases {
+		if got := mongoIndexKeyLabel(c.field, c.value); got != c.want {
+			t.Errorf("mongoIndexKeyLabel(%q, %v) = %q, want %q", c.field, c.value, got, c.want)
+		}
+	}
+}
+
 func TestNewRegistersMongoDBDriver(t *testing.T) {
 	drv, err := driver.New(driver.ConnectionConfig{
 		ID:   "mongo-1",

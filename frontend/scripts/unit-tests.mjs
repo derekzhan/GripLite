@@ -601,6 +601,59 @@ function testResultPanelPreservesValuePanelOpenStateAcrossRuns() {
   assert.match(dataViewer, /onValuePanelCellChange\?\.\(resolved\)/)
 }
 
+function testRecordViewSupportsCtrlFHighlightSearch() {
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+  // A reusable highlighter wraps matches in <mark>.
+  assert.match(dataViewer, /function HighlightedText/)
+  assert.match(dataViewer, /<mark/)
+  // Ctrl/Cmd+F opens the in-record search.
+  assert.match(dataViewer, /\(e\.metaKey \|\| e\.ctrlKey\) && \(e\.key === 'f' \|\| e\.key === 'F'\)/)
+  // Matches cover both field names and values.
+  assert.match(dataViewer, /searchRe\.test\(name\)/)
+  assert.match(dataViewer, /recordValueSearchText\(row\[i\]\)/)
+  // Highlight props are threaded into both readonly and editable value cells.
+  assert.match(dataViewer, /<ReadonlyRecordValue value=\{val\} searchRe=\{searchRe\} searchActive=\{valueActive\} \/>/)
+  assert.match(dataViewer, /<HighlightedText text=\{col\.name\} re=\{searchRe\} active=\{fieldActive\} \/>/)
+}
+
+function testMongoCollectionExpandsIntoFieldsAndIndexes() {
+  const explorer = readFileSync(new URL('../src/components/DatabaseExplorer.jsx', import.meta.url), 'utf8')
+  // A collection (kind === 'collection') expands into two sub-folders.
+  assert.match(explorer, /type === 'table' && node\.kind === 'collection'/)
+  assert.match(explorer, /folderKind: 'fields', label: 'fields', count: fieldCount/)
+  assert.match(explorer, /folderKind: 'indexes', label: 'indexes', count: indexCount/)
+  // Each sub-folder lazy-loads its own contents.
+  assert.match(explorer, /type === 'collfolder' && node\.folderKind === 'fields'/)
+  assert.match(explorer, /type === 'collfolder' && node\.folderKind === 'indexes'/)
+  // Indexes come from the live advanced-properties call and render their keys.
+  assert.match(explorer, /getTableAdvancedProperties/)
+  assert.match(explorer, /type: 'index', label: ix\.name/)
+  assert.match(explorer, /\(\$\{ix\.columns\.join\(', '\)\}\)/)
+}
+
+function testGridAndTextModesSupportHighlightSearch() {
+  const dataViewer = readFileSync(new URL('../src/components/DataViewer.jsx', import.meta.url), 'utf8')
+  // A shared helper builds highlighted nodes and marks the current match.
+  assert.match(dataViewer, /function buildHighlightNodes/)
+  // Text mode renders highlighted nodes and opens search on Ctrl/Cmd+F.
+  assert.match(dataViewer, /placeholder="Find in text"/)
+  assert.match(dataViewer, /<pre[^>]*>\s*\{nodes\}\s*<\/pre>/)
+  // Grid mode has its OWN Ctrl/Cmd+F find overlay — independent of the toolbar
+  // value-filter box.
+  assert.match(dataViewer, /placeholder="Find in grid"/)
+  assert.match(dataViewer, /if \(!isFind \|\| mode !== 'grid'\) return/)
+  assert.match(dataViewer, /setGridFindOpen\(true\)/)
+  // The grid find searches both field names (headers) and value cells.
+  assert.match(dataViewer, /out\.push\(\{ kind: 'header', col: c \}\)/)
+  assert.match(dataViewer, /out\.push\(\{ kind: 'cell', row: r, col: c \}\)/)
+  // Matching headers are highlighted, with the current header emphasised.
+  assert.match(dataViewer, /const headerMatch = searchHeaderCols\?\.has\(i\)/)
+  assert.match(dataViewer, /const isCurrentHeader = currentHeaderCol === i/)
+  // The grid find drives the canvas highlight (not the toolbar box).
+  assert.match(dataViewer, /searchMatchCells=\{gridFindOpen \? gridFindMatchCells : searchMatchCells\}/)
+  assert.match(dataViewer, /searchHeaderCols=\{gridFindOpen \? gridFindHeaderCols : null\}/)
+}
+
 function testColumnSuggestionsAreScopedToReferencedTables() {
   const sqlEditor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
   // A helper extracts the tables referenced in FROM/JOIN clauses.
@@ -911,6 +964,9 @@ testResultPanelOffersCancelWhileQueryIsRunning()
 testResultPageSizePreferenceIsRemembered()
 testSqlEditorRendersSuggestWidgetOnTop()
 testColumnSuggestionsAreScopedToReferencedTables()
+testRecordViewSupportsCtrlFHighlightSearch()
+testGridAndTextModesSupportHighlightSearch()
+testMongoCollectionExpandsIntoFieldsAndIndexes()
 testValuePanelSyncsMonacoReadOnlyWhenEditabilityChanges()
 testTableDataViewAndSchemaRefreshAreActiveOnly()
 testTableViewerDoesNotExposeMockBadgeInReleaseUI()

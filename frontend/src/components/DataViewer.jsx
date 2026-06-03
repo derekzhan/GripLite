@@ -191,6 +191,86 @@ function buildSearchRegex(query, { caseSensitive, regex, wholeWord }) {
   }
 }
 
+// HighlightedText renders `text`, wrapping every substring matched by `re` in
+// a <mark>.  When `active` is true the marks use a stronger colour so the
+// currently-focused match (next/prev navigation) stands out.  Returns the
+// plain string unchanged when there is no regex, so it is safe to drop in
+// anywhere a string was previously rendered.
+function HighlightedText({ text, re, active = false }) {
+  const str = text === null || text === undefined ? '' : String(text)
+  if (!re || !str) return str
+  const g = re.global ? re : new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g')
+  g.lastIndex = 0
+  const out = []
+  let last = 0
+  let key = 0
+  let m
+  while ((m = g.exec(str)) !== null) {
+    if (m.index > last) out.push(str.slice(last, m.index))
+    out.push(
+      <mark
+        key={key++}
+        className={[
+          'rounded-[2px] px-[1px]',
+          active ? 'bg-amber-400 text-black' : 'bg-amber-200 text-black',
+        ].join(' ')}
+      >
+        {m[0]}
+      </mark>,
+    )
+    last = m.index + m[0].length
+    if (m.index === g.lastIndex) g.lastIndex++ // guard against zero-width matches
+  }
+  if (last < str.length) out.push(str.slice(last))
+  return out
+}
+
+// buildHighlightNodes splits `text` into an array of React nodes, wrapping
+// every match of `re` in a <mark>.  The match at `currentIndex` receives the
+// `currentRef` and a stronger colour so next/prev navigation can scroll to it.
+// Returns { nodes, count }.
+function buildHighlightNodes(text, re, currentIndex, currentRef) {
+  const str = text === null || text === undefined ? '' : String(text)
+  if (!re || !str) return { nodes: str, count: 0 }
+  const g = re.global ? re : new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g')
+  g.lastIndex = 0
+  const out = []
+  let last = 0
+  let key = 0
+  let i = 0
+  let m
+  while ((m = g.exec(str)) !== null) {
+    if (m.index > last) out.push(str.slice(last, m.index))
+    const isCurrent = i === currentIndex
+    out.push(
+      <mark
+        key={key++}
+        ref={isCurrent ? currentRef : undefined}
+        className={[
+          'rounded-[2px]',
+          isCurrent ? 'bg-amber-400 text-black' : 'bg-amber-200 text-black',
+        ].join(' ')}
+      >
+        {m[0]}
+      </mark>,
+    )
+    last = m.index + m[0].length
+    i++
+    if (m.index === g.lastIndex) g.lastIndex++ // guard against zero-width matches
+  }
+  if (last < str.length) out.push(str.slice(last))
+  return { nodes: out, count: i }
+}
+
+// recordValueSearchText returns the string used to match a record value, or
+// null when the value is not plain-text searchable (NULL or a value rendered
+// with the interactive JSON tree, which we don't inline-highlight).
+function recordValueSearchText(value) {
+  if (value === null || value === undefined) return null
+  if (parseDisplayJsonValue(value)) return null
+  return String(value)
+}
+
 function sameSet(a, b) {
   if (a.size !== b.size) return false
   for (const item of a) {
@@ -234,6 +314,8 @@ function GridCanvas({
   onCellContextMenu: onGridCellContextMenu,
   searchMatchCells,
   currentSearchMatch,
+  searchHeaderCols,
+  currentHeaderCol,
   sourceRowOrder,
   sourceColumnOrder,
   onNearBottom,
@@ -278,9 +360,23 @@ function GridCanvas({
     deriveColumns(columns).map((col, i) => {
       const active = sortConfig?.colIdx === mapDisplayCol(i)
       const arrow  = active ? (sortConfig.dir === 'asc' ? ' ↑' : ' ↓') : ''
-      return { ...col, title: col.title + arrow }
+      const headerMatch = searchHeaderCols?.has(i)
+      const isCurrentHeader = currentHeaderCol === i
+      return {
+        ...col,
+        title: col.title + arrow,
+        ...((headerMatch || isCurrentHeader) ? {
+          themeOverride: {
+            bgHeader: isCurrentHeader ? '#facc15' : '#fde047',
+            bgHeaderHovered: '#facc15',
+            bgHeaderHasFocus: '#facc15',
+            textHeader: '#1f2328',
+            textHeaderSelected: '#1f2328',
+          },
+        } : {}),
+      }
     }),
-  [columns, sortConfig, mapDisplayCol])
+  [columns, sortConfig, mapDisplayCol, searchHeaderCols, currentHeaderCol])
 
   // ── Header click: internal or delegate to parent ───────────────────────
   const handleHeaderClicked = useCallback((colIndex) => {
@@ -438,6 +534,12 @@ function GridCanvas({
   // Run whenever internalSort changes (covers both set and clear).
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [internalSort])
+
+  useEffect(() => {
+    if (!gridRef.current || currentHeaderCol == null) return
+    // Scroll horizontally so the matching header column is visible.
+    gridRef.current.scrollTo(currentHeaderCol, 0, 'horizontal', 0, 0, { hAlign: 'center' })
+  }, [currentHeaderCol])
 
   useEffect(() => {
     if (!gridRef.current || !currentSearchMatch) return
@@ -694,6 +796,8 @@ function GridWithPanel({
   exportFilename,
   searchMatchCells,
   currentSearchMatch,
+  searchHeaderCols,
+  currentHeaderCol,
   sourceRowOrder,
   sourceColumnOrder,
   onNearBottom,
@@ -866,6 +970,8 @@ function GridWithPanel({
           onCellContextMenu={openGridCellContextMenu}
           searchMatchCells={searchMatchCells}
           currentSearchMatch={currentSearchMatch}
+          searchHeaderCols={searchHeaderCols}
+          currentHeaderCol={currentHeaderCol}
           sourceRowOrder={sourceRowOrder}
           sourceColumnOrder={sourceColumnOrder}
           onNearBottom={onNearBottom}
@@ -1016,6 +1122,12 @@ function PanelRail({ valuePanelOpen, onToggleValuePanel }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function TextView({ columns, rows, format }) {
   const [copied, setCopied] = useState(false)
+  const [searchOpen,  setSearchOpen]  = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchIndex, setSearchIndex] = useState(0)
+  const containerRef   = useRef(null)
+  const searchInputRef = useRef(null)
+  const currentMarkRef = useRef(null)
 
   const text = format === 'json' ? toJson(columns, rows) : toMysqlTable(columns, rows)
 
@@ -1025,9 +1137,78 @@ function TextView({ columns, rows, format }) {
       setTimeout(() => setCopied(false), 2000)
     })
 
+  // The rendered text already contains both the field-name header row and the
+  // values, so a single highlight pass covers "field names + values".
+  const searchRe = useMemo(() => {
+    if (!searchOpen || !searchQuery) return null
+    return buildSearchRegex(searchQuery, { caseSensitive: false, regex: false, wholeWord: false }).re
+  }, [searchOpen, searchQuery])
+
+  const { nodes, count } = useMemo(
+    () => buildHighlightNodes(text, searchRe, searchIndex, currentMarkRef),
+    [text, searchRe, searchIndex],
+  )
+
+  useEffect(() => { setSearchIndex(0) }, [searchQuery])
+
+  // Open the search bar on Ctrl/Cmd+F — only for the visible viewer.
+  useEffect(() => {
+    const onKey = (e) => {
+      const isFind = (e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')
+      if (!isFind) return
+      const el = containerRef.current
+      if (!el || el.offsetParent === null) return
+      e.preventDefault()
+      setSearchOpen(true)
+      requestAnimationFrame(() => searchInputRef.current?.select())
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
+
+  useEffect(() => {
+    currentMarkRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [searchIndex, count])
+
+  const stepSearch = useCallback((delta) => {
+    setSearchIndex((cur) => (count === 0 ? 0 : (cur + delta + count) % count))
+  }, [count])
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false)
+    setSearchQuery('')
+    setSearchIndex(0)
+  }, [])
+
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-      <div className="flex justify-end items-center px-3 py-1 bg-titlebar border-b border-line-subtle flex-shrink-0">
+    <div ref={containerRef} className="flex flex-col h-full overflow-hidden">
+      <div className="flex justify-end items-center gap-2 px-3 py-1 bg-titlebar border-b border-line-subtle flex-shrink-0">
+        {searchOpen && (
+          <div className="flex items-center gap-1 rounded border border-line bg-panel px-1.5 py-0.5">
+            <span className="text-fg-muted text-[11px] select-none">🔍</span>
+            <input
+              ref={searchInputRef}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { e.preventDefault(); closeSearch() }
+                else if (e.key === 'Enter') { e.preventDefault(); stepSearch(e.shiftKey ? -1 : 1) }
+              }}
+              placeholder="Find in text"
+              autoCapitalize="off" autoCorrect="off" spellCheck={false}
+              className="w-44 bg-transparent outline-none text-[12px] text-fg-primary placeholder:text-fg-muted"
+            />
+            <span className="text-fg-muted text-[11px] tabular-nums select-none min-w-[44px] text-right">
+              {searchQuery ? `${count ? Math.min(searchIndex + 1, count) : 0}/${count}` : ''}
+            </span>
+            <button onClick={() => stepSearch(-1)} disabled={!count} title="Previous match (Shift+Enter)"
+              className="px-1 text-fg-secondary hover:text-fg-primary disabled:opacity-30 select-none">↑</button>
+            <button onClick={() => stepSearch(1)} disabled={!count} title="Next match (Enter)"
+              className="px-1 text-fg-secondary hover:text-fg-primary disabled:opacity-30 select-none">↓</button>
+            <button onClick={closeSearch} title="Close (Esc)"
+              className="px-1 text-fg-secondary hover:text-danger select-none">✕</button>
+          </div>
+        )}
         <button
           onClick={copy}
           className="text-[11px] text-fg-secondary hover:text-fg-primary px-2 py-0.5 rounded
@@ -1038,7 +1219,7 @@ function TextView({ columns, rows, format }) {
       </div>
       <div className="flex-1 overflow-auto p-4 bg-sunken">
         <pre className="text-[12px] leading-[1.65] font-mono text-fg-primary whitespace-pre">
-          {text}
+          {nodes}
         </pre>
       </div>
     </div>
@@ -1161,7 +1342,7 @@ function JsonExpandableValue({ value, parsedJson }) {
  * produces a no-op edit (isDirty stays true only if the value actually
  * differs from the source row).
  */
-function InlineValueCell({ value, onCommit, onSetNull, readOnly, edited, editRequestKey }) {
+function InlineValueCell({ value, onCommit, onSetNull, readOnly, edited, editRequestKey, searchRe, searchActive }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft]     = useState('')
   const taRef                 = useRef(null)
@@ -1250,12 +1431,12 @@ function InlineValueCell({ value, onCommit, onSetNull, readOnly, edited, editReq
               <span className="ml-2 text-fg-muted text-[10px]">({String(value).length} chars)</span>
             </summary>
             <span className="text-fg-primary break-all block mt-1 whitespace-pre-wrap">
-              {String(value)}
+              <HighlightedText text={String(value)} re={searchRe} active={searchActive} />
             </span>
           </details>
         ) : (
           <span className="text-fg-primary break-words whitespace-pre-wrap">
-            {String(value)}
+            <HighlightedText text={String(value)} re={searchRe} active={searchActive} />
           </span>
         )}
       </div>
@@ -1276,7 +1457,7 @@ function InlineValueCell({ value, onCommit, onSetNull, readOnly, edited, editReq
   )
 }
 
-function ReadonlyRecordValue({ value }) {
+function ReadonlyRecordValue({ value, searchRe, searchActive }) {
   if (value === null || value === undefined) {
     return <span className="text-fg-muted italic not-italic">NULL</span>
   }
@@ -1289,11 +1470,17 @@ function ReadonlyRecordValue({ value }) {
           {String(value).slice(0, 120)}…
           <span className="ml-2 text-fg-muted text-[10px]">({String(value).length} chars)</span>
         </summary>
-        <span className="text-fg-primary break-all block mt-1">{String(value)}</span>
+        <span className="text-fg-primary break-all block mt-1">
+          <HighlightedText text={String(value)} re={searchRe} active={searchActive} />
+        </span>
       </details>
     )
   }
-  return <span className="text-fg-primary break-words">{String(value)}</span>
+  return (
+    <span className="text-fg-primary break-words">
+      <HighlightedText text={String(value)} re={searchRe} active={searchActive} />
+    </span>
+  )
 }
 
 function RecordValueContextMenu({ x, y, cell, canEdit, onEdit, onOpenValueEditor, onSetNull, onCopy, onClose }) {
@@ -1326,6 +1513,14 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
   const [valuePanelCell, setValuePanelCell] = useState(null)
   const [editRequest, setEditRequest] = useState(null)
   const ctxRef = useRef(null)
+
+  // ── Ctrl/Cmd+F highlight search (field names + values) ─────────────────
+  const [searchOpen,  setSearchOpen]  = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchIndex, setSearchIndex] = useState(0)
+  const containerRef  = useRef(null)
+  const searchInputRef = useRef(null)
+  const rowRefs = useRef(new Map())
 
   const cycleFieldSort = () =>
     setFieldSort((s) => (s === null ? 'asc' : s === 'asc' ? 'desc' : null))
@@ -1361,6 +1556,70 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
 
   const deleted = !!editState?.isDeleted(idx)
   const added   = !!editState?.isAdded(idx)
+
+  // Compiled search regex (case-insensitive substring) — only live while the
+  // search bar is open and a query is present.
+  const searchRe = useMemo(() => {
+    if (!searchOpen || !searchQuery) return null
+    return buildSearchRegex(searchQuery, { caseSensitive: false, regex: false, wholeWord: false }).re
+  }, [searchOpen, searchQuery])
+
+  // Ordered list of matches across the visible field rows.  Each match is a
+  // {colIndex, part} pair where part is 'field' (field name) or 'value'.
+  const matches = useMemo(() => {
+    if (!searchRe || !row) return []
+    const out = []
+    for (const i of sortedIndices) {
+      const name = columns[i]?.name ?? ''
+      if (searchRe.test(name)) out.push({ colIndex: i, part: 'field' })
+      const vtext = recordValueSearchText(row[i])
+      if (vtext != null && searchRe.test(vtext)) out.push({ colIndex: i, part: 'value' })
+    }
+    return out
+  }, [searchRe, row, sortedIndices, columns])
+
+  const currentMatch = matches.length
+    ? matches[Math.min(searchIndex, matches.length - 1)]
+    : null
+
+  // Reset the active match whenever the query changes.
+  useEffect(() => { setSearchIndex(0) }, [searchQuery])
+
+  // Open the search bar on Ctrl/Cmd+F — but only for the visible viewer
+  // (offsetParent is null for CSS-hidden, kept-alive tabs).
+  useEffect(() => {
+    const onKey = (e) => {
+      const isFind = (e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')
+      if (!isFind) return
+      const el = containerRef.current
+      if (!el || el.offsetParent === null) return
+      e.preventDefault()
+      setSearchOpen(true)
+      requestAnimationFrame(() => searchInputRef.current?.select())
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Scroll the active match's row into view as the user navigates.
+  useEffect(() => {
+    if (!currentMatch) return
+    const el = rowRefs.current.get(currentMatch.colIndex)
+    el?.scrollIntoView({ block: 'nearest' })
+  }, [currentMatch])
+
+  const stepSearch = useCallback((delta) => {
+    setSearchIndex((cur) => {
+      if (matches.length === 0) return 0
+      return (cur + delta + matches.length) % matches.length
+    })
+  }, [matches.length])
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false)
+    setSearchQuery('')
+    setSearchIndex(0)
+  }, [])
 
   const copyRow = () => {
     if (!row) return
@@ -1425,7 +1684,7 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div ref={containerRef} className="flex h-full overflow-hidden">
       {/* ── Left: row list ──────────────────────────────────────────── */}
       <div
         className="flex flex-col w-52 flex-shrink-0 border-r border-line-subtle bg-titlebar overflow-hidden"
@@ -1490,13 +1749,52 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
               <span className="text-fg-muted">· double-click a value to edit</span>
             )}
           </span>
-          <button
-            onClick={copyRow}
-            disabled={!row}
-            className="text-fg-secondary hover:text-fg-primary px-2 py-0.5 rounded hover:bg-hover transition-colors disabled:opacity-30 select-none"
-          >
-            {copied ? '✓ Copied' : '⎘ Copy record'}
-          </button>
+          <div className="flex items-center gap-2">
+            {searchOpen && (
+              <div className="flex items-center gap-1 rounded border border-line bg-panel px-1.5 py-0.5">
+                <span className="text-fg-muted text-[11px] select-none">🔍</span>
+                <input
+                  ref={searchInputRef}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') { e.preventDefault(); closeSearch() }
+                    else if (e.key === 'Enter') { e.preventDefault(); stepSearch(e.shiftKey ? -1 : 1) }
+                  }}
+                  placeholder="Find in field & value"
+                  autoCapitalize="off" autoCorrect="off" spellCheck={false}
+                  className="w-44 bg-transparent outline-none text-[12px] text-fg-primary placeholder:text-fg-muted"
+                />
+                <span className="text-fg-muted text-[11px] tabular-nums select-none min-w-[44px] text-right">
+                  {searchQuery ? `${matches.length ? Math.min(searchIndex + 1, matches.length) : 0}/${matches.length}` : ''}
+                </span>
+                <button
+                  onClick={() => stepSearch(-1)}
+                  disabled={!matches.length}
+                  title="Previous match (Shift+Enter)"
+                  className="px-1 text-fg-secondary hover:text-fg-primary disabled:opacity-30 select-none"
+                >↑</button>
+                <button
+                  onClick={() => stepSearch(1)}
+                  disabled={!matches.length}
+                  title="Next match (Enter)"
+                  className="px-1 text-fg-secondary hover:text-fg-primary disabled:opacity-30 select-none"
+                >↓</button>
+                <button
+                  onClick={closeSearch}
+                  title="Close (Esc)"
+                  className="px-1 text-fg-secondary hover:text-danger select-none"
+                >✕</button>
+              </div>
+            )}
+            <button
+              onClick={copyRow}
+              disabled={!row}
+              className="text-fg-secondary hover:text-fg-primary px-2 py-0.5 rounded hover:bg-hover transition-colors disabled:opacity-30 select-none"
+            >
+              {copied ? '✓ Copied' : '⎘ Copy record'}
+            </button>
+          </div>
         </div>
 
         {!row ? (
@@ -1535,11 +1833,17 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
                   const col     = columns[i]
                   const val     = row[i]
                   const isEdited = !!editState?.isEdited(i, idx)
+                  const fieldActive = currentMatch?.colIndex === i && currentMatch?.part === 'field'
+                  const valueActive = currentMatch?.colIndex === i && currentMatch?.part === 'value'
                   return (
-                    <tr key={col.name} className="hover:bg-hover transition-colors group">
+                    <tr
+                      key={col.name}
+                      ref={(el) => { if (el) rowRefs.current.set(i, el); else rowRefs.current.delete(i) }}
+                      className="hover:bg-hover transition-colors group"
+                    >
                       <td className="px-4 py-1.5 border-r border-b border-line-subtle font-mono text-[12px]
                                      text-syntax-keyword font-medium align-top whitespace-nowrap select-none">
-                        {col.name}
+                        <HighlightedText text={col.name} re={searchRe} active={fieldActive} />
                         {col.type && (
                           <span className="ml-1.5 text-fg-muted text-[10px] font-normal">{col.type}</span>
                         )}
@@ -1561,9 +1865,11 @@ function RecordView({ columns, rows, selectedIdx, onSelectIdx, editState }) {
                             editRequestKey={editRequest?.row === idx && editRequest?.col === i ? editRequest.key : null}
                             onCommit={(next) => editState.editCell(i, idx, next)}
                             onSetNull={() => editState.editCell(i, idx, null)}
+                            searchRe={searchRe}
+                            searchActive={valueActive}
                           />
                         ) : (
-                          <ReadonlyRecordValue value={val} />
+                          <ReadonlyRecordValue value={val} searchRe={searchRe} searchActive={valueActive} />
                         )}
                       </td>
                     </tr>
@@ -1670,7 +1976,12 @@ export default function DataViewer({
   const [searchWholeWord, setSearchWholeWord] = useState(false)
   const [searchFilterRows, setSearchFilterRows] = useState(false)
   const [searchIndex, setSearchIndex] = useState(0)
+  const [gridFindOpen,  setGridFindOpen]  = useState(false)
+  const [gridFindQuery, setGridFindQuery] = useState('')
+  const [gridFindIndex, setGridFindIndex] = useState(0)
   const colPickerRef = useRef(null)
+  const dvRootRef = useRef(null)
+  const gridFindInputRef = useRef(null)
   /**
    * selectedRow is the shared cursor between Grid and Record modes.
    *   Grid  → onCellClicked updates selectedRow
@@ -1853,8 +2164,84 @@ export default function DataViewer({
     setSearchIndex((idx) => (idx + delta + searchMatches.length) % searchMatches.length)
   }, [searchMatches.length])
 
+  // ── Grid mode in-place find (Ctrl/Cmd+F) ─────────────────────────────────
+  // A self-contained highlight search for Grid mode, mirroring Record / Text
+  // modes.  It is INDEPENDENT of the toolbar "Search result" box (which keeps
+  // its own value-filter behaviour).  This one highlights both matching column
+  // headers (field names) and value cells, with next/prev navigation.
+  const gridFindCompiled = useMemo(
+    () => buildSearchRegex(gridFindQuery, { caseSensitive: false, regex: false, wholeWord: false }),
+    [gridFindQuery],
+  )
+
+  const gridFindMatches = useMemo(() => {
+    if (!gridFindOpen || !gridFindCompiled.re) return []
+    const re = gridFindCompiled.re
+    const out = []
+    // Field names (column headers) first…
+    for (let c = 0; c < visibleColumns.length; c++) {
+      if (re.test(visibleColumns[c]?.name ?? '')) out.push({ kind: 'header', col: c })
+    }
+    // …then value cells in reading order (source-row keyed, like the grid).
+    for (let r = 0; r < allVisibleRows.length; r++) {
+      if (searchFilterRows && !filteredSourceSet?.has(r)) continue
+      const rowData = allVisibleRows[r]
+      for (let c = 0; c < visibleColumns.length; c++) {
+        const value = rowData?.[c]
+        const text = value === null || value === undefined ? 'NULL' : String(value)
+        if (re.test(text)) out.push({ kind: 'cell', row: r, col: c })
+      }
+    }
+    return out
+  }, [gridFindOpen, gridFindCompiled, visibleColumns, allVisibleRows, searchFilterRows, filteredSourceSet])
+
+  const gridFindMatchCells = useMemo(
+    () => new Set(gridFindMatches.filter((m) => m.kind === 'cell').map((m) => `${m.row}:${m.col}`)),
+    [gridFindMatches],
+  )
+  const gridFindHeaderCols = useMemo(() => {
+    const set = new Set()
+    for (const m of gridFindMatches) if (m.kind === 'header') set.add(m.col)
+    return set.size ? set : null
+  }, [gridFindMatches])
+
+  const gridFindCurrent = gridFindMatches.length
+    ? gridFindMatches[Math.min(gridFindIndex, gridFindMatches.length - 1)]
+    : null
+  const gridFindCurrentCell = gridFindCurrent?.kind === 'cell'
+    ? { row: gridFindCurrent.row, col: gridFindCurrent.col }
+    : null
+  const gridFindCurrentHeaderCol = gridFindCurrent?.kind === 'header' ? gridFindCurrent.col : null
+
+  useEffect(() => { setGridFindIndex(0) }, [gridFindQuery])
+
+  // Open the grid find bar on Ctrl/Cmd+F — only while Grid mode is visible.
+  useEffect(() => {
+    const onKey = (e) => {
+      const isFind = (e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')
+      if (!isFind || mode !== 'grid') return
+      const el = dvRootRef.current
+      if (!el || el.offsetParent === null) return
+      e.preventDefault()
+      setGridFindOpen(true)
+      requestAnimationFrame(() => gridFindInputRef.current?.select())
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [mode])
+
+  const stepGridFind = useCallback((delta) => {
+    setGridFindIndex((cur) => (gridFindMatches.length === 0 ? 0 : (cur + delta + gridFindMatches.length) % gridFindMatches.length))
+  }, [gridFindMatches.length])
+
+  const closeGridFind = useCallback(() => {
+    setGridFindOpen(false)
+    setGridFindQuery('')
+    setGridFindIndex(0)
+  }, [])
+
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div ref={dvRootRef} className="flex flex-col h-full overflow-hidden">
 
       {/* ── Toolbar ─────────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-2 py-1.5 bg-titlebar border-b border-line-subtle
@@ -2161,25 +2548,60 @@ export default function DataViewer({
         ) : (
           <>
             {mode === 'grid' && (
-              <GridWithPanel
-                columns={visibleColumns}
-                rows={allVisibleRows}
-                selectedRow={selectedRow}
-                onSelectRow={setSelectedRow}
-                editState={editState}
-                onHeaderClicked={onHeaderClicked}
-                sortConfig={sortConfig}
-                exportFilename={exportFilename}
-                searchMatchCells={searchMatchCells}
-                currentSearchMatch={currentSearchMatch}
-                sourceRowOrder={searchFilterRows && filteredSourceRows ? filteredSourceRows : undefined}
-                sourceColumnOrder={visibleColumnIndices}
-                onNearBottom={searchFilterRows ? undefined : onNearBottom}
-                valuePanelOpen={valuePanelOpen}
-                onValuePanelOpenChange={onValuePanelOpenChange}
-                valuePanelCell={valuePanelCell}
-                onValuePanelCellChange={onValuePanelCellChange}
-              />
+              <div className="relative h-full">
+                {gridFindOpen && (
+                  <div className="absolute top-2 right-3 z-30 flex items-center gap-1 rounded border border-line
+                                  bg-panel px-1.5 py-0.5 shadow-md text-[11px]">
+                    <span className="text-fg-muted select-none">🔍</span>
+                    <input
+                      ref={gridFindInputRef}
+                      value={gridFindQuery}
+                      onChange={(e) => setGridFindQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') { e.preventDefault(); closeGridFind() }
+                        else if (e.key === 'Enter') { e.preventDefault(); stepGridFind(e.shiftKey ? -1 : 1) }
+                      }}
+                      placeholder="Find in grid"
+                      autoCapitalize="off" autoCorrect="off" spellCheck={false}
+                      className="w-44 bg-transparent outline-none text-[12px] text-fg-primary placeholder:text-fg-muted"
+                    />
+                    <span className="text-fg-muted tabular-nums select-none min-w-[44px] text-right">
+                      {gridFindCompiled.error
+                        ? 'bad re'
+                        : gridFindQuery
+                          ? `${gridFindMatches.length ? Math.min(gridFindIndex + 1, gridFindMatches.length) : 0}/${gridFindMatches.length}`
+                          : ''}
+                    </span>
+                    <button onClick={() => stepGridFind(-1)} disabled={!gridFindMatches.length} title="Previous match (Shift+Enter)"
+                      className="px-1 text-fg-secondary hover:text-fg-primary disabled:opacity-30 select-none">↑</button>
+                    <button onClick={() => stepGridFind(1)} disabled={!gridFindMatches.length} title="Next match (Enter)"
+                      className="px-1 text-fg-secondary hover:text-fg-primary disabled:opacity-30 select-none">↓</button>
+                    <button onClick={closeGridFind} title="Close (Esc)"
+                      className="px-1 text-fg-secondary hover:text-danger select-none">✕</button>
+                  </div>
+                )}
+                <GridWithPanel
+                  columns={visibleColumns}
+                  rows={allVisibleRows}
+                  selectedRow={selectedRow}
+                  onSelectRow={setSelectedRow}
+                  editState={editState}
+                  onHeaderClicked={onHeaderClicked}
+                  sortConfig={sortConfig}
+                  exportFilename={exportFilename}
+                  searchMatchCells={gridFindOpen ? gridFindMatchCells : searchMatchCells}
+                  currentSearchMatch={gridFindOpen ? gridFindCurrentCell : currentSearchMatch}
+                  searchHeaderCols={gridFindOpen ? gridFindHeaderCols : null}
+                  currentHeaderCol={gridFindOpen ? gridFindCurrentHeaderCol : null}
+                  sourceRowOrder={searchFilterRows && filteredSourceRows ? filteredSourceRows : undefined}
+                  sourceColumnOrder={visibleColumnIndices}
+                  onNearBottom={searchFilterRows ? undefined : onNearBottom}
+                  valuePanelOpen={valuePanelOpen}
+                  onValuePanelOpenChange={onValuePanelOpenChange}
+                  valuePanelCell={valuePanelCell}
+                  onValuePanelCellChange={onValuePanelCellChange}
+                />
+              </div>
             )}
             {mode === 'text' && (
               <TextView columns={columns} rows={displayRows} format={textFormat} />

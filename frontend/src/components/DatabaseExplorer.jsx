@@ -45,7 +45,7 @@ import {
   ListChecks, Play, Zap, Bell, Code2, Copy, Pencil, Trash2,
 } from 'lucide-react'
 import {
-  listConnections, fetchDatabases, fetchTables, getTableSchema,
+  listConnections, fetchDatabases, fetchTables, getTableSchema, getTableAdvancedProperties,
   fetchRoutines, fetchTriggers, fetchEvents,
   runQuery, syncMetadata, connect, connectSaved, disconnect, refreshTableMetadata,
 } from '../lib/bridge'
@@ -63,6 +63,8 @@ const groupId     = (cid, kind)                 => `group::${kind}::${cid}`
 const dbNodeId    = (cid, db)                   => `db::${cid}::${db}`
 const tableNodeId = (cid, db, tbl)              => `tbl::${cid}::${db}::${tbl}`
 const colNodeId   = (cid, db, tbl, col)         => `col::${cid}::${db}::${tbl}::${col}`
+const collFolderId = (cid, db, tbl, kind)       => `collfolder::${kind}::${cid}::${db}::${tbl}`
+const indexNodeId  = (cid, db, tbl, idx)        => `idx::${cid}::${db}::${tbl}::${idx}`
 const userNodeId  = (cid, user, host)           => `user::${cid}::${user}@${host}`
 const sysInfoId   = (cid, key)                  => `sysinfo::${cid}::${key}`
 const adminId     = (cid, key)                  => `admin::${cid}::${key}`
@@ -120,6 +122,10 @@ function TreeIcon({ type, folderKind, groupKind, kind, isPK, className = '' }) {
   else if (type === 'table')                      { Cmp = Table2;     color = 'var(--fg-secondary)' }
   else if (type === 'column' && isPK)             { Cmp = KeyRound;   color = 'var(--syntax-pk)' }
   else if (type === 'column')                     { Cmp = ColumnsIcon;color = 'var(--syntax-keyword)' }
+  else if (type === 'collfolder' && folderKind === 'indexes') { Cmp = ListChecks; color = 'var(--fg-muted)' }
+  else if (type === 'collfolder')                 { Cmp = ColumnsIcon; color = 'var(--fg-muted)' }
+  else if (type === 'index' && (isPK || kind === 'unique')) { Cmp = KeyRound;   color = 'var(--syntax-pk)' }
+  else if (type === 'index')                      { Cmp = ListChecks; color = 'var(--syntax-keyword)' }
   else if (type === 'user')                       { Cmp = UserRound;  color = 'var(--syntax-user)' }
   else if (type === 'admin')                      { Cmp = Cable;      color = 'var(--syntax-keyword)' }
   else if (type === 'sysinfo')                    { Cmp = Info;       color = 'var(--syntax-keyword)' }
@@ -153,6 +159,9 @@ function TreeIcon({ type, folderKind, groupKind, kind, isPK, className = '' }) {
 function labelColorFor(node) {
   if (node.type === 'column' && node.isPK) return 'var(--syntax-pk)'
   if (node.type === 'column')               return 'var(--syntax-keyword)'
+  if (node.type === 'collfolder')           return 'var(--fg-muted)'
+  if (node.type === 'index' && (node.isPK || node.kind === 'unique')) return 'var(--syntax-pk)'
+  if (node.type === 'index')                return 'var(--fg-primary)'
   if (node.type === 'table')                return 'var(--fg-primary)'
   if (node.type === 'database')             return 'var(--success)'
   if (node.type === 'folder')               return 'var(--fg-muted)'
@@ -363,6 +372,11 @@ export default function DatabaseExplorer({
   const nodeCacheRef = useRef(nodeCache)
   useEffect(() => { nodeCacheRef.current = nodeCache }, [nodeCache])
 
+  // Live "advanced properties" (indexes, DDL, …) cached per collection so a
+  // collection node and its `indexes` sub-folder don't issue duplicate live
+  // round-trips.  Cleared on explicit refresh.
+  const advancedCacheRef = useRef(new Map())
+
   // ── Auto-collapse disconnected connections ────────────────────────────────
   //
   // When a connection transitions from connected→disconnected (detected by
@@ -566,6 +580,17 @@ export default function DatabaseExplorer({
     const existing = nodeCacheRef.current.get(nodeId)
     if (existing?.status === 'loading' || existing?.status === 'loaded') return
 
+    // Fetch (and memoise) the live advanced properties for a collection so the
+    // `fields`/`indexes` folder counts and the index list reuse one round-trip.
+    const loadAdvancedProps = async (cid, db, tbl) => {
+      const key = `${cid}::${db}::${tbl}`
+      const cached = advancedCacheRef.current.get(key)
+      if (cached) return cached
+      const props = await getTableAdvancedProperties(cid, db, tbl)
+      advancedCacheRef.current.set(key, props)
+      return props
+    }
+
     let cancelled = false
 
     setNodeCache((prev) => new Map([...prev, [nodeId, { status: 'loading', children: [], error: '' }]]))
@@ -713,6 +738,51 @@ export default function DatabaseExplorer({
               sql: `SHOW CREATE EVENT \`${dbName}\`.\`${e.name}\``,
             }))
 
+      } else if (type === 'table' && node.kind === 'collection') {
+        // MongoDB collections mirror DataGrip: expand into `fields` + `indexes`
+        // sub-folders.  The counts are a best-effort badge — a slow cache read
+        // or live index lookup must NOT block (or fail) the expansion itself,
+        // so each sub-folder still loads its real contents lazily on expand.
+        const [schemaRes, advRes] = await Promise.allSettled([
+          getTableSchema(connId, dbName, tableName),
+          loadAdvancedProps(connId, dbName, tableName),
+        ])
+        if (cancelled) return
+        const fieldCount = schemaRes.status === 'fulfilled' ? (schemaRes.value?.columns ?? []).length : undefined
+        const indexCount = advRes.status === 'fulfilled' ? (advRes.value?.indexes ?? []).length : undefined
+        children = [
+          {
+            id: collFolderId(connId, dbName, tableName, 'fields'),
+            type: 'collfolder', folderKind: 'fields', label: 'fields', count: fieldCount,
+            connId, dbName, tableName, hasChildren: true,
+          },
+          {
+            id: collFolderId(connId, dbName, tableName, 'indexes'),
+            type: 'collfolder', folderKind: 'indexes', label: 'indexes', count: indexCount,
+            connId, dbName, tableName, hasChildren: true,
+          },
+        ]
+
+      } else if (type === 'collfolder' && node.folderKind === 'fields') {
+        const schema = await getTableSchema(connId, dbName, tableName)
+        if (cancelled) return
+        children = (schema.columns ?? []).map((c) => ({
+          id: colNodeId(connId, dbName, tableName, c.name), type: 'column',
+          label: c.name, detail: c.type, isPK: c.isPrimaryKey, nullable: c.nullable,
+          connId, dbName, tableName, hasChildren: false,
+        }))
+
+      } else if (type === 'collfolder' && node.folderKind === 'indexes') {
+        const advanced = await loadAdvancedProps(connId, dbName, tableName)
+        if (cancelled) return
+        children = (advanced?.indexes ?? []).map((ix) => ({
+          id: indexNodeId(connId, dbName, tableName, ix.name),
+          type: 'index', label: ix.name,
+          detail: (ix.columns ?? []).length ? `(${ix.columns.join(', ')})` : '',
+          isPK: !!ix.primary, kind: ix.unique ? 'unique' : '', unique: !!ix.unique,
+          connId, dbName, tableName, hasChildren: false,
+        }))
+
       } else if (type === 'table') {
         // Column data comes from the local SQLite cache — sub-millisecond.
         const schema = await getTableSchema(connId, dbName, tableName)
@@ -795,6 +865,10 @@ export default function DatabaseExplorer({
   // linger and the user would see no effect from the refresh).
   const refreshNode = useCallback((node, e) => {
     e?.stopPropagation?.()
+
+    // Drop any cached live properties so a refresh re-reads indexes from the
+    // server (cheap; the map is small and only holds expanded collections).
+    advancedCacheRef.current.clear()
 
     setNodeCache((prev) => {
       const next = new Map(prev)
@@ -977,10 +1051,10 @@ export default function DatabaseExplorer({
 
   const searchVisible = (node) => {
     if (!searchQuery) return true
-    if (node.type === 'connection' || node.type === 'group' || node.type === 'database' || node.type === 'folder') {
+    if (node.type === 'connection' || node.type === 'group' || node.type === 'database' || node.type === 'folder' || node.type === 'collfolder') {
       return true
     }
-    if (node.type === 'table' || node.type === 'column' || node.type === 'sysinfo' || node.type === 'admin') {
+    if (node.type === 'table' || node.type === 'column' || node.type === 'index' || node.type === 'sysinfo' || node.type === 'admin') {
       return matchesLabel(node.label, searchQuery)
     }
     const cache = nodeCache.get(node.id)
@@ -1137,6 +1211,27 @@ export default function DatabaseExplorer({
         {node.type === 'column' && node.detail && (
           <span className="text-[10px] text-fg-muted flex-shrink-0 ml-1 font-mono truncate max-w-[70px]" title={node.detail}>
             {node.detail}
+          </span>
+        )}
+
+        {/* Collection sub-folder count (fields / indexes) */}
+        {node.type === 'collfolder' && typeof node.count === 'number' && (
+          <span className="text-[11px] text-fg-muted flex-shrink-0 ml-1 tabular-nums select-none">
+            {node.count}
+          </span>
+        )}
+
+        {/* Index key spec + UNIQUE marker */}
+        {node.type === 'index' && (
+          <span className="flex items-center gap-1 flex-shrink-0 ml-1 min-w-0">
+            {(node.isPK || node.kind === 'unique') && (
+              <span className="text-[9px] uppercase tracking-wide select-none" style={{ color: 'var(--syntax-pk)' }}>unique</span>
+            )}
+            {node.detail && (
+              <span className="text-[10px] text-fg-muted font-mono truncate max-w-[160px]" title={node.detail}>
+                {node.detail}
+              </span>
+            )}
           </span>
         )}
 

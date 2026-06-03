@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +19,10 @@ import (
 
 const connectionModeParam = "_gripliteMongoConnectionMode"
 const defaultFindLimit int64 = 1000
+
+// Compile-time guarantee that the MongoDB driver exposes advanced table
+// properties (indexes) so GetTableAdvancedProperties works for collections.
+var _ driver.AdvancedSchemaDriver = (*mongoDriver)(nil)
 
 func init() {
 	driver.Register(driver.DriverMongoDB, func(cfg driver.ConnectionConfig) (driver.DatabaseDriver, error) {
@@ -119,6 +122,34 @@ func (d *mongoDriver) FetchTables(ctx context.Context, dbName string) ([]driver.
 	return out, nil
 }
 
+// mongoIndexKeyLabel renders one component of a MongoDB index key the way a
+// DataGrip-style tree shows it: ascending keys are bare ("created_at"),
+// descending keys get a " desc" suffix, and special index types (text,
+// 2dsphere, hashed, …) show the type name.
+func mongoIndexKeyLabel(field string, value any) string {
+	switch v := value.(type) {
+	case int32:
+		if v == -1 {
+			return field + " desc"
+		}
+		return field
+	case int64:
+		if v == -1 {
+			return field + " desc"
+		}
+		return field
+	case float64:
+		if v == -1 {
+			return field + " desc"
+		}
+		return field
+	case string:
+		return field + " " + v
+	default:
+		return field + " " + fmt.Sprint(v)
+	}
+}
+
 func (d *mongoDriver) FetchTableDetail(ctx context.Context, dbName, tableName string) (*driver.TableDetail, error) {
 	if d.client == nil {
 		return nil, driver.ErrNotConnected
@@ -160,24 +191,65 @@ func (d *mongoDriver) FetchTableDetail(ctx context.Context, dbName, tableName st
 	}
 	defer indexCursor.Close(ctx)
 	for indexCursor.Next(ctx) {
-		var idx bson.M
+		// Decode the key as bson.D so the field order is preserved (a map would
+		// scramble compound indexes) and the direction / index type is kept.
+		var idx struct {
+			Name   string `bson:"name"`
+			Unique bool   `bson:"unique"`
+			Key    bson.D `bson:"key"`
+		}
 		if err := indexCursor.Decode(&idx); err != nil {
 			continue
 		}
 		info := driver.IndexInfo{
-			Name:    fmt.Sprint(idx["name"]),
-			Unique:  idx["unique"] == true,
-			Primary: idx["name"] == "_id_",
+			Name:    idx.Name,
+			Unique:  idx.Unique,
+			Primary: idx.Name == "_id_",
 		}
-		if keyDoc, ok := idx["key"].(bson.M); ok {
-			for key := range keyDoc {
-				info.Columns = append(info.Columns, key)
-			}
-			sort.Strings(info.Columns)
+		for _, elem := range idx.Key {
+			info.Columns = append(info.Columns, mongoIndexKeyLabel(elem.Key, elem.Value))
 		}
 		detail.Indexes = append(detail.Indexes, info)
 	}
 	return detail, nil
+}
+
+// FetchAdvancedTableProperties implements driver.AdvancedSchemaDriver for
+// MongoDB collections.  MongoDB has no DDL / foreign keys / triggers, so those
+// sections come back empty (non-nil); the meaningful payload is the index list,
+// which mirrors what FetchTableDetail already reads from the live server.
+func (d *mongoDriver) FetchAdvancedTableProperties(ctx context.Context, dbName, tableName string) (*driver.AdvancedTableProperties, error) {
+	if d.client == nil {
+		return nil, driver.ErrNotConnected
+	}
+	detail, err := d.FetchTableDetail(ctx, dbName, tableName)
+	if err != nil {
+		return nil, err
+	}
+	props := &driver.AdvancedTableProperties{
+		Schema:      dbName,
+		Table:       tableName,
+		DDL:         "",
+		Indexes:     []driver.IndexDetail{},
+		Constraints: []driver.ConstraintDetail{},
+		Partitions:  []driver.PartitionDetail{},
+		ForeignKeys: []driver.ForeignKeyDetail{},
+		References:  []driver.ReferenceDetail{},
+		Triggers:    []driver.TriggerDetail{},
+	}
+	for _, ix := range detail.Indexes {
+		idxType := "INDEX"
+		if ix.Primary {
+			idxType = "PRIMARY"
+		}
+		props.Indexes = append(props.Indexes, driver.IndexDetail{
+			Name:    ix.Name,
+			Type:    idxType,
+			Unique:  ix.Unique,
+			Columns: ix.Columns,
+		})
+	}
+	return props, nil
 }
 
 func (d *mongoDriver) ExecuteQuery(ctx context.Context, query string) (*driver.ResultSet, error) {

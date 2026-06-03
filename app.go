@@ -954,7 +954,10 @@ func (a *App) GetTableSchema(connectionID, dbName, tableName string) (*cache.Cac
 			TableName: tableName,
 		}, nil
 	}
-	ctx, cancel := context.WithTimeout(a.ctx, 500*time.Millisecond)
+	// Cache reads are normally sub-millisecond, but a concurrent metadata sync
+	// can briefly hold the SQLite lock; allow a few seconds so a collection's
+	// field list doesn't spuriously fail with "context deadline exceeded".
+	ctx, cancel := context.WithTimeout(a.ctx, 5*time.Second)
 	defer cancel()
 	return a.meta.GetTableSchema(ctx, connectionID, dbName, tableName)
 }

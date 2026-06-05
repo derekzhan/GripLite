@@ -153,6 +153,12 @@ func collectionObject(vm *goja.Runtime, dbName, coll string, capture func(*mongo
 		capture(op)
 		return vm.ToValue(op)
 	})
+	_ = obj.Set("getIndexes", func() *mongoOperation {
+		return capture(&mongoOperation{Kind: opListIndexes, Database: dbName, Collection: coll})
+	})
+	_ = obj.Set("getIndices", func() *mongoOperation {
+		return capture(&mongoOperation{Kind: opListIndexes, Database: dbName, Collection: coll})
+	})
 	_ = obj.Set("dropIndex", func(name string) *mongoOperation {
 		return capture(&mongoOperation{Kind: opDropIndex, Database: dbName, Collection: coll, IndexName: name})
 	})

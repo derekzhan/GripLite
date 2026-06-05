@@ -24,6 +24,9 @@ const defaultFindLimit int64 = 1000
 // properties (indexes) so GetTableAdvancedProperties works for collections.
 var _ driver.AdvancedSchemaDriver = (*mongoDriver)(nil)
 
+// Compile-time guarantee that MongoDB console queries can be scroll-paged.
+var _ driver.PagedQueryDriver = (*mongoDriver)(nil)
+
 func init() {
 	driver.Register(driver.DriverMongoDB, func(cfg driver.ConnectionConfig) (driver.DatabaseDriver, error) {
 		return New(cfg)
@@ -282,6 +285,58 @@ func (d *mongoDriver) ExecuteQueryOnDB(ctx context.Context, dbName, query string
 	return rs, nil
 }
 
+// ExecutePagedQueryOnDB applies a paging window to a console query so the
+// result grid can scroll-load more rows.  Only read operations that return a
+// document stream (find) are windowed; the user's own .limit() is honoured as
+// an upper bound (mirroring how SQL paging wraps the user query), and .skip()
+// is added to the page offset.  Non-pageable operations execute unchanged.
+func (d *mongoDriver) ExecutePagedQueryOnDB(ctx context.Context, dbName, query string, offset, limit int64) (*driver.ResultSet, error) {
+	if d.client == nil {
+		return nil, driver.ErrNotConnected
+	}
+	if dbName == "" {
+		dbName = d.cfg.Database
+	}
+	if dbName == "" {
+		dbName = "admin"
+	}
+	op, err := ParseMongoOperation(dbName, query)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateOperationAllowed(*op, d.cfg.ReadOnly); err != nil {
+		return nil, err
+	}
+
+	if op.Kind == opFind {
+		userLimit := op.Limit // 0 = no explicit cap
+		effLimit := limit
+		if userLimit > 0 {
+			remaining := userLimit - offset
+			if remaining < 0 {
+				remaining = 0
+			}
+			if effLimit > remaining {
+				effLimit = remaining
+			}
+		}
+		op.Skip += offset
+		if effLimit <= 0 {
+			// The user's .limit() cap is already exhausted — nothing more.
+			return documentsToResultSet([]bson.M{}, 0), nil
+		}
+		op.Limit = effLimit
+	}
+
+	start := time.Now()
+	rs, err := d.executeOperation(ctx, *op)
+	if err != nil {
+		return nil, err
+	}
+	rs.ExecutionTime = time.Since(start)
+	return rs, nil
+}
+
 func (d *mongoDriver) Kind() driver.DriverKind { return driver.DriverMongoDB }
 
 func (d *mongoDriver) ServerVersion() string { return d.serverVersion }
@@ -454,6 +509,17 @@ func (d *mongoDriver) executeOperation(ctx context.Context, op mongoOperation) (
 			return nil, fmt.Errorf("mongodb: createIndex: %w", err)
 		}
 		return writeSummaryResult(0, 0, map[string]any{"createdIndex": name}), nil
+	case opListIndexes:
+		cur, err := coll.Indexes().List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("mongodb: getIndexes: %w", err)
+		}
+		defer cur.Close(ctx)
+		var docs []bson.M
+		if err := cur.All(ctx, &docs); err != nil {
+			return nil, fmt.Errorf("mongodb: read indexes: %w", err)
+		}
+		return documentsToResultSet(docs, 0), nil
 	case opDropIndex:
 		if err := coll.Indexes().DropOne(ctx, op.IndexName); err != nil {
 			return nil, fmt.Errorf("mongodb: dropIndex: %w", err)

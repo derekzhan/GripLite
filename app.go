@@ -779,9 +779,6 @@ func (a *App) RunQueryPageWithID(queryID, connectionID, dbName, sqlText string, 
 	if err != nil {
 		return nil, err
 	}
-	if drv.Kind() == driver.DriverMongoDB {
-		return &QueryResult{Error: "paged SQL loading is only supported for MySQL connections"}, nil
-	}
 
 	pageLimit := limit
 	if pageLimit <= 0 {
@@ -790,9 +787,18 @@ func (a *App) RunQueryPageWithID(queryID, connectionID, dbName, sqlText string, 
 	if pageLimit > maxQueryRows {
 		pageLimit = maxQueryRows
 	}
-	pagedSQL, err := buildPagedQuery(sqlText, pageLimit+1, offset)
-	if err != nil {
-		return &QueryResult{Error: err.Error()}, nil
+
+	isMongo := drv.Kind() == driver.DriverMongoDB
+	var pagedSQL string
+	if isMongo {
+		if _, ok := drv.(driver.PagedQueryDriver); !ok {
+			return &QueryResult{Error: "paged loading is not supported for this connection"}, nil
+		}
+	} else {
+		pagedSQL, err = buildPagedQuery(sqlText, pageLimit+1, offset)
+		if err != nil {
+			return &QueryResult{Error: err.Error()}, nil
+		}
 	}
 
 	// Paged queries can also wrap expensive user SQL, so they must not receive an
@@ -809,7 +815,14 @@ func (a *App) RunQueryPageWithID(queryID, connectionID, dbName, sqlText string, 
 		a.queryMu.Unlock()
 	}()
 
-	rs, err := drv.ExecuteQueryOnDB(cancelCtx, dbName, pagedSQL)
+	var rs *driver.ResultSet
+	if isMongo {
+		// MongoDB console queries are shell expressions, so paging is applied by
+		// rewriting the parsed operation's skip/limit rather than wrapping SQL.
+		rs, err = drv.(driver.PagedQueryDriver).ExecutePagedQueryOnDB(cancelCtx, dbName, sqlText, int64(offset), int64(pageLimit+1))
+	} else {
+		rs, err = drv.ExecuteQueryOnDB(cancelCtx, dbName, pagedSQL)
+	}
 	if err != nil {
 		return &QueryResult{Error: err.Error()}, nil
 	}

@@ -20,7 +20,7 @@ import {
 import { getVisibleColumnIndices, projectVisibleRows } from '../src/lib/dataSearch.js'
 import { buildFilterSuggestionColumns, getWhereFilterSuggestions } from '../src/lib/filterAutocomplete.js'
 import { databaseScopeFromSelection, tablesFolderIdForScope } from '../src/lib/explorerSearch.js'
-import { DEFAULT_MONGO_SORT, buildMongoCollectionFindQuery, getMongoFieldSuggestions } from '../src/lib/mongoQuery.js'
+import { DEFAULT_MONGO_SORT, buildMongoCollectionFindQuery, getMongoFieldSuggestions, classifyMongoConsoleContext, detectMongoCollectionName, MONGO_COLLECTION_METHODS } from '../src/lib/mongoQuery.js'
 import { appendResultPage, normalizePageSize, pageSlice, shouldLoadMore } from '../src/lib/queryPaging.js'
 import { stripLeadingSqlComments } from '../src/lib/sqlText.js'
 import {
@@ -211,6 +211,45 @@ function testAppendResultPagePreservesMetadata() {
   assert.equal(next.rowCount, 4)
   assert.equal(next.hasMore, true)
   assert.deepEqual(next.source, current.source)
+}
+
+function testAppendResultPageKeepsFirstPageColumns() {
+  // Schemaless results (MongoDB) infer columns per page; appending must keep
+  // the first page's column order so later rows stay aligned.
+  const current = {
+    columns: [{ name: '_id' }, { name: 'a' }],
+    rows: [['1', 'x']],
+    source: { sql: 'db.t.find({})', pageSize: 1 },
+  }
+  const next = appendResultPage(current, {
+    columns: [{ name: '_id' }, { name: 'b' }],
+    rows: [['2', 'y']],
+    truncated: false,
+  }, { offset: 1, pageSize: 1 })
+  assert.deepEqual(next.columns, current.columns)
+  assert.deepEqual(next.rows, [['1', 'x'], ['2', 'y']])
+
+  // The first page (offset 0) still adopts the incoming page's columns.
+  const first = appendResultPage(null, {
+    columns: [{ name: '_id' }],
+    rows: [['1']],
+    truncated: true,
+  }, { offset: 0, pageSize: 1 })
+  assert.deepEqual(first.columns, [{ name: '_id' }])
+}
+
+function testMongoFindQueriesArePageable() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  // A mongo console uses isPageableMongo (find-only) instead of isPageableSql.
+  assert.match(app, /function isPageableMongo\(sql\)/)
+  assert.ok(app.includes('/\\.find\\s*\\(/.test(trimmed)'))
+  assert.match(app, /const isMongoConsole = consoleTab\?\.connectionKind === 'mongodb'/)
+  assert.match(app, /isMongoConsole \? isPageableMongo\(sql\) : isPageableSql\(sql\)/)
+
+  // The backend exposes mongo paging through the PagedQueryDriver interface.
+  const appGo = readFileSync(new URL('../../app.go', import.meta.url), 'utf8')
+  assert.match(appGo, /driver\.PagedQueryDriver/)
+  assert.match(appGo, /ExecutePagedQueryOnDB\(cancelCtx, dbName, sqlText/)
 }
 
 function testNearBottomTrigger() {
@@ -554,6 +593,13 @@ function testNewConsoleInheritsActiveDatabaseContext() {
   assert.match(app, /const consoleConnId = tab\.connId \?\? connIdRef\.current/)
   assert.match(app, /connectionId=\{consoleConnId\}/)
   assert.match(app, /defaultDb=\{tab\.defaultDb \?\? consoleConnInfo\?\.database \?\? ''\}/)
+
+  // The explorer must pass the RIGHT-CLICKED connection (not just the db) when
+  // opening a console; otherwise handleNewConsole falls back to the previously
+  // active console's connId.
+  const explorer = readFileSync(new URL('../src/components/DatabaseExplorer.jsx', import.meta.url), 'utf8')
+  assert.match(explorer, /initialSql: browseTemplate, label: `Browse — \$\{dbName\}`, connId, defaultDb: dbName/)
+  assert.match(explorer, /label: `SELECT — \$\{tableName\}`,\s*connId,\s*defaultDb: dbName/)
 }
 
 function testSqlConsoleResultEditsCanBeSavedForSimpleSelects() {
@@ -860,6 +906,42 @@ function testMongoFieldSuggestionsUseCollectionFields() {
   )
 }
 
+function testMongoConsoleProvidesShellAutocomplete() {
+  // db.<partial> → collection-name context.
+  assert.deepEqual(
+    classifyMongoConsoleContext('db.prm'),
+    { type: 'collectionName', partial: 'prm' },
+  )
+  // db.coll. → collection methods.
+  assert.equal(classifyMongoConsoleContext('db.prm_order.').type, 'collectionMethod')
+  assert.equal(classifyMongoConsoleContext('db.getCollection("prm_order").fi').type, 'collectionMethod')
+  // …). → chainable cursor methods.
+  assert.equal(classifyMongoConsoleContext('db.prm_order.find({}).').type, 'cursorMethod')
+  // $ → query operators.
+  assert.equal(classifyMongoConsoleContext('db.x.find({ a: { $g').partial, '$g')
+  assert.equal(classifyMongoConsoleContext('db.x.find({ a: { $g').type, 'operator')
+  // Inside a filter, a bare word resolves to the collection's fields.
+  const fieldCtx = classifyMongoConsoleContext('db.prm_order.find({ tn')
+  assert.equal(fieldCtx.type, 'field')
+  assert.equal(fieldCtx.collection, 'prm_order')
+  assert.equal(fieldCtx.partial, 'tn')
+  // Collection detection handles both access styles, picking the nearest one.
+  assert.equal(detectMongoCollectionName('db.getCollection("orders").aggregate(['), 'orders')
+  assert.equal(detectMongoCollectionName('db.users.find({})'), 'users')
+  // The supported collection methods are advertised.
+  const labels = MONGO_COLLECTION_METHODS.map((m) => m.label)
+  for (const name of ['find', 'aggregate', 'insertOne', 'updateMany', 'createIndex', 'dropIndex']) {
+    assert.ok(labels.includes(name), `expected ${name} in collection methods`)
+  }
+
+  // The editor registers a javascript (not sql) provider for mongo + silences
+  // the JS worker's semantic squiggles.
+  const editor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
+  assert.match(editor, /registerCompletionItemProvider\('javascript'/)
+  assert.match(editor, /classifyMongoConsoleContext\(textUntilCursor\)/)
+  assert.match(editor, /noSemanticValidation:\s*true/)
+}
+
 function testMongoCollectionDefaultsToGridAndLabelsRecordMode() {
   const tableViewer = readFileSync(new URL('../src/components/TableViewer.jsx', import.meta.url), 'utf8')
   assert.match(tableViewer, /\{ id: 'grid',\s+icon: '⊞', label: 'Grid' \},\s*\{ id: 'record', icon: '▤', label: 'Record' \},\s*\{ id: 'text',\s+icon: '≡', label: 'Text' \}/m)
@@ -985,6 +1067,8 @@ testCloseInactiveWorkspaceTabKeepsActiveTab()
 testCloseAllWorkspaceTabsClearsActiveTab()
 testPageSliceKeepsLocalPaginationOnly()
 testAppendResultPagePreservesMetadata()
+testAppendResultPageKeepsFirstPageColumns()
+testMongoFindQueriesArePageable()
 testNearBottomTrigger()
 testNormalizePageSize()
 testVisibleRowsPreserveSourceColumnMapping()
@@ -1030,6 +1114,7 @@ testMongoCollectionInlineEditingUsesMongoApplier()
 testMongoCollectionFindQueryBuildsDatagripStyleFilterAndSort()
 testMongoCollectionDefaultsSortByIdAndFocusesInsideFindBraces()
 testMongoFieldSuggestionsUseCollectionFields()
+testMongoConsoleProvidesShellAutocomplete()
 testMongoCollectionDefaultsToGridAndLabelsRecordMode()
 testRecordViewRendersJsonValuesVisually()
 testRecordViewContextMenuSupportsDatagripActions()

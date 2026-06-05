@@ -3,6 +3,13 @@ import Editor from '@monaco-editor/react'
 import { format as formatSql } from 'sql-formatter'
 import { searchCompletions, runQuery, fetchDatabases, cancelQuery, getQueryHistory, clearQueryHistory } from '../lib/bridge'
 import { splitSql, findStatementAt } from '../lib/sqlSplit'
+import {
+  classifyMongoConsoleContext,
+  MONGO_COLLECTION_METHODS,
+  MONGO_CURSOR_METHODS,
+  MONGO_DB_METHODS,
+  MONGO_QUERY_OPERATORS,
+} from '../lib/mongoQuery'
 import { useTheme } from '../theme/ThemeProvider'
 
 const INITIAL_SQL = `-- GripLite SQL Console
@@ -548,6 +555,150 @@ export default function SqlEditor({
     // component re-mounts (e.g. Strict Mode double-invoke in development).
     if (completionProviderRef.current) {
       completionProviderRef.current.dispose()
+    }
+
+    // ── MongoDB consoles run JavaScript, not SQL ───────────────────────────
+    // Register a mongo-shell-aware provider on the `javascript` language and
+    // silence the JS worker's "db is not defined" semantic squiggles so the
+    // shell syntax reads cleanly.
+    if (isMongo) {
+      try {
+        monaco.languages.typescript?.javascriptDefaults?.setDiagnosticsOptions({
+          noSemanticValidation: true,
+          noSyntaxValidation:   false,
+        })
+      } catch { /* older monaco without the TS service — ignore */ }
+
+      completionProviderRef.current = monaco.languages.registerCompletionItemProvider('javascript', {
+        triggerCharacters: ['.', '$', '"'],
+        provideCompletionItems: async (model, position) => {
+          if (model !== editorRef.current?.getModel()) return { suggestions: [] }
+
+          const textUntilCursor = model.getValueInRange({
+            startLineNumber: 1, startColumn: 1,
+            endLineNumber: position.lineNumber, endColumn: position.column,
+          })
+          const wordInfo = model.getWordUntilPosition(position)
+          const range = {
+            startLineNumber: position.lineNumber,
+            endLineNumber:   position.lineNumber,
+            startColumn:     wordInfo.startColumn,
+            endColumn:       wordInfo.endColumn,
+          }
+          const snippetRule = monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
+          const methodItem = (m, sort) => ({
+            label:           { label: m.label, description: m.detail },
+            kind:            monaco.languages.CompletionItemKind.Method,
+            insertText:      m.insert,
+            insertTextRules: snippetRule,
+            detail:          m.detail,
+            filterText:      m.label,
+            sortText:        sort + m.label,
+            range,
+          })
+          const startsWith = (label, partial) =>
+            label.toLowerCase().startsWith(String(partial ?? '').toLowerCase())
+
+          const ctx = classifyMongoConsoleContext(textUntilCursor)
+
+          if (ctx.type === 'operator') {
+            const opRange = {
+              ...range,
+              startColumn: Math.max(1, position.column - ctx.partial.length),
+              endColumn:   position.column,
+            }
+            return {
+              suggestions: MONGO_QUERY_OPERATORS
+                .filter((op) => startsWith(op, ctx.partial))
+                .map((op) => ({
+                  label:      op,
+                  kind:       monaco.languages.CompletionItemKind.Operator,
+                  insertText: op,
+                  filterText: op,
+                  sortText:   '0' + op,
+                  range:      opRange,
+                })),
+            }
+          }
+
+          if (ctx.type === 'cursorMethod') {
+            return {
+              suggestions: MONGO_CURSOR_METHODS
+                .filter((m) => startsWith(m.label, ctx.partial))
+                .map((m) => methodItem(m, '0')),
+            }
+          }
+
+          if (ctx.type === 'collectionMethod') {
+            return {
+              suggestions: MONGO_COLLECTION_METHODS
+                .filter((m) => startsWith(m.label, ctx.partial))
+                .map((m) => methodItem(m, '0')),
+            }
+          }
+
+          if (ctx.type === 'collectionName') {
+            let collections = []
+            try {
+              const items = await searchCompletions(connectionId, selectedDbRef.current, ctx.partial)
+              collections = (items ?? []).filter((it) => it.kind === 'table')
+            } catch { /* cache miss — still offer db methods */ }
+            const dbMethods = MONGO_DB_METHODS
+              .filter((m) => startsWith(m.label, ctx.partial))
+              .map((m) => methodItem(m, '1'))
+            const collItems = collections.map((it) => ({
+              label:      { label: it.label, description: 'collection' },
+              kind:       monaco.languages.CompletionItemKind.Class,
+              insertText: it.label,
+              filterText: it.label,
+              detail:     `collection · ${it.dbName ?? selectedDbRef.current}`,
+              sortText:   '0' + it.label,
+              range,
+            }))
+            return { suggestions: [...collItems, ...dbMethods] }
+          }
+
+          if (ctx.type === 'field' && ctx.collection) {
+            let fields = []
+            try {
+              const items = await searchCompletions(connectionId, selectedDbRef.current, ctx.collection)
+              fields = (items ?? []).filter(
+                (it) => it.kind === 'column' && it.tableName === ctx.collection,
+              )
+            } catch { return { suggestions: [] } }
+            const kwLower = String(ctx.partial ?? '').toLowerCase()
+            return {
+              suggestions: fields
+                .filter((it) => !kwLower || it.label.toLowerCase().startsWith(kwLower))
+                .map((it) => ({
+                  label:      { label: it.label, description: `${ctx.collection}.${it.label}` },
+                  kind:       monaco.languages.CompletionItemKind.Field,
+                  insertText: it.label,
+                  filterText: it.label,
+                  detail:     it.detail ? `${it.detail}` : 'field',
+                  sortText:   '0' + it.label,
+                  range,
+                })),
+            }
+          }
+
+          // Fallback: offer the `db` entrypoint.
+          if (startsWith('db', ctx.partial)) {
+            return {
+              suggestions: [{
+                label:      'db',
+                kind:       monaco.languages.CompletionItemKind.Variable,
+                insertText: 'db',
+                filterText: 'db',
+                sortText:   '0db',
+                range,
+              }],
+            }
+          }
+          return { suggestions: [] }
+        },
+      })
+      return
     }
 
     completionProviderRef.current = monaco.languages.registerCompletionItemProvider('sql', {

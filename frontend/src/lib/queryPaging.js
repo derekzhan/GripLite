@@ -36,11 +36,19 @@ export function pageSlice(rows, pageSize, currentPage) {
 }
 
 export function appendResultPage(current, page, { offset = 0, pageSize = DEFAULT_PAGE_SIZE, source = null } = {}) {
-  const existingRows = offset > 0 ? (current?.rows ?? []) : []
+  const isAppend = offset > 0
+  const existingRows = isAppend ? (current?.rows ?? []) : []
   const rows = [...existingRows, ...(page?.rows ?? [])]
+  // On append keep the first page's columns: later pages' rows are aligned to
+  // that column order (this matters for schemaless results like MongoDB, where
+  // each page infers its own columns).
+  const columns = isAppend && current?.columns?.length
+    ? current.columns
+    : (page?.columns ?? current?.columns ?? [])
   return {
     ...(current ?? {}),
     ...(page ?? {}),
+    columns,
     rows,
     rowCount: rows.length,
     pageSize,

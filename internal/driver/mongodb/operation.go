@@ -18,6 +18,7 @@ const (
 	opDeleteOne              operationKind = "deleteOne"
 	opDeleteMany             operationKind = "deleteMany"
 	opCreateIndex            operationKind = "createIndex"
+	opListIndexes            operationKind = "listIndexes"
 	opDropIndex              operationKind = "dropIndex"
 	opDrop                   operationKind = "drop"
 	opCommand                operationKind = "command"

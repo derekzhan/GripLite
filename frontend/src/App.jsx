@@ -64,6 +64,15 @@ function isPageableSql(sql) {
   return /^(select|with)\b/i.test(executable)
 }
 
+// MongoDB console queries are JavaScript shell expressions.  Only `find`
+// queries can be scroll-paged (the backend windows them with skip/limit);
+// aggregate / write / admin ops are single-shot.
+function isPageableMongo(sql) {
+  const trimmed = String(sql ?? '').trim().replace(/;+$/g, '').trim()
+  if (!trimmed) return false
+  return /\.find\s*\(/.test(trimmed)
+}
+
 function makeConsoleTab() {
   const seq = nextConsoleSeq++
   return {
@@ -281,8 +290,10 @@ export default function App() {
     for (const sql of list) {
       const rid = nextResultId()
       let queryResult
+      const isMongoConsole = consoleTab?.connectionKind === 'mongodb'
+      const pageable = !opts.multi && (isMongoConsole ? isPageableMongo(sql) : isPageableSql(sql))
       try {
-        if (!opts.multi && isPageableSql(sql)) {
+        if (pageable) {
           const pageSize = preferredPageSizeRef.current
           const page = await runQueryPage(queryConnId, opts.dbName ?? '', sql, 0, preferredPageSizeRef.current, tabId)
           queryResult = appendResultPage(null, page, {

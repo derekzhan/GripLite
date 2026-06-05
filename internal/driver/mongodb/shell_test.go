@@ -69,6 +69,24 @@ func TestParseShellCreateIndexPreservesOrderAndOptions(t *testing.T) {
 	}
 }
 
+func TestParseShellGetIndexes(t *testing.T) {
+	for _, input := range []string{
+		`db.prm_order.getIndexes()`,
+		`db.getCollection("prm_order").getIndices()`,
+	} {
+		op, err := ParseMongoOperation("prm", input)
+		if err != nil {
+			t.Fatalf("ParseMongoOperation(%q) error: %v", input, err)
+		}
+		if op.Kind != opListIndexes || op.Collection != "prm_order" {
+			t.Fatalf("op = %#v, want listIndexes on prm_order", op)
+		}
+		if op.IsWrite() {
+			t.Fatalf("getIndexes must be a read operation: %#v", op)
+		}
+	}
+}
+
 func TestWriteOperationsAreClassified(t *testing.T) {
 	for _, input := range []string{
 		`db.orders.insertOne({ status: "new" })`,

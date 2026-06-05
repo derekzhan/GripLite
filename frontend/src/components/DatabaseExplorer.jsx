@@ -1852,6 +1852,7 @@ export default function DatabaseExplorer({
           action:   () => onConsoleOpen?.({
             initialSql: `SELECT * FROM ${quoteSqlIdentifier(dbName)}.${quoteSqlIdentifier(tableName)} LIMIT 100;`,
             label: `SELECT — ${tableName}`,
+            connId,
             defaultDb: dbName,
           }),
         },
@@ -1900,7 +1901,7 @@ export default function DatabaseExplorer({
         {
           label:    <MenuLabel icon={Play}       text="Browse from here" />,
           shortcut: 'B', key: 'b',
-          action:   () => onConsoleOpen?.({ initialSql: browseTemplate, label: `Browse — ${dbName}`, defaultDb: dbName }),
+          action:   () => onConsoleOpen?.({ initialSql: browseTemplate, label: `Browse — ${dbName}`, connId, defaultDb: dbName }),
         },
         {
           label:    <MenuLabel icon={ListChecks} text="View Tables" />,

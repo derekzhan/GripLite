@@ -650,6 +650,18 @@ type AdvancedSchemaDriver interface {
 	FetchAdvancedTableProperties(ctx context.Context, dbName, tableName string) (*AdvancedTableProperties, error)
 }
 
+// PagedQueryDriver is implemented by drivers that can apply a paging window
+// (offset + limit) to a query that does not lend itself to SQL LIMIT/OFFSET
+// wrapping — notably MongoDB, whose console queries are shell expressions
+// rather than SELECT statements.  The driver returns up to `limit` rows
+// starting at `offset`; callers request `pageSize+1` rows to detect whether
+// more data remains.
+type PagedQueryDriver interface {
+	DatabaseDriver
+
+	ExecutePagedQueryOnDB(ctx context.Context, dbName, query string, offset, limit int64) (*ResultSet, error)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Schema alteration (Phase 20)
 //

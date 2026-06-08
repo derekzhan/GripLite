@@ -772,6 +772,85 @@ function testColumnSuggestionsAreScopedToReferencedTables() {
   assert.match(sqlEditor, /const showTables = expectingTable \|\| referencedTables\.length === 0/)
 }
 
+// Multi-table FROM lists with aliases (`FROM a x, b`) must still scope columns
+// to every table and keep table completion active for the trailing table.
+// Regression for: second table in `from a i, <cursor>` got no suggestions.
+function testMultiTableFromWithAliasesIsRecognised() {
+  const sqlEditor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
+
+  // Pull the real FROM-parsing helpers out of the source and execute them so
+  // the test exercises the shipped code, not a copy.  resolveTableAlias and
+  // extractReferencedTables both delegate to extractTableRefs, so all three
+  // are evaluated together.
+  const boundary = sqlEditor.match(/const FROM_LIST_BOUNDARY = '[^']+'/)
+  const refsSrc  = sqlEditor.match(/function extractTableRefs\(sql\) \{[\s\S]*?\n\}/)
+  const aliasSrc = sqlEditor.match(/function resolveTableAlias\(sql, alias\) \{[\s\S]*?\n\}/)
+  const tablesSrc = sqlEditor.match(/function extractReferencedTables\(sql\) \{[\s\S]*?\n\}/)
+  assert.ok(boundary && refsSrc && aliasSrc && tablesSrc, 'FROM helpers not found')
+  const { resolveTableAlias, extractReferencedTables } = new Function(
+    `${boundary[0]}\n${refsSrc[0]}\n${aliasSrc[0]}\n${tablesSrc[0]}\n` +
+    'return { resolveTableAlias, extractReferencedTables }',
+  )()
+
+  // Pull the real expectingTable regex literal out of the source.
+  const reLit = sqlEditor.match(/const expectingTable = (\/.*\/i)\.test\(textUntilCursor\)/)
+  assert.ok(reLit, 'expectingTable regex not found')
+  // eslint-disable-next-line no-new-func
+  const expectingTableRe = new Function(`return ${reLit[1]}`)()
+  const expectingTable = (t) => expectingTableRe.test(t)
+
+  // The reported case: typing the 2nd table after an aliased 1st table.
+  assert.deepEqual(
+    extractReferencedTables('select * from ecs_order_info i, uni_tracking_info'),
+    ['ecs_order_info', 'uni_tracking_info'],
+  )
+  assert.equal(expectingTable('select * from ecs_order_info i, uni_tracking_info'), true)
+
+  // Right after the comma (no table typed yet) tables are still offered.
+  assert.equal(expectingTable('select * from ecs_order_info i, '), true)
+
+  // Aliases with AS, db-qualified names and JOINs all resolve to table names.
+  assert.deepEqual(
+    extractReferencedTables('select * from `db`.uni_tracking_spath s, orders o'),
+    ['uni_tracking_spath', 'orders'],
+  )
+  assert.deepEqual(
+    extractReferencedTables('select * from a JOIN b ON a.x = b.y'),
+    ['a', 'b'],
+  )
+
+  // In the WHERE clause / while typing an alias we want columns, not tables.
+  assert.equal(expectingTable('select * from a x, b y where '), false)
+  assert.equal(expectingTable('select * from ecs_order_info i'), false)
+
+  // `alias.column` completion must resolve the alias of ANY table in the list,
+  // including the 2nd table declared with AS (the reported screenshot case).
+  const multi = 'select i.order_id as oid, a. from ecs_order_info i , uni_tracking_info as a where i.order_id = a.order_id limit 10'
+  assert.equal(resolveTableAlias(multi, 'a'), 'uni_tracking_info')
+  assert.equal(resolveTableAlias(multi, 'i'), 'ecs_order_info')
+  // A bare table name (no alias declared) still resolves to itself.
+  assert.equal(resolveTableAlias('select * from de_approval where de_approval.id', 'de_approval'), 'de_approval')
+  // An unknown qualifier (e.g. a column alias) resolves to null so the caller
+  // can fall back to treating the token as a literal table name.
+  assert.equal(resolveTableAlias(multi, 'oid'), null)
+}
+
+function testAliasDotCompletionUsesFullTableSchema() {
+  const sqlEditor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
+
+  // `alias.partial` completion must fetch the exact table schema, not the
+  // search-completion endpoint. SearchCompletions is limited/ranked for global
+  // autocomplete and can omit matching columns from wide tables.
+  assert.match(sqlEditor, /import \{[^}]*getTableSchema[^}]*\} from '\.\.\/lib\/bridge'/)
+  assert.match(sqlEditor, /const schema = await getTableSchema\(connectionId, selectedDbRef\.current, tableName\)/)
+  assert.match(sqlEditor, /col\.name\.toLowerCase\(\)\.startsWith\(partialLower\)/)
+  assert.match(sqlEditor, /insertText: col\.name/)
+
+  const dotBlock = sqlEditor.match(/\/\/ ── Dot-completion:[\s\S]*?\/\/ ── SHOW sub-command completion/)
+  assert.ok(dotBlock, 'dot-completion block not found')
+  assert.doesNotMatch(dotBlock[0], /searchCompletions\(connectionId, selectedDbRef\.current, tableName\)/)
+}
+
 function testSqlEditorRendersSuggestWidgetOnTop() {
   const sqlEditor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
   // fixedOverflowWidgets escapes the editor's overflow-hidden container so the
@@ -1099,6 +1178,8 @@ testResultPanelOffersCancelWhileQueryIsRunning()
 testResultPageSizePreferenceIsRemembered()
 testSqlEditorRendersSuggestWidgetOnTop()
 testColumnSuggestionsAreScopedToReferencedTables()
+testMultiTableFromWithAliasesIsRecognised()
+testAliasDotCompletionUsesFullTableSchema()
 testRecordViewSupportsCtrlFHighlightSearch()
 testGridAndTextModesSupportHighlightSearch()
 testMongoCollectionExpandsIntoFieldsAndIndexes()

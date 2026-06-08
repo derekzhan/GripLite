@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
 import Editor from '@monaco-editor/react'
 import { format as formatSql } from 'sql-formatter'
-import { searchCompletions, runQuery, fetchDatabases, cancelQuery, getQueryHistory, clearQueryHistory } from '../lib/bridge'
+import { searchCompletions, getTableSchema, runQuery, fetchDatabases, cancelQuery, getQueryHistory, clearQueryHistory } from '../lib/bridge'
 import { splitSql, findStatementAt } from '../lib/sqlSplit'
 import {
   classifyMongoConsoleContext,
@@ -306,61 +306,82 @@ const SQL_KEYWORDS = [
   { label: 'SET',               detail: 'Set of string values' },
 ]
 
+// Clause keywords that terminate a FROM / JOIN table list.  Used as a lookahead
+// boundary so the table list isn't swallowed into the WHERE / ON / ORDER etc.
+const FROM_LIST_BOUNDARY = 'WHERE|GROUP|HAVING|ORDER|LIMIT|JOIN|INNER|LEFT|RIGHT|FULL|CROSS|OUTER|ON|USING|UNION|SET|VALUES'
+
 /**
- * resolveTableAlias — scan a SQL string for FROM / JOIN clauses and return
- * the real table name for a given alias token.
+ * extractTableRefs — parse the FROM / JOIN clauses of a SQL statement into
+ * { table, alias } pairs.  This is the single source of truth for both alias
+ * resolution and table scoping, so multi-table queries behave like DataGrip.
  *
- * Handles both plain and backtick-quoted identifiers, and optional AS keyword:
- *   FROM de_approval t      → alias "t" → "de_approval"
- *   FROM de_approval AS t   → alias "t" → "de_approval"
- *   JOIN `orders` o         → alias "o" → "orders"
+ * Handles backtick-quoted identifiers, `db.table` qualifiers, comma-separated
+ * table lists, and per-table aliases (with or without the AS keyword):
+ *
+ *   FROM `db`.uni_tracking_spath s                  → [{uni_tracking_spath, s}]
+ *   FROM a JOIN b ON …                              → [{a}, {b}]
+ *   FROM ecs_order_info i, uni_tracking_info AS a   → [{ecs_order_info, i}, {uni_tracking_info, a}]
+ */
+function extractTableRefs(sql) {
+  if (!sql) return []
+  const out = []
+  // Capture the table list following FROM / JOIN up to the next clause keyword
+  // (or a join keyword, statement end, or semicolon).  Lazily matching the body
+  // lets aliased, comma-separated lists like `a x, b y` be parsed correctly.
+  const re = new RegExp(
+    `\\b(?:FROM|JOIN)\\s+([\\s\\S]+?)(?=\\b(?:${FROM_LIST_BOUNDARY})\\b|;|$)`,
+    'gi',
+  )
+  let m
+  // eslint-disable-next-line no-cond-assign
+  while ((m = re.exec(sql)) !== null) {
+    for (const ref of m[1].split(',')) {
+      const tokens = ref.trim().split(/\s+/).filter(Boolean)
+      if (tokens.length === 0) continue
+      // First token is the (optionally db-qualified, backtick-quoted) table.
+      const parts = tokens[0].replace(/`/g, '').split('.')
+      const table = parts[parts.length - 1]
+      if (!table) continue
+      // Remaining tokens are an optional alias: `tbl alias` or `tbl AS alias`.
+      let alias = ''
+      if (tokens.length >= 2) {
+        const next = tokens[1]
+        const aliasTok = /^AS$/i.test(next) ? tokens[2] : next
+        alias = (aliasTok || '').replace(/`/g, '')
+      }
+      out.push({ table, alias })
+    }
+  }
+  return out
+}
+
+/**
+ * resolveTableAlias — return the real table name for a given alias (or bare
+ * table name) used as a `qualifier.column` prefix.  Works for any table in the
+ * FROM list, including the 2nd+ table in a comma-separated, aliased list.
  *
  * Returns null when no mapping is found (caller treats the token as a direct
  * table name, e.g. `de_approval.id`).
  */
 function resolveTableAlias(sql, alias) {
-  const pat = new RegExp(
-    `\\b(?:FROM|JOIN)\\s+\`?(\\w+)\`?\\s+(?:AS\\s+)?\`?${alias}\`?\\b`,
-    'gi',
-  )
-  let m
-  // eslint-disable-next-line no-cond-assign
-  while ((m = pat.exec(sql)) !== null) {
-    return m[1]
-  }
-  return null
+  if (!alias) return null
+  const refs = extractTableRefs(sql)
+  const lower = alias.toLowerCase()
+  // Prefer an explicit alias match, then fall back to a direct table-name match
+  // (so `de_approval.id` still resolves when no alias was declared).
+  const byAlias = refs.find((r) => r.alias && r.alias.toLowerCase() === lower)
+  if (byAlias) return byAlias.table
+  const byTable = refs.find((r) => r.table.toLowerCase() === lower)
+  return byTable ? byTable.table : null
 }
 
 /**
- * extractReferencedTables — collect the real table names referenced in the
- * FROM / JOIN clauses of a SQL statement, so column completion can be scoped
- * to those tables only (instead of every table that happens to share a column
- * name).
- *
- * Handles backtick-quoted identifiers, `db.table` qualifiers, and comma-
- * separated table lists (`FROM a, b`).  Aliases are ignored — we only need
- * the underlying table names.
- *
- *   FROM `db`.uni_tracking_spath s   → ["uni_tracking_spath"]
- *   FROM a JOIN b ON …               → ["a", "b"]
- *   FROM a, b                        → ["a", "b"]
+ * extractReferencedTables — the real table names referenced in the FROM / JOIN
+ * clauses, so column completion can be scoped to those tables only (instead of
+ * every table that happens to share a column name).
  */
 function extractReferencedTables(sql) {
-  if (!sql) return []
-  const out = []
-  // Match the table reference immediately following FROM / JOIN, plus any
-  // additional comma-separated tables in the same FROM list.
-  const re = /\b(?:FROM|JOIN)\s+((?:`?\w+`?\.)?`?\w+`?(?:\s*,\s*(?:`?\w+`?\.)?`?\w+`?)*)/gi
-  let m
-  // eslint-disable-next-line no-cond-assign
-  while ((m = re.exec(sql)) !== null) {
-    for (const ref of m[1].split(',')) {
-      const parts = ref.trim().replace(/`/g, '').split('.')
-      const name = parts[parts.length - 1]
-      if (name) out.push(name)
-    }
-  }
-  return out
+  return extractTableRefs(sql).map((r) => r.table)
 }
 
 // ── Saved SQL Snippets ───────────────────────────────────────────────────────
@@ -728,25 +749,25 @@ export default function SqlEditor({
         const dotMatch = textUntilCursor.match(/(\w+)\.(\w*)$/)
         if (dotMatch) {
           const qualifier = dotMatch[1]
+          const partial   = dotMatch[2] ?? ''
           const fullSql   = model.getValue()
 
           // Resolve alias → real table name; fall back to the token itself
           // for bare table-name qualifiers like `de_approval.id`.
           const tableName = resolveTableAlias(fullSql, qualifier) ?? qualifier
 
-          let items = []
+          let colItems = []
           try {
-            // Search by table name — the cache's LIKE filter returns every
-            // column whose table_name starts with `tableName`.
-            items = await searchCompletions(connectionId, selectedDbRef.current, tableName)
+            // Fetch the exact table schema instead of using the global
+            // completion search. SearchCompletions is limited/ranked for fuzzy
+            // autocomplete and can omit matching columns from wide tables.
+            const schema = await getTableSchema(connectionId, selectedDbRef.current, tableName)
+            const partialLower = partial.toLowerCase()
+            colItems = (schema?.columns ?? [])
+              .filter((col) => col.name.toLowerCase().startsWith(partialLower))
           } catch {
             return { suggestions: [] }
           }
-
-          // Keep only columns that belong to this exact table.
-          const colItems = items.filter(
-            (it) => it.kind === 'column' && it.tableName === tableName,
-          )
 
           // The range replaces any partial word already typed after the dot.
           const wordInfo = model.getWordUntilPosition(position)
@@ -758,16 +779,16 @@ export default function SqlEditor({
           }
 
           return {
-            suggestions: colItems.map((item) => ({
+            suggestions: colItems.map((col) => ({
               label: {
-                label:       item.label,
-                description: item.detail,
+                label:       col.name,
+                description: col.type,
               },
               kind:       monaco.languages.CompletionItemKind.Field,
-              insertText: item.label,
-              detail:     item.isPrimaryKey ? `🔑 PK · ${item.detail}` : item.detail,
-              documentation: item.isPrimaryKey ? '🔑 Primary Key' : undefined,
-              sortText: item.isPrimaryKey ? '0' + item.label : '1' + item.label,
+              insertText: col.name,
+              detail:     col.isPrimaryKey ? `🔑 PK · ${col.type}` : col.type,
+              documentation: col.isPrimaryKey ? '🔑 Primary Key' : undefined,
+              sortText: col.isPrimaryKey ? '0' + col.name : '1' + col.name,
               range,
             })),
           }
@@ -900,7 +921,11 @@ export default function SqlEditor({
         // tables that merely share the typed prefix (e.g. `prm_cp_rate_code_*`
         // when typing the column `code`).  When no tables are referenced yet we
         // keep tables visible so an initial `FROM`-less draft still completes.
-        const expectingTable = /\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+(?:[\w.`]+\s*,\s*)*[\w.`]*$/i.test(textUntilCursor)
+        // Each table in the comma list may carry an alias (`tbl t` or
+        // `tbl AS t`), so allow an optional alias token before each comma.
+        // This keeps table completion active for the 2nd+ table in
+        // multi-table FROM lists such as `FROM a x, <cursor>`.
+        const expectingTable = /\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+(?:[\w.`]+(?:\s+(?:AS\s+)?[\w`]+)?\s*,\s*)*[\w.`]*$/i.test(textUntilCursor)
         const showTables = expectingTable || referencedTables.length === 0
         const tableItems = showTables
           ? cacheItems.filter((it) => it.kind === 'table')

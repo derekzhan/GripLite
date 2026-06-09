@@ -13,7 +13,7 @@
  *   └────────────────────────────────────────────────────────┘
  */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { X, Plus, Trash2, CheckCircle, XCircle, Loader2, FolderOpen, Database, Leaf } from 'lucide-react'
+import { X, Plus, Copy, Trash2, CheckCircle, XCircle, Loader2, FolderOpen, Database, Leaf } from 'lucide-react'
 import {
   listSavedConnections,
   getSavedConnection,
@@ -725,6 +725,38 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onDeleted, 
     setDeleteConfirmId(null)
   }
 
+  // ── Duplicate selected connection ───────────────────────────────────────
+  // Clones the currently shown connection into a fresh, unsaved entry so the
+  // user can spin up a new data source from an existing one (DataGrip-style).
+  const handleDuplicate = () => {
+    if (!selectedId) return
+    selectionRequestRef.current += 1
+    const source = form
+    const dup = {
+      ...source,
+      id:   crypto.randomUUID(),
+      name: `${source.name || 'Connection'} copy`,
+    }
+    // Optimistically insert the clone into the list (right after its source) so
+    // a new row appears immediately, before the user saves it.
+    setSavedList(() => {
+      const base = visibleConnections
+      const idx = base.findIndex((c) => c.id === selectedId)
+      const next = [...base]
+      next.splice(idx === -1 ? next.length : idx + 1, 0, dup)
+      return next
+    })
+    // Point the dirty-tracker at the source so the clone reads as modified and
+    // the Apply / OK buttons enable immediately.
+    prevFormRef.current = JSON.stringify(source)
+    setForm(dup)
+    setSelectedId(dup.id)
+    setIsDirty(true)
+    setTestResult(null)
+    setActiveTab('General')
+    setDeleteConfirmId(null)
+  }
+
   // ── Delete selected connection ──────────────────────────────────────────
   const handleDelete = () => {
     const id = selectedId
@@ -863,6 +895,13 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onDeleted, 
               >
                 <Plus size={12} className="-mr-0.5" />
                 <Leaf size={14} />
+              </ToolbarIconButton>
+              <ToolbarIconButton
+                onClick={handleDuplicate}
+                title="Duplicate selected"
+                disabled={!selectedId}
+              >
+                <Copy size={14} />
               </ToolbarIconButton>
               <ToolbarIconButton
                 onClick={handleDelete}

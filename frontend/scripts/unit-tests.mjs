@@ -428,6 +428,23 @@ function testConnectionDialogOkDoesNotSavePristineBlankConnection() {
   assert.match(handleOK, /saveConnection\(payload\)/)
 }
 
+function testConnectionDialogSupportsDuplicate() {
+  const source = readFileSync(new URL('../src/components/ConnectionDialog.jsx', import.meta.url), 'utf8')
+  const handleDuplicate = source.match(/const handleDuplicate = \(\) => \{[\s\S]*?\n  \}/)?.[0] ?? ''
+  // Clone the current form into a fresh, unsaved, dirty connection.
+  assert.match(handleDuplicate, /if \(!selectedId\) return/)
+  assert.match(handleDuplicate, /id:\s*crypto\.randomUUID\(\)/)
+  assert.match(handleDuplicate, /name: `\$\{source\.name \|\| 'Connection'\} copy`/)
+  // The clone is optimistically inserted into the list and becomes selected.
+  assert.match(handleDuplicate, /setSavedList\(\(\) => \{/)
+  assert.match(handleDuplicate, /\.splice\(idx === -1 \? next\.length : idx \+ 1, 0, dup\)/)
+  assert.match(handleDuplicate, /setSelectedId\(dup\.id\)/)
+  assert.match(handleDuplicate, /setIsDirty\(true\)/)
+  // A toolbar button exposes it, enabled only when a connection is selected.
+  assert.match(source, /onClick=\{handleDuplicate\}/)
+  assert.match(source, /title="Duplicate selected"/)
+}
+
 function testConnectionDialogSupportsCustomColorPicker() {
   const source = readFileSync(new URL('../src/components/ConnectionDialog.jsx', import.meta.url), 'utf8')
   const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
@@ -1338,6 +1355,7 @@ testRenameAndDropTableSqlQuoteIdentifiers()
 testConnectionDialogHasExplicitDatabaseCreateEntries()
 testConnectionDialogDeleteUpdatesVisibleListAndParent()
 testConnectionDialogOkDoesNotSavePristineBlankConnection()
+testConnectionDialogSupportsDuplicate()
 testConnectionDialogSupportsCustomColorPicker()
 testDatabaseExplorerDoesNotExposeConnectionGroups()
 testConnectionDialogSelectionAndSaveAreResponsive()

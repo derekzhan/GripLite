@@ -140,6 +140,63 @@ export async function setDataFilterHistory(connectionID, dbName, tableName, entr
   writeMockFilterHistory(m)
 }
 
+// ─── Table open-frequency (persisted in griplite.db; survives reinstall) ──
+const TABLE_USAGE_LS = 'griplite_table_usage_v1'
+
+function readMockTableUsage() {
+  try {
+    return JSON.parse(localStorage.getItem(TABLE_USAGE_LS) || '{}') || {}
+  } catch { return {} }
+}
+
+function writeMockTableUsage(m) {
+  try { localStorage.setItem(TABLE_USAGE_LS, JSON.stringify(m)) } catch { /* ignore */ }
+}
+
+/**
+ * getTableUsage — load the open-frequency map used to sort the Explorer tree.
+ * In the Wails runtime this reads griplite.db (durable across reinstalls); in
+ * browser dev it falls back to localStorage.
+ *
+ * @returns {Promise<Object<string,{count:number,lastUsedAt:number}>>}
+ *   keyed by `${connId}::${dbName}::${tableName}`
+ */
+export async function getTableUsage() {
+  if (isWails()) {
+    const { GetTableUsage } = await import('../../wailsjs/go/main/App.js')
+    const rows = (await GetTableUsage()) ?? []
+    const map = {}
+    for (const r of rows) {
+      map[`${r.connId}::${r.dbName}::${r.tableName}`] = { count: r.count, lastUsedAt: r.lastUsedAt }
+    }
+    return map
+  }
+  await delay(0)
+  return readMockTableUsage()
+}
+
+/**
+ * recordTableUsage — register one "open" of a table. Persists to griplite.db in
+ * the Wails runtime; mirrors into localStorage in browser dev. Fire-and-forget.
+ *
+ * @param {string} connectionID
+ * @param {string} dbName
+ * @param {string} tableName
+ */
+export async function recordTableUsage(connectionID, dbName, tableName) {
+  if (!tableName) return
+  if (isWails()) {
+    const { RecordTableUsage } = await import('../../wailsjs/go/main/App.js')
+    return RecordTableUsage(connectionID, dbName ?? '', tableName)
+  }
+  await delay(0)
+  const m = readMockTableUsage()
+  const key = `${connectionID}::${dbName ?? ''}::${tableName}`
+  const prev = m[key]
+  m[key] = { count: (prev?.count ?? 0) + 1, lastUsedAt: Date.now() }
+  writeMockTableUsage(m)
+}
+
 /**
  * AddConnection — open and register a new database connection.
  *
@@ -1355,6 +1412,41 @@ export async function onCopyProgress(callback) {
 
   mockCopyProgressListeners.add(callback)
   return () => mockCopyProgressListeners.delete(callback)
+}
+
+/**
+ * getPlatform — runtime OS identifier ('darwin' | 'windows' | 'linux'), or
+ * 'browser' in dev. Used to decide whether the native menu bar hosts Tools/Help
+ * (macOS) or the in-app MenuBar should keep them (Windows/Linux).
+ *
+ * @returns {Promise<string>}
+ */
+export async function getPlatform() {
+  if (!isWails()) return 'browser'
+  try {
+    const { Environment } = await import('../../wailsjs/runtime/runtime.js')
+    const env = await Environment()
+    return env?.platform ?? 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/**
+ * onMenuAction — subscribe to native menu clicks emitted by the Go side. Each
+ * handler is optional. No-op outside the Wails runtime.
+ *
+ * @param {{ settings?: Function, shortcuts?: Function, about?: Function }} handlers
+ * @returns {Promise<() => void>}  unsubscribe function
+ */
+export async function onMenuAction(handlers = {}) {
+  if (!isWails()) return () => {}
+  const { EventsOn } = await import('../../wailsjs/runtime/runtime.js')
+  const offs = []
+  if (handlers.settings)  offs.push(EventsOn('menu:settings',  handlers.settings))
+  if (handlers.shortcuts) offs.push(EventsOn('menu:shortcuts', handlers.shortcuts))
+  if (handlers.about)     offs.push(EventsOn('menu:about',     handlers.about))
+  return () => offs.forEach((off) => { try { off?.() } catch { /* ignore */ } })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -578,6 +578,63 @@ func (a *App) SetDataFilterHistory(connectionID, dbName, tableName string, entri
 	return err
 }
 
+// TableUsageRow is one (connection, database, table) open-frequency record,
+// used by the Database Explorer to float frequently-used tables to the top.
+type TableUsageRow struct {
+	ConnID     string `json:"connId"`
+	DBName     string `json:"dbName"`
+	TableName  string `json:"tableName"`
+	Count      int    `json:"count"`
+	LastUsedAt int64  `json:"lastUsedAt"` // unix millis (UTC) of the most recent open
+}
+
+// GetTableUsage returns every persisted table open-frequency record. The
+// Explorer loads these once and sorts tables most-used-first. Stored in
+// griplite.db so the ordering survives app reinstalls.
+func (a *App) GetTableUsage() ([]TableUsageRow, error) {
+	if a.sharedDB == nil {
+		return nil, fmt.Errorf("local database not initialised")
+	}
+	rows, err := a.sharedDB.Query(
+		`SELECT conn_id, db_name, table_name, open_count,
+		        CAST(strftime('%s', last_used_at) AS INTEGER) * 1000
+		 FROM table_usage`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TableUsageRow
+	for rows.Next() {
+		var r TableUsageRow
+		if err := rows.Scan(&r.ConnID, &r.DBName, &r.TableName, &r.Count, &r.LastUsedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RecordTableUsage increments the open counter for a table and stamps the time.
+// Called whenever the user opens a table/collection from the Explorer.
+func (a *App) RecordTableUsage(connectionID, dbName, tableName string) error {
+	if a.sharedDB == nil {
+		return fmt.Errorf("local database not initialised")
+	}
+	if tableName == "" {
+		return nil
+	}
+	_, err := a.sharedDB.Exec(
+		`INSERT INTO table_usage (conn_id, db_name, table_name, open_count, last_used_at)
+		 VALUES (?, ?, ?, 1, datetime('now'))
+		 ON CONFLICT(conn_id, db_name, table_name) DO UPDATE SET
+		   open_count   = open_count + 1,
+		   last_used_at = datetime('now')`,
+		connectionID, dbName, tableName,
+	)
+	return err
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Lazy reconnect (Phase 16)
 // ─────────────────────────────────────────────────────────────────────────────

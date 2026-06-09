@@ -17,7 +17,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 
-export default function MenuBar({ onAbout, onDocs }) {
+export default function MenuBar({ onAbout, onDocs, onSettings }) {
   const [openMenu, setOpenMenu] = useState(null) // 'help' | null
   const containerRef = useRef(null)
 
@@ -36,6 +36,13 @@ export default function MenuBar({ onAbout, onDocs }) {
   }, [openMenu])
 
   const menus = [
+    {
+      id: 'tools',
+      label: 'Tools',
+      items: [
+        { label: 'Settings…', action: () => { onSettings?.(); setOpenMenu(null) } },
+      ],
+    },
     {
       id: 'help',
       label: 'Help',

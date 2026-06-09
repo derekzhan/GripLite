@@ -6,6 +6,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
 //go:embed all:frontend/dist
@@ -17,7 +18,7 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:            "GripLite",
+		Title:            "GripLite — Lightweight Database IDE",
 		Width:            1024,
 		Height:           768,
 		WindowStartState: options.Maximised,
@@ -25,8 +26,15 @@ func main() {
 			Assets: assets,
 		},
 		BackgroundColour: &options.RGBA{R: 242, G: 243, B: 245, A: 1},
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
+		Menu:             app.buildAppMenu(),
+		// Hide the native macOS title bar (transparent, full-size content) so the
+		// in-app themed title strip paints that area — this keeps the title bar
+		// colour in sync with the selected Light/Dark theme. Ignored off macOS.
+		Mac: &mac.Options{
+			TitleBar: mac.TitleBarHidden(),
+		},
+		OnStartup:  app.startup,
+		OnShutdown: app.shutdown,
 		Bind: []interface{}{
 			app,
 		},

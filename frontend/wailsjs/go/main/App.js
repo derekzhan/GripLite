@@ -138,6 +138,10 @@ export function GetTableSchema(arg1, arg2, arg3) {
   return window['go']['main']['App']['GetTableSchema'](arg1, arg2, arg3);
 }
 
+export function GetTableUsage() {
+  return window['go']['main']['App']['GetTableUsage']();
+}
+
 export function GetTablesFromCache(arg1, arg2) {
   return window['go']['main']['App']['GetTablesFromCache'](arg1, arg2);
 }
@@ -180,6 +184,10 @@ export function PreviewPartitionAlter(arg1, arg2) {
 
 export function PreviewTableAlter(arg1, arg2) {
   return window['go']['main']['App']['PreviewTableAlter'](arg1, arg2);
+}
+
+export function RecordTableUsage(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RecordTableUsage'](arg1, arg2, arg3);
 }
 
 export function RefreshTableMetadata(arg1, arg2, arg3) {

@@ -23,6 +23,8 @@ import { databaseScopeFromSelection, tablesFolderIdForScope } from '../src/lib/e
 import { DEFAULT_MONGO_SORT, buildMongoCollectionFindQuery, getMongoFieldSuggestions, classifyMongoConsoleContext, detectMongoCollectionName, MONGO_COLLECTION_METHODS } from '../src/lib/mongoQuery.js'
 import { appendResultPage, normalizePageSize, pageSlice, shouldLoadMore } from '../src/lib/queryPaging.js'
 import { stripLeadingSqlComments } from '../src/lib/sqlText.js'
+import { bumpTableUsage, sortTablesByUsage } from '../src/lib/tableUsage.js'
+import { loadTableUsageTopN, saveTableUsageTopN, clampTableUsageTopN } from '../src/lib/settings.js'
 import {
   closeAllTabsInWorkspace,
   closeTabInWorkspace,
@@ -851,6 +853,181 @@ function testAliasDotCompletionUsesFullTableSchema() {
   assert.doesNotMatch(dotBlock[0], /searchCompletions\(connectionId, selectedDbRef\.current, tableName\)/)
 }
 
+function testBumpTableUsageCountsAndStampsImmutably() {
+  let usage = {}
+  const next = bumpTableUsage(usage, { connId: 'c1', dbName: 'db1', tableName: 'orders' }, 1000)
+  // Pure: original map is untouched, a new map is returned.
+  assert.deepEqual(usage, {})
+  assert.equal(next['c1::db1::orders'].count, 1)
+  assert.equal(next['c1::db1::orders'].lastUsedAt, 1000)
+
+  usage = bumpTableUsage(next, { connId: 'c1', dbName: 'db1', tableName: 'orders' }, 2000)
+  assert.equal(usage['c1::db1::orders'].count, 2)
+  assert.equal(usage['c1::db1::orders'].lastUsedAt, 2000)
+
+  // Distinct connections/databases never collide.
+  usage = bumpTableUsage(usage, { connId: 'c2', dbName: 'db1', tableName: 'orders' }, 3000)
+  assert.equal(usage['c2::db1::orders'].count, 1)
+  assert.equal(usage['c1::db1::orders'].count, 2)
+
+  // A missing table name is a no-op (defensive).
+  assert.equal(bumpTableUsage(usage, { connId: 'c1', dbName: 'db1', tableName: '' }), usage)
+}
+
+function testSortTablesByUsagePutsFrequentFirst() {
+  const usage = {
+    'c1::db1::orders': { count: 5, lastUsedAt: 100 },
+    'c1::db1::users':  { count: 5, lastUsedAt: 200 },
+    'c1::db1::logs':   { count: 1, lastUsedAt: 300 },
+  }
+  const children = [
+    { tableName: 'audit',  connId: 'c1', dbName: 'db1' },
+    { tableName: 'logs',   connId: 'c1', dbName: 'db1' },
+    { tableName: 'orders', connId: 'c1', dbName: 'db1' },
+    { tableName: 'users',  connId: 'c1', dbName: 'db1' },
+    { tableName: 'zebra',  connId: 'c1', dbName: 'db1' },
+  ]
+
+  // Generous topN → every used table is pinned. users & orders tie on count
+  // (5) → more-recently-used (users) wins; then logs (count 1); then the unused
+  // tables (audit, zebra) follow in dictionary order.
+  const sorted = sortTablesByUsage(children, usage, 10).map((c) => c.tableName)
+  assert.deepEqual(sorted, ['users', 'orders', 'logs', 'audit', 'zebra'])
+}
+
+function testSortTablesByUsagePinsTopNThenAlphabetises() {
+  const usage = {
+    'c1::db1::orders': { count: 9, lastUsedAt: 100 },
+    'c1::db1::users':  { count: 8, lastUsedAt: 200 },
+    'c1::db1::logs':   { count: 7, lastUsedAt: 300 }, // used, but ranked 3rd
+  }
+  const children = [
+    { tableName: 'zebra',  connId: 'c1', dbName: 'db1' },
+    { tableName: 'logs',   connId: 'c1', dbName: 'db1' },
+    { tableName: 'orders', connId: 'c1', dbName: 'db1' },
+    { tableName: 'apple',  connId: 'c1', dbName: 'db1' },
+    { tableName: 'users',  connId: 'c1', dbName: 'db1' },
+  ]
+  // topN = 2 → only orders & users pin (by frequency). logs, despite being
+  // used, ranks 3rd so it drops into the alphabetical tail with apple & zebra.
+  const sorted = sortTablesByUsage(children, usage, 2).map((c) => c.tableName)
+  assert.deepEqual(sorted, ['orders', 'users', 'apple', 'logs', 'zebra'])
+}
+
+function testSortTablesByUsageAlphabetisesUnused() {
+  const children = [
+    { tableName: 'b', connId: 'c', dbName: 'd' },
+    { tableName: 'a', connId: 'c', dbName: 'd' },
+    { tableName: 'c', connId: 'c', dbName: 'd' },
+  ]
+  // No usage data → every table is "other", listed in dictionary order.
+  assert.deepEqual(
+    sortTablesByUsage(children, {}).map((c) => c.tableName),
+    ['a', 'b', 'c'],
+  )
+  // topN = 0 → nothing pinned, pure alphabetical even with usage present.
+  assert.deepEqual(
+    sortTablesByUsage(children, { 'c::d::c': { count: 99, lastUsedAt: 1 } }, 0).map((c) => c.tableName),
+    ['a', 'b', 'c'],
+  )
+}
+
+function testTableUsageTopNSettingRoundTrips() {
+  const storage = new MemoryStorage()
+  // Default when unset.
+  assert.equal(loadTableUsageTopN(storage), 10)
+  // Save clamps to [0,100] and persists.
+  assert.equal(saveTableUsageTopN(25, storage), 25)
+  assert.equal(loadTableUsageTopN(storage), 25)
+  assert.equal(saveTableUsageTopN(999, storage), 100)
+  assert.equal(saveTableUsageTopN(-5, storage), 0)
+  assert.equal(saveTableUsageTopN(3.9, storage), 3)
+  // Garbage falls back to default.
+  assert.equal(clampTableUsageTopN('abc'), 10)
+}
+
+function testTableTreeSortsTablesFolderByUsage() {
+  const explorer = readFileSync(new URL('../src/components/DatabaseExplorer.jsx', import.meta.url), 'utf8')
+  const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
+
+  // Pure sort/bump helpers come from tableUsage; persistence comes from bridge.
+  assert.match(explorer, /import \{ bumpTableUsage, sortTablesByUsage \} from '\.\.\/lib\/tableUsage'/)
+  assert.match(explorer, /getTableUsage, recordTableUsage,/)
+  // Usage is loaded from the backend (griplite.db) once on mount.
+  assert.match(explorer, /getTableUsage\(\)\.then\(\(m\) => \{ if \(alive\) setTableUsage\(m \?\? \{\}\) \}\)/)
+  // Opening a table optimistically bumps in-memory AND persists to the backend.
+  assert.match(explorer, /setTableUsage\(\(prev\) => bumpTableUsage\(prev, \{ connId: node\.connId, dbName: node\.dbName, tableName: node\.tableName \}\)\)/)
+  assert.match(explorer, /recordTableUsage\(node\.connId, node\.dbName, node\.tableName\)/)
+  // The tables folder's children are sorted by usage (with the configurable
+  // top-N threshold) before rendering.
+  assert.match(explorer, /node\.folderKind === 'tables'\s*\n?\s*\?\s*sortTablesByUsage\(cache\.children, tableUsage, tableUsageTopN\)/)
+  // The top-N threshold arrives as a prop (defaulting to 10).
+  assert.match(explorer, /tableUsageTopN = 10,/)
+
+  // The bridge persists usage to griplite.db in Wails, localStorage in dev.
+  assert.match(bridge, /export async function getTableUsage\(\)/)
+  assert.match(bridge, /const \{ GetTableUsage \} = await import/)
+  assert.match(bridge, /export async function recordTableUsage\(connectionID, dbName, tableName\)/)
+  assert.match(bridge, /const \{ RecordTableUsage \} = await import/)
+}
+
+function testSettingsModalWiredIntoApp() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const menu = readFileSync(new URL('../src/components/MenuBar.jsx', import.meta.url), 'utf8')
+  const modal = readFileSync(new URL('../src/components/SettingsModal.jsx', import.meta.url), 'utf8')
+
+  // App loads the persisted preference, threads it to the Explorer, and lets
+  // the Settings modal update it.
+  assert.match(app, /import \{ loadTableUsageTopN \} from '\.\/lib\/settings'/)
+  assert.match(app, /useState\(\(\) => loadTableUsageTopN\(\)\)/)
+  assert.match(app, /tableUsageTopN=\{tableUsageTopN\}/)
+  assert.match(app, /onChangeTableUsageTopN=\{setTableUsageTopN\}/)
+  assert.match(app, /onSettings=\{\(\) => setSettingsOpen\(true\)\}/)
+
+  // The menu exposes a Settings entry that triggers onSettings.
+  assert.match(menu, /onSettings/)
+  assert.match(menu, /Settings…/)
+
+  // The modal persists the clamped value via the settings helper.
+  assert.match(modal, /saveTableUsageTopN/)
+  assert.match(modal, /onChangeTableUsageTopN/)
+
+  // The theme/skin picker now lives in Settings (moved out of the title bar).
+  assert.match(modal, /import \{ useTheme \} from '\.\.\/theme\/ThemeProvider'/)
+  assert.match(modal, /const \{ theme, setTheme \} = useTheme\(\)/)
+  assert.match(modal, /THEME_OPTIONS/)
+  assert.match(modal, /Appearance/)
+
+  // App no longer renders the title-bar ThemeToggle (theme is in Settings).
+  assert.ok(!/ThemeToggle/.test(app), 'App.jsx should not reference ThemeToggle anymore')
+}
+
+function testNativeMenuWiredIntoApp() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
+
+  // App detects the platform and subscribes to native menu clicks.
+  assert.match(app, /getPlatform, onMenuAction/)
+  assert.match(app, /setNativeMenu\(platform === 'darwin'\)/)
+  assert.match(app, /onMenuAction\(\{/)
+  assert.match(app, /settings:\s*\(\) => setSettingsOpen\(true\)/)
+  assert.match(app, /shortcuts:\s*\(\) => setDocsOpen\(true\)/)
+  assert.match(app, /about:\s*\(\) => setAboutOpen\(true\)/)
+  // The in-app MenuBar is hidden when the native menu is active.
+  assert.match(app, /\{!nativeMenu && \(/)
+  // The themed title strip insets for the macOS traffic-light buttons so it can
+  // double as the (hidden) native title bar without overlapping them.
+  assert.match(app, /paddingLeft: nativeMenu \? 78 : 12/)
+
+  // Bridge exposes platform detection and the menu event subscription.
+  assert.match(bridge, /export async function getPlatform\(\)/)
+  assert.match(bridge, /const \{ Environment \} = await import/)
+  assert.match(bridge, /export async function onMenuAction\(handlers = \{\}\)/)
+  assert.match(bridge, /EventsOn\('menu:settings',/)
+  assert.match(bridge, /EventsOn\('menu:shortcuts',/)
+  assert.match(bridge, /EventsOn\('menu:about',/)
+}
+
 function testSqlEditorRendersSuggestWidgetOnTop() {
   const sqlEditor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
   // fixedOverflowWidgets escapes the editor's overflow-hidden container so the
@@ -886,7 +1063,7 @@ function testResultPanelOffersCancelWhileQueryIsRunning() {
   assert.match(resultPanel, /isRunning && onCancelQuery && \(/)
   assert.match(resultPanel, /onClick=\{onCancelQuery\}/)
   // App wires the cancel handler to the tab-scoped cancelQuery bridge call.
-  assert.match(app, /import \{ runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo \} from '\.\/lib\/bridge'/)
+  assert.match(app, /import \{ runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo[^}]*\} from '\.\/lib\/bridge'/)
   assert.match(app, /onCancelQuery=\{\(\) => cancelQuery\(tab\.id\)\}/)
 }
 
@@ -1180,6 +1357,14 @@ testSqlEditorRendersSuggestWidgetOnTop()
 testColumnSuggestionsAreScopedToReferencedTables()
 testMultiTableFromWithAliasesIsRecognised()
 testAliasDotCompletionUsesFullTableSchema()
+testBumpTableUsageCountsAndStampsImmutably()
+testSortTablesByUsagePutsFrequentFirst()
+testSortTablesByUsagePinsTopNThenAlphabetises()
+testSortTablesByUsageAlphabetisesUnused()
+testTableUsageTopNSettingRoundTrips()
+testTableTreeSortsTablesFolderByUsage()
+testSettingsModalWiredIntoApp()
+testNativeMenuWiredIntoApp()
 testRecordViewSupportsCtrlFHighlightSearch()
 testGridAndTextModesSupportHighlightSearch()
 testMongoCollectionExpandsIntoFieldsAndIndexes()

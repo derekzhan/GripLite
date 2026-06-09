@@ -30,14 +30,15 @@ import QueryTabView       from './components/QueryTabView'
 import ConnectionDialog   from './components/ConnectionDialog'
 import CopyDataModal      from './components/CopyDataModal'
 import MenuBar            from './components/MenuBar'
-import ThemeToggle        from './components/ThemeToggle'
 import AboutModal              from './components/AboutModal'
 import KeyboardShortcutsModal from './components/KeyboardShortcutsModal'
+import SettingsModal          from './components/SettingsModal'
 import ErrorBoundary      from './components/ErrorBoundary'
+import { loadTableUsageTopN } from './lib/settings'
 import { Database, Leaf, Zap } from 'lucide-react'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
-import { runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo } from './lib/bridge'
+import { runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo, getPlatform, onMenuAction } from './lib/bridge'
 import { appendResultPage, DEFAULT_PAGE_SIZE, loadPreferredPageSize, savePreferredPageSize } from './lib/queryPaging'
 import { stripLeadingSqlComments } from './lib/sqlText'
 import {
@@ -641,12 +642,36 @@ export default function App() {
   const [connDialogInitId, setConnDialogInitId] = useState(null)
 
   // ── Phase 18: About modal ──────────────────────────────────────────────────
-  const [aboutOpen,  setAboutOpen]  = useState(false)
-  const [docsOpen,   setDocsOpen]   = useState(false)
+  const [aboutOpen,    setAboutOpen]    = useState(false)
+  const [docsOpen,     setDocsOpen]     = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  // On macOS, Tools/Help live in the native top-of-screen menu bar and the
+  // window's title bar is hidden, so the in-app strip insets for the traffic
+  // lights and skips the MenuBar. Seed from a synchronous platform guess to
+  // avoid a launch flash; the IPC check below confirms it.
+  const [nativeMenu,   setNativeMenu]   = useState(
+    () => typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent || ''),
+  )
+  // How many frequently-used tables the Explorer pins to the top (the rest are
+  // listed alphabetically). User-adjustable via Tools → Settings.
+  const [tableUsageTopN, setTableUsageTopN] = useState(() => loadTableUsageTopN())
   const [appVersion, setAppVersion] = useState('')
 
   useEffect(() => {
     getBuildInfo().then((info) => setAppVersion(info?.version ?? '')).catch(() => {})
+  }, [])
+
+  // On macOS the native menu bar hosts Tools/Help; subscribe to its clicks and
+  // hide the in-app MenuBar there. On Windows/Linux the in-app bar stays.
+  useEffect(() => {
+    let unsubscribe = () => {}
+    getPlatform().then((platform) => setNativeMenu(platform === 'darwin')).catch(() => {})
+    onMenuAction({
+      settings:  () => setSettingsOpen(true),
+      shortcuts: () => setDocsOpen(true),
+      about:     () => setAboutOpen(true),
+    }).then((off) => { unsubscribe = off }).catch(() => {})
+    return () => unsubscribe()
   }, [])
 
   const handleNewConnectionOpen = useCallback(() => {
@@ -691,7 +716,6 @@ export default function App() {
   // ── Derived ───────────────────────────────────────────────────────────────
   const connLabel   = connInfo ? `${connInfo.host}:${connInfo.port} / ${connInfo.database}` : 'Not connected'
   const connVersion = connInfo?.serverVersion ?? ''
-  const anyRunning  = Object.values(consolesData).some((d) => d.isRunning)
 
   return (
     <div
@@ -699,14 +723,17 @@ export default function App() {
       style={{ background: 'var(--bg-app)', color: 'var(--fg-primary)' }}
     >
 
-      {/* ── Title bar (Phase 18) ──────────────────────────────────────────
-          Hosts the custom menu bar on the left and the theme toggle on the
-          right.  Empty space stays draggable (WebkitAppRegion: 'drag') so
-          the user can still move the frameless window by grabbing the bar.
+      {/* ── App title bar ─────────────────────────────────────────────────
+          The native macOS title bar is hidden (transparent + full-size
+          content), so this themed strip *is* the title bar — its colour tracks
+          the Light/Dark theme via `bg-titlebar`. It also hosts the window drag
+          region and the branding. On macOS we inset the left edge to clear the
+          traffic-light buttons and Tools/Help live in the native menu bar; on
+          Windows/Linux the in-app MenuBar hosts them here instead.
       */}
       <header
-        className="flex items-center h-9 px-3 gap-3 flex-shrink-0 bg-titlebar border-b border-line-subtle"
-        style={{ WebkitAppRegion: 'drag' }}
+        className="flex items-center h-9 gap-3 flex-shrink-0 bg-titlebar border-b border-line-subtle"
+        style={{ WebkitAppRegion: 'drag', paddingLeft: nativeMenu ? 78 : 12, paddingRight: 12 }}
       >
         <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' }}>
           <span className="text-[13px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
@@ -717,25 +744,15 @@ export default function App() {
           </span>
         </div>
 
-        {/* Menu bar (Help → About, extensible) */}
-        <div className="h-full ml-1">
-          <MenuBar onAbout={() => setAboutOpen(true)} onDocs={() => setDocsOpen(true)} />
-        </div>
+        {/* Tools / Help — only when there's no global menu bar (non-macOS). */}
+        {!nativeMenu && (
+          <div className="h-full ml-1" style={{ WebkitAppRegion: 'no-drag' }}>
+            <MenuBar onAbout={() => setAboutOpen(true)} onDocs={() => setDocsOpen(true)} onSettings={() => setSettingsOpen(true)} />
+          </div>
+        )}
 
         {/* Draggable filler — lets the user move the window */}
         <div className="flex-1 h-full" />
-
-        {anyRunning && (
-          <span
-            className="text-[11px] animate-pulse"
-            style={{ color: 'var(--accent)', WebkitAppRegion: 'no-drag' }}
-          >
-            Running…
-          </span>
-        )}
-
-        {/* Theme toggle (Sun / Moon / System) */}
-        <ThemeToggle />
       </header>
 
       {/* ── Main layout ────────────────────────────────────────────────── */}
@@ -757,6 +774,7 @@ export default function App() {
               onConsoleOpen={handleNewConsole}
               onPropertiesOpen={handlePropertiesOpen}
               onConnectionsChanged={reloadConnections}
+              tableUsageTopN={tableUsageTopN}
             />
           </ErrorBoundary>
 
@@ -969,6 +987,13 @@ export default function App() {
 
       {/* ── Keyboard Shortcuts modal ─────────────────────────────────── */}
       <KeyboardShortcutsModal isOpen={docsOpen} onClose={() => setDocsOpen(false)} />
+
+      <SettingsModal
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        tableUsageTopN={tableUsageTopN}
+        onChangeTableUsageTopN={setTableUsageTopN}
+      />
 
       {/* ── Global toast stack (Phase 21) ────────────────────────────
           Mounted once at the root so any component can dispatch via

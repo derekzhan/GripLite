@@ -74,6 +74,8 @@ export function GetTableDetailFromCache(arg1:string,arg2:string,arg3:string):Pro
 
 export function GetTableSchema(arg1:string,arg2:string,arg3:string):Promise<cache.CachedTableSchema>;
 
+export function GetTableUsage():Promise<Array<main.TableUsageRow>>;
+
 export function GetTablesFromCache(arg1:string,arg2:string):Promise<Array<database.CachedTableEntry>>;
 
 export function InitLocalDB():Promise<void>;
@@ -95,6 +97,8 @@ export function PreviewIndexAlter(arg1:string,arg2:driver.IndexChangeRequest):Pr
 export function PreviewPartitionAlter(arg1:string,arg2:driver.PartitionChangeRequest):Promise<driver.SchemaChangePreview>;
 
 export function PreviewTableAlter(arg1:string,arg2:driver.SchemaChangeRequest):Promise<driver.SchemaChangePreview>;
+
+export function RecordTableUsage(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RefreshTableMetadata(arg1:string,arg2:string,arg3:string):Promise<void>;
 

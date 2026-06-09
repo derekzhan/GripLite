@@ -38,6 +38,7 @@ func TestOpen_CreatesFileAndTables(t *testing.T) {
 		"metadata_columns", // extended
 		"metadata_fts",     // extended (FTS5 virtual table)
 		"sync_log",         // extended
+		"table_usage",      // extended (Explorer open-frequency, survives reinstall)
 	}
 	for _, name := range wantTables {
 		var out string
@@ -143,6 +144,52 @@ func TestOpen_CommentColumnMigration(t *testing.T) {
 	}
 	if got != "hello world" {
 		t.Errorf("comment roundtrip: want %q, got %q", "hello world", got)
+	}
+}
+
+// TestTableUsageUpsertIncrements verifies the table_usage upsert increments the
+// open counter on conflict (the SQL the App.RecordTableUsage method runs) and
+// keeps distinct (conn, db, table) rows separate.
+func TestTableUsageUpsertIncrements(t *testing.T) {
+	dir := t.TempDir()
+	db, _, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	upsert := `INSERT INTO table_usage (conn_id, db_name, table_name, open_count, last_used_at)
+		VALUES (?, ?, ?, 1, datetime('now'))
+		ON CONFLICT(conn_id, db_name, table_name) DO UPDATE SET
+		  open_count   = open_count + 1,
+		  last_used_at = datetime('now')`
+
+	for i := 0; i < 3; i++ {
+		if _, err := db.Exec(upsert, "c1", "shop", "orders"); err != nil {
+			t.Fatalf("upsert orders #%d: %v", i, err)
+		}
+	}
+	if _, err := db.Exec(upsert, "c1", "shop", "users"); err != nil {
+		t.Fatalf("upsert users: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(
+		`SELECT open_count FROM table_usage WHERE conn_id='c1' AND db_name='shop' AND table_name='orders'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("select orders count: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("orders open_count: want 3, got %d", count)
+	}
+
+	if err := db.QueryRow(
+		`SELECT open_count FROM table_usage WHERE conn_id='c1' AND db_name='shop' AND table_name='users'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("select users count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("users open_count: want 1, got %d", count)
 	}
 }
 

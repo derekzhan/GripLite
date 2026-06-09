@@ -1280,6 +1280,26 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class TableUsageRow {
+	    connId: string;
+	    dbName: string;
+	    tableName: string;
+	    count: number;
+	    lastUsedAt: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TableUsageRow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connId = source["connId"];
+	        this.dbName = source["dbName"];
+	        this.tableName = source["tableName"];
+	        this.count = source["count"];
+	        this.lastUsedAt = source["lastUsedAt"];
+	    }
+	}
 
 }
 

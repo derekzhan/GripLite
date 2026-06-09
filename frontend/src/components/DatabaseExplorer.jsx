@@ -50,11 +50,13 @@ import {
   listConnections, fetchDatabases, fetchTables, getTableSchema, getTableAdvancedProperties,
   fetchRoutines, fetchTriggers, fetchEvents,
   runQuery, syncMetadata, connect, connectSaved, disconnect, refreshTableMetadata,
+  getTableUsage, recordTableUsage,
 } from '../lib/bridge'
 import { normalizeError } from '../lib/errors'
 import { toast } from '../lib/toast'
 import { buildCreateDatabaseSql, buildDropTableSql, buildRenameTableSql, quoteSqlIdentifier } from '../lib/databaseTemplates'
 import { databaseScopeFromSelection, tablesFolderIdForScope } from '../lib/explorerSearch'
+import { bumpTableUsage, sortTablesByUsage } from '../lib/tableUsage'
 import { formatBytes } from '../utils/formatters'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -301,6 +303,7 @@ export default function DatabaseExplorer({
   onConsoleOpen,
   onPropertiesOpen,
   onConnectionsChanged,
+  tableUsageTopN = 10,
 }) {
   const [ownConnections, setOwnConnections] = useState([])
   const [connLoading,  setConnLoading]  = useState(externalConnections === undefined)
@@ -309,11 +312,22 @@ export default function DatabaseExplorer({
   const [nodeCache,    setNodeCache]    = useState(new Map()) // nodeId → CacheEntry
   const [searchQuery,  setSearchQuery]  = useState('')
   const [selected,     setSelected]     = useState(null)     // nodeId | null
+  // Open-frequency map ("<conn>::<db>::<table>" → {count,lastUsedAt}) used to
+  // float frequently-used tables to the top of the tree. Sourced from
+  // griplite.db (durable across reinstalls); loaded once on mount.
+  const [tableUsage,   setTableUsage]   = useState({})
 
   // Stable ref so fetchChildren (empty dep-array) can call the latest
   // onConnectionsChanged without being recreated on every render.
   const onConnectionsChangedRef = useRef(onConnectionsChanged)
   useEffect(() => { onConnectionsChangedRef.current = onConnectionsChanged }, [onConnectionsChanged])
+
+  // Load persisted table open-frequency once on mount (from griplite.db).
+  useEffect(() => {
+    let alive = true
+    getTableUsage().then((m) => { if (alive) setTableUsage(m ?? {}) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
 
   // When the parent supplies `connections`, use that as the source of truth;
   // otherwise fall back to the component's own fetched list (legacy mode,
@@ -1080,6 +1094,11 @@ export default function DatabaseExplorer({
    */
   const openTable = useCallback((node, e, defaultView = 'properties') => {
     e?.stopPropagation()
+    // Optimistically bump in-memory so the tree reorders instantly, then
+    // persist to griplite.db (fire-and-forget) so the ordering survives
+    // restarts and reinstalls.
+    setTableUsage((prev) => bumpTableUsage(prev, { connId: node.connId, dbName: node.dbName, tableName: node.tableName }))
+    recordTableUsage(node.connId, node.dbName, node.tableName)
     onTableOpen?.({ tableName: node.tableName, dbName: node.dbName, connId: node.connId, defaultView, objectKind: node.kind })
   }, [onTableOpen])
 
@@ -1417,10 +1436,18 @@ export default function DatabaseExplorer({
     const cache   = nodeCache.get(node.id)
     if (searchQuery && !searchVisible(node)) return null
 
+    // Float frequently-opened tables to the top — only the tables folder's
+    // children are reordered; every other node type keeps its natural order.
+    const childrenToRender = cache?.children
+      ? (node.type === 'folder' && node.folderKind === 'tables'
+          ? sortTablesByUsage(cache.children, tableUsage, tableUsageTopN)
+          : cache.children)
+      : []
+
     return (
       <>
         <NodeRow node={node} depth={depth} />
-        {isOpen && cache?.status === 'loaded' && cache.children.map((child) => (
+        {isOpen && cache?.status === 'loaded' && childrenToRender.map((child) => (
           <TreeBranch key={child.id} node={child} depth={depth + 1} />
         ))}
         {isOpen && cache?.status === 'loaded' && cache.children.length === 0 && (

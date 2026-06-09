@@ -206,6 +206,20 @@ var extendedDDL = []string{
 		executed_at TEXT    NOT NULL DEFAULT (datetime('now'))
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_qh_conn ON query_history(conn_id, executed_at)`,
+
+	// Per-(connection, database, table) open-frequency counter so the Database
+	// Explorer can float frequently-used tables to the top of the tree.  Lives
+	// in griplite.db (not the webview's localStorage) so it survives app
+	// reinstalls, exactly like saved connections and query history.
+	`CREATE TABLE IF NOT EXISTS table_usage (
+		conn_id      TEXT    NOT NULL,
+		db_name      TEXT    NOT NULL,
+		table_name   TEXT    NOT NULL,
+		open_count   INTEGER NOT NULL DEFAULT 0,
+		last_used_at TEXT    NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (conn_id, db_name, table_name)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_tu_conn ON table_usage(conn_id)`,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -244,6 +244,16 @@ export async function listConnections() {
       serverVersion: '7.0.0 (mock)',
       connected: true,
     },
+    {
+      id: 'mock-redis-1',
+      name: 'Redis (mock)',
+      kind: 'redis',
+      host: '127.0.0.1',
+      port: 6379,
+      database: '0',
+      serverVersion: '7.2.4 (mock)',
+      connected: true,
+    },
   ]
 }
 
@@ -1501,3 +1511,293 @@ export async function getBuildInfo() {
     homepage: 'https://github.com/derekzhan',
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Redis
+//
+// Values cross the bridge base64-encoded so binary-safe payloads survive JSON.
+// In browser dev, an in-memory keyspace backs every operation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const b64encode = (s) => (typeof btoa === 'function' ? btoa(unescape(encodeURIComponent(s))) : Buffer.from(s, 'utf8').toString('base64'))
+const b64decode = (s) => { try { return decodeURIComponent(escape(atob(s))) } catch { return s } }
+
+// Browser-dev mock keyspace for db0.
+const mockRedis = {
+  'user:1':    { type: 'string', ttl: -1, str: 'Alice' },
+  'user:2':    { type: 'string', ttl: 3600, str: 'Bob' },
+  'cache:home':{ type: 'string', ttl: -1, str: '{"hits":42}' },
+  'user:profile:1': { type: 'hash', ttl: -1, hash: { name: 'Alice', age: '30' } },
+  'queue:jobs':{ type: 'list', ttl: -1, list: ['job-1', 'job-2', 'job-3'] },
+  'tags':      { type: 'set', ttl: -1, set: ['red', 'green', 'blue'] },
+  'leaderboard': { type: 'zset', ttl: -1, zset: [{ member: 'alice', score: 100 }, { member: 'bob', score: 80 }] },
+  'events':    { type: 'stream', ttl: -1, stream: [{ id: '1700000000000-0', fields: { kind: 'login', user: 'alice' } }] },
+}
+
+function mockKeyValue(key) {
+  const e = mockRedis[key]
+  if (!e) return { meta: { key, type: 'none', ttl: -2 }, }
+  const meta = { key, type: e.type, ttl: e.ttl ?? -1, sizeBytes: 0, encoding: 'mock' }
+  const out = { meta }
+  switch (e.type) {
+    case 'string': out.str = b64encode(e.str); break
+    case 'hash':   out.hash = Object.entries(e.hash).map(([f, v]) => ({ field: b64encode(f), value: b64encode(v) })); break
+    case 'list':   out.list = e.list.map(b64encode); break
+    case 'set':    out.set = e.set.map(b64encode); break
+    case 'zset':   out.zset = e.zset.map((z) => ({ member: b64encode(z.member), score: z.score })); break
+    case 'stream': out.stream = e.stream; break
+  }
+  return out
+}
+
+export async function redisDatabases(connectionID) {
+  if (isWails()) {
+    const { RedisDatabases } = await import('../../wailsjs/go/main/App.js')
+    return RedisDatabases(connectionID)
+  }
+  await delay(30)
+  return Array.from({ length: 16 }, (_, i) => `db${i}`)
+}
+
+export async function redisDBSize(connectionID, db) {
+  if (isWails()) {
+    const { RedisDBSize } = await import('../../wailsjs/go/main/App.js')
+    return RedisDBSize(connectionID, db)
+  }
+  await delay(10)
+  return db === 0 ? Object.keys(mockRedis).length : 0
+}
+
+export async function redisScanKeys(connectionID, db, pattern, cursor = 0, count = 200) {
+  if (isWails()) {
+    const { RedisScanKeys } = await import('../../wailsjs/go/main/App.js')
+    return RedisScanKeys(connectionID, db, pattern || '*', cursor, count)
+  }
+  await delay(30)
+  if (db !== 0) return { keys: [], nextCursor: 0 }
+  const glob = (pattern || '*').replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
+  const re = new RegExp(`^${glob}$`)
+  return { keys: Object.keys(mockRedis).filter((k) => re.test(k)), nextCursor: 0 }
+}
+
+export async function redisGetKey(connectionID, db, key) {
+  if (isWails()) {
+    const { RedisGetKey } = await import('../../wailsjs/go/main/App.js')
+    return RedisGetKey(connectionID, db, key)
+  }
+  await delay(20)
+  return mockKeyValue(key)
+}
+
+export async function redisSetString(connectionID, db, key, value, ttl = 0) {
+  if (isWails()) {
+    const { RedisSetString } = await import('../../wailsjs/go/main/App.js')
+    return RedisSetString(connectionID, db, key, b64encode(value), ttl)
+  }
+  mockRedis[key] = { type: 'string', ttl: ttl || -1, str: value }
+}
+
+export async function redisHashSet(connectionID, db, key, field, value) {
+  if (isWails()) {
+    const { RedisHashSet } = await import('../../wailsjs/go/main/App.js')
+    return RedisHashSet(connectionID, db, key, b64encode(field), b64encode(value))
+  }
+  const e = mockRedis[key] ?? (mockRedis[key] = { type: 'hash', ttl: -1, hash: {} })
+  e.hash[field] = value
+}
+
+export async function redisHashDelete(connectionID, db, key, field) {
+  if (isWails()) {
+    const { RedisHashDelete } = await import('../../wailsjs/go/main/App.js')
+    return RedisHashDelete(connectionID, db, key, b64encode(field))
+  }
+  if (mockRedis[key]) delete mockRedis[key].hash[field]
+}
+
+export async function redisListSet(connectionID, db, key, index, value) {
+  if (isWails()) {
+    const { RedisListSet } = await import('../../wailsjs/go/main/App.js')
+    return RedisListSet(connectionID, db, key, index, b64encode(value))
+  }
+  if (mockRedis[key]) mockRedis[key].list[index] = value
+}
+
+export async function redisListPush(connectionID, db, key, value, left = false) {
+  if (isWails()) {
+    const { RedisListPush } = await import('../../wailsjs/go/main/App.js')
+    return RedisListPush(connectionID, db, key, b64encode(value), left)
+  }
+  const e = mockRedis[key] ?? (mockRedis[key] = { type: 'list', ttl: -1, list: [] })
+  left ? e.list.unshift(value) : e.list.push(value)
+}
+
+export async function redisListRemove(connectionID, db, key, count, value) {
+  if (isWails()) {
+    const { RedisListRemove } = await import('../../wailsjs/go/main/App.js')
+    return RedisListRemove(connectionID, db, key, count, b64encode(value))
+  }
+  if (mockRedis[key]) mockRedis[key].list = mockRedis[key].list.filter((v) => v !== value)
+}
+
+export async function redisSetAdd(connectionID, db, key, member) {
+  if (isWails()) {
+    const { RedisSetAdd } = await import('../../wailsjs/go/main/App.js')
+    return RedisSetAdd(connectionID, db, key, b64encode(member))
+  }
+  const e = mockRedis[key] ?? (mockRedis[key] = { type: 'set', ttl: -1, set: [] })
+  if (!e.set.includes(member)) e.set.push(member)
+}
+
+export async function redisSetRemove(connectionID, db, key, member) {
+  if (isWails()) {
+    const { RedisSetRemove } = await import('../../wailsjs/go/main/App.js')
+    return RedisSetRemove(connectionID, db, key, b64encode(member))
+  }
+  if (mockRedis[key]) mockRedis[key].set = mockRedis[key].set.filter((m) => m !== member)
+}
+
+export async function redisZAdd(connectionID, db, key, member, score) {
+  if (isWails()) {
+    const { RedisZAdd } = await import('../../wailsjs/go/main/App.js')
+    return RedisZAdd(connectionID, db, key, b64encode(member), score)
+  }
+  const e = mockRedis[key] ?? (mockRedis[key] = { type: 'zset', ttl: -1, zset: [] })
+  const ex = e.zset.find((z) => z.member === member)
+  if (ex) ex.score = score
+  else e.zset.push({ member, score })
+}
+
+export async function redisZRemove(connectionID, db, key, member) {
+  if (isWails()) {
+    const { RedisZRemove } = await import('../../wailsjs/go/main/App.js')
+    return RedisZRemove(connectionID, db, key, b64encode(member))
+  }
+  if (mockRedis[key]) mockRedis[key].zset = mockRedis[key].zset.filter((z) => z.member !== member)
+}
+
+export async function redisStreamAdd(connectionID, db, key, id, fields) {
+  if (isWails()) {
+    const { RedisStreamAdd } = await import('../../wailsjs/go/main/App.js')
+    return RedisStreamAdd(connectionID, db, key, id || '*', fields)
+  }
+  const e = mockRedis[key] ?? (mockRedis[key] = { type: 'stream', ttl: -1, stream: [] })
+  const newId = id && id !== '*' ? id : `${Date.now()}-0`
+  e.stream.push({ id: newId, fields })
+  return newId
+}
+
+export async function redisStreamDelete(connectionID, db, key, id) {
+  if (isWails()) {
+    const { RedisStreamDelete } = await import('../../wailsjs/go/main/App.js')
+    return RedisStreamDelete(connectionID, db, key, id)
+  }
+  if (mockRedis[key]) mockRedis[key].stream = mockRedis[key].stream.filter((s) => s.id !== id)
+}
+
+export async function redisRenameKey(connectionID, db, oldKey, newKey) {
+  if (isWails()) {
+    const { RedisRenameKey } = await import('../../wailsjs/go/main/App.js')
+    return RedisRenameKey(connectionID, db, oldKey, newKey)
+  }
+  if (mockRedis[oldKey]) { mockRedis[newKey] = mockRedis[oldKey]; delete mockRedis[oldKey] }
+}
+
+export async function redisDeleteKey(connectionID, db, key) {
+  if (isWails()) {
+    const { RedisDeleteKey } = await import('../../wailsjs/go/main/App.js')
+    return RedisDeleteKey(connectionID, db, key)
+  }
+  delete mockRedis[key]
+}
+
+export async function redisSetTTL(connectionID, db, key, ttl) {
+  if (isWails()) {
+    const { RedisSetTTL } = await import('../../wailsjs/go/main/App.js')
+    return RedisSetTTL(connectionID, db, key, ttl)
+  }
+  if (mockRedis[key]) mockRedis[key].ttl = ttl > 0 ? ttl : -1
+}
+
+export async function redisExecCommand(connectionID, db, raw) {
+  if (isWails()) {
+    const { RedisExecCommand } = await import('../../wailsjs/go/main/App.js')
+    return RedisExecCommand(connectionID, db, raw)
+  }
+  await delay(20)
+  const name = (raw.trim().split(/\s+/)[0] || '').toUpperCase()
+  if (name === 'PING') return { ok: true, text: 'PONG' }
+  return { ok: true, text: `(mock) ${raw}` }
+}
+
+export async function redisDecodeValue(dataB64, format) {
+  if (isWails()) {
+    const { RedisDecodeValue } = await import('../../wailsjs/go/main/App.js')
+    return RedisDecodeValue(dataB64, format)
+  }
+  const raw = b64decode(dataB64)
+  if (format === 'hex') return { ok: true, text: Array.from(raw).map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('') }
+  if (format === 'json') { try { return { ok: true, text: JSON.stringify(JSON.parse(raw), null, 2) } } catch (e) { return { ok: false, error: 'not valid JSON' } } }
+  return { ok: true, text: raw }
+}
+
+export async function redisServerInfo(connectionID) {
+  if (isWails()) {
+    const { RedisServerInfo } = await import('../../wailsjs/go/main/App.js')
+    return RedisServerInfo(connectionID)
+  }
+  await delay(20)
+  return {
+    Server: { redis_version: '7.2.4', uptime_in_seconds: '12345', redis_mode: 'standalone' },
+    Clients: { connected_clients: '3' },
+    Memory: { used_memory_human: '1.20M', maxmemory_human: '0B' },
+    Stats: { instantaneous_ops_per_sec: '42', total_commands_processed: '99999' },
+    Keyspace: { db0: `keys=${Object.keys(mockRedis).length},expires=1` },
+  }
+}
+
+export async function redisSlowLog(connectionID, count = 64) {
+  if (isWails()) {
+    const { RedisSlowLog } = await import('../../wailsjs/go/main/App.js')
+    return RedisSlowLog(connectionID, count)
+  }
+  await delay(20)
+  return [{ id: 1, time: Math.floor(Date.now() / 1000), duration: 1500, args: ['GET', 'big:key'], client: '127.0.0.1:5000', name: '' }]
+}
+
+export async function redisClientList(connectionID) {
+  if (isWails()) {
+    const { RedisClientList } = await import('../../wailsjs/go/main/App.js')
+    return RedisClientList(connectionID)
+  }
+  await delay(20)
+  return ['id=3 addr=127.0.0.1:5000 name= age=10 idle=0 cmd=client|list']
+}
+
+export async function redisSubscribe(connectionID, channels, patterns) {
+  if (isWails()) {
+    const { RedisSubscribe } = await import('../../wailsjs/go/main/App.js')
+    return RedisSubscribe(connectionID, channels || [], patterns || [])
+  }
+  await delay(10)
+  return 'mock-sub'
+}
+
+export async function redisUnsubscribe(subID) {
+  if (isWails()) {
+    const { RedisUnsubscribe } = await import('../../wailsjs/go/main/App.js')
+    return RedisUnsubscribe(subID)
+  }
+}
+
+/**
+ * onRedisMessage — subscribe to messages for a pub/sub subscription ID.
+ * Returns an unsubscribe function. No-op in browser dev.
+ */
+export async function onRedisMessage(subID, handler) {
+  if (!isWails()) return () => {}
+  const { EventsOn } = await import('../../wailsjs/runtime/runtime.js')
+  return EventsOn(`redis:message:${subID}`, handler)
+}
+
+/** decodeRedisValue — UTF-8 decode a base64 payload for default display. */
+export function decodeRedisB64(s) { return b64decode(s) }

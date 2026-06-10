@@ -24,6 +24,7 @@ import { DEFAULT_MONGO_SORT, buildMongoCollectionFindQuery, getMongoFieldSuggest
 import { appendResultPage, normalizePageSize, pageSlice, shouldLoadMore } from '../src/lib/queryPaging.js'
 import { stripLeadingSqlComments } from '../src/lib/sqlText.js'
 import { bumpTableUsage, sortTablesByUsage } from '../src/lib/tableUsage.js'
+import { buildKeyTree, classifyRedisCommand, formatTTL, DECODE_FORMATS, REDIS_COMMANDS } from '../src/lib/redisClient.js'
 import { loadTableUsageTopN, saveTableUsageTopN, clampTableUsageTopN } from '../src/lib/settings.js'
 import {
   closeAllTabsInWorkspace,
@@ -1407,5 +1408,53 @@ testColumnPickerCanSearchAndFilterNonEmptyColumns()
 testColumnPickerSupportsSelectAllAndInvertForFilteredEntries()
 testResultModeIsPreservedAcrossReloads()
 testValuePanelToolbarUsesConsistentIcons()
+
+function testRedisBuildKeyTreeFoldsNamespaces() {
+  const tree = buildKeyTree(['user:1', 'user:2', 'cache:home', 'plain'], ':')
+  const user = tree.find((n) => n.label === 'user')
+  const cache = tree.find((n) => n.label === 'cache')
+  assert.ok(user && Array.isArray(user.children), 'user folder exists')
+  assert.equal(user.children.length, 2, 'user has two leaf children')
+  assert.ok(user.children.every((c) => c.leaf), 'children are leaves')
+  assert.equal(user.children[0].key, 'user:1', 'leaf keeps full key')
+  assert.ok(cache, 'cache folder exists')
+  const plain = tree.find((n) => n.label === 'plain')
+  assert.ok(plain && plain.leaf, 'separator-less key is a leaf at root')
+}
+
+function testRedisBuildKeyTreeIsStableAndSorted() {
+  const a = buildKeyTree(['b:2', 'a:1', 'a:0'], ':')
+  const b = buildKeyTree(['a:0', 'b:2', 'a:1'], ':')
+  assert.deepEqual(a.map((n) => n.label), b.map((n) => n.label), 'order independent of input order')
+  assert.deepEqual(a.map((n) => n.label), ['a', 'b'], 'folders sorted alphabetically')
+}
+
+function testRedisClassifyCommandDetectsWrites() {
+  assert.deepEqual(classifyRedisCommand('get foo'), { name: 'GET', isWrite: false })
+  assert.deepEqual(classifyRedisCommand('  set a b '), { name: 'SET', isWrite: true })
+  assert.equal(classifyRedisCommand('FLUSHALL').isWrite, true)
+  assert.equal(classifyRedisCommand('ttl k').isWrite, false)
+  assert.ok(REDIS_COMMANDS.includes('SUBSCRIBE'), 'autocomplete list populated')
+}
+
+function testRedisDecodeFormatsCoverAllRequested() {
+  const ids = DECODE_FORMATS.map((f) => f.id)
+  for (const want of ['text', 'json', 'hex', 'binary', 'gzip', 'deflate', 'brotli', 'lz4', 'snappy', 'zstd', 'msgpack', 'protobuf', 'pickle', 'php']) {
+    assert.ok(ids.includes(want), `format ${want} present`)
+  }
+}
+
+function testRedisFormatTTL() {
+  assert.equal(formatTTL(-1), 'No expiry')
+  assert.equal(formatTTL(-2), 'Key missing')
+  assert.equal(formatTTL(30), '30s')
+  assert.equal(formatTTL(90), '1m 30s')
+}
+
+testRedisBuildKeyTreeFoldsNamespaces()
+testRedisBuildKeyTreeIsStableAndSorted()
+testRedisClassifyCommandDetectsWrites()
+testRedisDecodeFormatsCoverAllRequested()
+testRedisFormatTTL()
 
 console.log('unit tests passed')

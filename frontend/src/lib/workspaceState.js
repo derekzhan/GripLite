@@ -1,7 +1,7 @@
 export const WORKSPACE_STORAGE_KEY = 'griplite_workspace_v1'
 
-const TAB_TYPES = new Set(['console', 'table', 'dbviewer', 'query'])
-const CONNECTION_KINDS = new Set(['mysql', 'mongodb'])
+const TAB_TYPES = new Set(['console', 'table', 'dbviewer', 'query', 'rediskey', 'redisserver'])
+const CONNECTION_KINDS = new Set(['mysql', 'mongodb', 'redis'])
 const OBJECT_KINDS = new Set(['table', 'collection'])
 
 function cleanConnectionFields(tab) {
@@ -56,6 +56,23 @@ function cleanTab(tab) {
         connId: String(tab.connId),
         ...cleanConnectionFields(tab),
         sql: String(tab.sql),
+      }
+    case 'rediskey':
+      if (!tab.connId || !tab.redisKey) return null
+      return {
+        ...base,
+        connId: String(tab.connId),
+        ...cleanConnectionFields(tab),
+        dbIndex: Number.isFinite(Number(tab.dbIndex)) ? Number(tab.dbIndex) : 0,
+        redisKey: String(tab.redisKey),
+        readOnly: !!tab.readOnly,
+      }
+    case 'redisserver':
+      if (!tab.connId) return null
+      return {
+        ...base,
+        connId: String(tab.connId),
+        ...cleanConnectionFields(tab),
       }
     default:
       return null

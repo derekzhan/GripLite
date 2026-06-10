@@ -11,6 +11,7 @@ import {
   MONGO_QUERY_OPERATORS,
 } from '../lib/mongoQuery'
 import { useTheme } from '../theme/ThemeProvider'
+import RedisConsole from './RedisConsole'
 
 const INITIAL_SQL = `-- GripLite SQL Console
 -- Tip: ⌘+Enter / Ctrl+Enter to run the selected query
@@ -415,6 +416,7 @@ export default function SqlEditor({
 }) {
   const { resolvedTheme } = useTheme()
   const isMongo = connectionKind === 'mongodb'
+  const isRedis = connectionKind === 'redis'
   const initialStateRef = useRef(null)
   if (initialStateRef.current === null) {
     initialStateRef.current = loadEditorState(storageKey, initialSql ?? (isMongo ? MONGO_INITIAL_SQL : ''), defaultDb)
@@ -1294,6 +1296,19 @@ export default function SqlEditor({
     if (!connectionId) return
     try { await cancelQuery(queryId || connectionId) } catch { /* ignore */ }
   }, [connectionId, queryId])
+
+  // Redis connections aren't SQL — render a redis-cli style console instead of
+  // the Monaco editor.  All hooks above still run (harmlessly) so the rules of
+  // hooks are respected; we simply skip the SQL editor UI for redis.
+  if (isRedis) {
+    return (
+      <RedisConsole
+        connId={connectionId}
+        dbIndex={parseInt(String(defaultDb).replace(/^db/, ''), 10) || 0}
+        connectionLabel={connectionLabel}
+      />
+    )
+  }
 
   return (
     <div className="flex flex-col h-full bg-app">

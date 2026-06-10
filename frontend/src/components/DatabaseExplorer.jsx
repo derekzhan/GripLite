@@ -43,15 +43,16 @@ import {
   Database, Leaf, Table2, Columns as ColumnsIcon,
   Eye, KeyRound, Users as UsersIcon, UserRound,
   Settings2, Info, Cable, RotateCw, Link2, Plug, Unplug,
-  FolderOpen, FolderTree,
+  FolderOpen, FolderTree, Key, Server,
   ListChecks, Play, Zap, Bell, Code2, Copy, Pencil, Trash2,
 } from 'lucide-react'
 import {
   listConnections, fetchDatabases, fetchTables, getTableSchema, getTableAdvancedProperties,
   fetchRoutines, fetchTriggers, fetchEvents,
   runQuery, syncMetadata, connect, connectSaved, disconnect, refreshTableMetadata,
-  getTableUsage, recordTableUsage,
+  getTableUsage, recordTableUsage, redisScanKeys,
 } from '../lib/bridge'
+import { buildKeyTree } from '../lib/redisClient'
 import { normalizeError } from '../lib/errors'
 import { toast } from '../lib/toast'
 import { buildCreateDatabaseSql, buildDropTableSql, buildRenameTableSql, quoteSqlIdentifier } from '../lib/databaseTemplates'
@@ -72,6 +73,39 @@ const indexNodeId  = (cid, db, tbl, idx)        => `idx::${cid}::${db}::${tbl}::
 const userNodeId  = (cid, user, host)           => `user::${cid}::${user}@${host}`
 const sysInfoId   = (cid, key)                  => `sysinfo::${cid}::${key}`
 const adminId     = (cid, key)                  => `admin::${cid}::${key}`
+const redisKeyFolderId = (cid, db, path)        => `rediskeyfolder::${cid}::${db}::${path}`
+const redisKeyId       = (cid, db, key)         => `rediskey::${cid}::${db}::${key}`
+
+// db0 → 0, db15 → 15.  Falls back to 0 for anything unexpected.
+const dbIndexFromLabel = (dbName) => parseInt(String(dbName).replace(/^db/, ''), 10) || 0
+
+// Map the recursive key-tree (from buildKeyTree) into explorer nodes.  The whole
+// tree is materialised up-front from a single SCAN page, so folder expansion is
+// just a lookup of the precomputed `redisChildren`.
+function materializeRedisTree(nodes, connId, dbName) {
+  return nodes.map((n) => {
+    if (n.leaf) {
+      return {
+        id:    redisKeyId(connId, dbName, n.key),
+        type:  'rediskey',
+        label: n.label,
+        connId, dbName,
+        redisKey:       n.key,
+        connectionKind: 'redis',
+        hasChildren:    false,
+      }
+    }
+    return {
+      id:    redisKeyFolderId(connId, dbName, n.path),
+      type:  'rediskeyfolder',
+      label: n.label,
+      connId, dbName,
+      connectionKind: 'redis',
+      hasChildren:    true,
+      redisChildren:  materializeRedisTree(n.children, connId, dbName),
+    }
+  })
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tree icon system
@@ -138,6 +172,8 @@ function TreeIcon({ type, folderKind, groupKind, kind, isPK, className = '' }) {
   else if (type === 'folder' && folderKind === 'routines') { Cmp = Code2;      color = 'var(--fg-muted)' }
   else if (type === 'folder' && folderKind === 'triggers') { Cmp = Zap;        color = 'var(--fg-muted)' }
   else if (type === 'folder' && folderKind === 'events')   { Cmp = Bell;       color = 'var(--fg-muted)' }
+  else if (type === 'rediskeyfolder')                      { Cmp = FolderTree; color = 'var(--fg-muted)' }
+  else if (type === 'rediskey')                            { Cmp = Key;        color = 'var(--syntax-keyword)' }
   else if (type === 'folder')                              { Cmp = FolderOpen; color = 'var(--fg-muted)' }
   else if (type === 'group' && groupKind === 'connection') { Cmp = FolderTree; color = 'var(--fg-muted)' }
   else if (type === 'group' && groupKind === 'databases')  { Cmp = Database;  color = 'var(--success)' }
@@ -173,6 +209,8 @@ function labelColorFor(node) {
   if (node.type === 'user')                 return 'var(--syntax-user)'
   if (node.type === 'admin')                return 'var(--syntax-keyword)'
   if (node.type === 'sysinfo')              return 'var(--syntax-keyword)'
+  if (node.type === 'rediskey')             return 'var(--fg-primary)'
+  if (node.type === 'rediskeyfolder')       return 'var(--fg-muted)'
   return 'var(--fg-secondary)'
 }
 
@@ -205,6 +243,9 @@ const CONN_GROUPS = [
 ]
 
 function groupsForConnectionKind(kind) {
+  // Redis, like MongoDB, only exposes the Databases group (no Users / Administer
+  // / System Info).  Keep the mongodb ternary intact for clarity & test parity.
+  if (kind === 'redis') return CONN_GROUPS.filter((g) => g.kind === 'databases')
   return kind === 'mongodb' ? CONN_GROUPS.filter((g) => g.kind === 'databases') : CONN_GROUPS
 }
 
@@ -303,6 +344,8 @@ export default function DatabaseExplorer({
   onConsoleOpen,
   onPropertiesOpen,
   onConnectionsChanged,
+  onRedisKeyOpen,
+  onRedisServerOpen,
   tableUsageTopN = 10,
 }) {
   const [ownConnections, setOwnConnections] = useState([])
@@ -693,6 +736,31 @@ export default function DatabaseExplorer({
           connId,
           hasChildren: false,
         }))
+
+      } else if (type === 'database' && (node.connectionKind ?? connectionKindByIdRef.current.get(connId)) === 'redis') {
+        // Redis "databases" (db0..dbN) expand into a namespace key tree rather
+        // than the SQL folder set.  A single SCAN page is folded by buildKeyTree
+        // into nested folders + leaves, then materialised up-front; folder
+        // expansion later just returns the precomputed `redisChildren`.
+        const dbIndex = dbIndexFromLabel(dbName)
+        const result = (await redisScanKeys(connId, dbIndex, '*')) ?? { keys: [], nextCursor: 0 }
+        if (cancelled) return
+        children = materializeRedisTree(buildKeyTree(result.keys ?? []), connId, dbName)
+        // SCAN can be cursor-paged; surface a (placeholder) "Load more…" leaf so
+        // the user knows the listing is partial.  A real cursor-continue would
+        // need per-node cursor state that the eager-materialise model doesn't
+        // carry, so this stays informational for now.
+        if (result.nextCursor && result.nextCursor !== 0) {
+          children.push({
+            id: `${nodeId}::loadmore`, type: 'sysinfo',
+            label: 'Load more…', connId, hasChildren: false,
+          })
+        }
+
+      } else if (type === 'rediskeyfolder') {
+        // The whole tree was built from the parent database's SCAN page, so a
+        // folder's children are already materialised on the node itself.
+        children = node.redisChildren ?? []
 
       } else if (type === 'database') {
         const connectionKind = node.connectionKind ?? connectionKindByIdRef.current.get(connId) ?? 'mysql'
@@ -1125,6 +1193,18 @@ export default function DatabaseExplorer({
     })
   }, [onQueryOpen])
 
+  // ── Redis key / server open handlers ──────────────────────────────────────
+  const openRedisKey = useCallback((node, e) => {
+    e?.stopPropagation?.()
+    if (!onRedisKeyOpen) return
+    onRedisKeyOpen(node.connId, dbIndexFromLabel(node.dbName), node.redisKey)
+  }, [onRedisKeyOpen])
+
+  const openRedisServer = useCallback((connId, e) => {
+    e?.stopPropagation?.()
+    onRedisServerOpen?.(connId)
+  }, [onRedisServerOpen])
+
   // ─────────────────────────────────────────────────────────────────────────
   // Render helpers
   // ─────────────────────────────────────────────────────────────────────────
@@ -1142,7 +1222,8 @@ export default function DatabaseExplorer({
     if (node.type === 'connection' || node.type === 'group' || node.type === 'database' || node.type === 'folder' || node.type === 'collfolder') {
       return true
     }
-    if (node.type === 'table' || node.type === 'column' || node.type === 'index' || node.type === 'sysinfo' || node.type === 'admin') {
+    if (node.type === 'rediskeyfolder') return true
+    if (node.type === 'table' || node.type === 'column' || node.type === 'index' || node.type === 'sysinfo' || node.type === 'admin' || node.type === 'rediskey') {
       return matchesLabel(node.label, searchQuery)
     }
     const cache = nodeCache.get(node.id)
@@ -1205,7 +1286,7 @@ export default function DatabaseExplorer({
           connId:  node.connId,
           nodeRef: node,
         })
-      } else if (node.type === 'database' || (isFolder && node.folderKind === 'tables')) {
+      } else if ((node.type === 'database' && node.connectionKind !== 'redis') || (isFolder && node.folderKind === 'tables')) {
         e.preventDefault()
         e.stopPropagation()
         setSelected(node.id)
@@ -1276,6 +1357,7 @@ export default function DatabaseExplorer({
           if (isTable) openTable(node, e, 'data')
           if (isFolder && node.folderKind === 'tables') openDatabase(node, e)
           if (isLeafQuery) openQuery(node, e)
+          if (node.type === 'rediskey') openRedisKey(node, e)
         }}
       >
         {/* Expand chevron.  For table nodes the chevron owns its own click
@@ -1994,14 +2076,24 @@ export default function DatabaseExplorer({
         }, null)
         onConnectionsChanged?.()
       }
-      return [
+      const items = [
         { label: <MenuLabel icon={Link2}     text="Connect" />,     shortcut: 'C', key: 'c', action: handleConnect },
         { label: <MenuLabel icon={Unplug}    text="Disconnect" />,  shortcut: 'D', key: 'd', action: handleDisconnect },
         { divider: true },
         { label: <MenuLabel icon={RotateCw}  text="Refresh" />,     shortcut: 'F5', key: 'F5', action: () => refreshConnection(ctx.connId) },
+      ]
+      // Redis connections expose a server view (INFO / pub-sub / slowlog / clients).
+      if (conn?.kind === 'redis' && onRedisServerOpen) {
+        items.push(
+          { divider: true },
+          { label: <MenuLabel icon={Server} text="Server Info…" />, shortcut: 'I', key: 'i', action: () => openRedisServer(ctx.connId, null) },
+        )
+      }
+      items.push(
         { divider: true },
         { label: <MenuLabel icon={Settings2} text="Properties…" />, shortcut: 'P', key: 'p', action: () => onPropertiesOpen?.(ctx.connId) },
-      ]
+      )
+      return items
     }
 
     return []

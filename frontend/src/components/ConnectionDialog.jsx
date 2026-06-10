@@ -73,6 +73,18 @@ function switchConnectionKind(form, kind) {
       advancedParams: [],
     }, 'standard')
   }
+  if (kind === 'redis') {
+    return {
+      ...form,
+      kind,
+      host: form.host === 'localhost' ? '127.0.0.1' : form.host,
+      port: 6379,
+      username: form.username === 'root' ? '' : form.username,
+      database: /^\d+$/.test(form.database || '') ? form.database : '0',
+      tls: false,
+      advancedParams: [],
+    }
+  }
   return {
     ...form,
     kind: 'mysql',
@@ -204,10 +216,13 @@ function GeneralTab({ form, setForm }) {
   const customColorInputRef = useRef(null)
 
   const isMongo = form.kind === 'mongodb'
+  const isRedis = form.kind === 'redis'
   const mongoMode = getMongoConnectionMode(form)
   const isCustomColor = !!form.color && !COLOR_PRESETS.includes(form.color)
   const previewUrl = isMongo
     ? `${mongoMode === 'srv' ? 'mongodb+srv' : 'mongodb'}://${form.host || 'host'}${mongoMode === 'srv' ? '' : `:${form.port || 27017}`}/${form.database || ''}`
+    : isRedis
+    ? `${form.tls ? 'rediss' : 'redis'}://${form.host || 'host'}:${form.port || 6379}/${form.database || '0'}`
     : `jdbc:mysql://${form.host || 'host'}:${form.port || 3306}/${form.database || ''}`
   const handleCustomColorClick = async () => {
     try {
@@ -229,6 +244,7 @@ function GeneralTab({ form, setForm }) {
         >
           <option value="mysql">MySQL</option>
           <option value="mongodb">MongoDB</option>
+          <option value="redis">Redis</option>
         </Select>
       </div>
 
@@ -261,7 +277,7 @@ function GeneralTab({ form, setForm }) {
             type="number"
             value={form.port}
             onChange={(e) => setForm((f) => ({ ...f, port: Number(e.target.value) }))}
-            placeholder={isMongo ? '27017' : '3306'}
+            placeholder={isMongo ? '27017' : isRedis ? '6379' : '3306'}
             readOnly={isMongo && mongoMode === 'srv'}
           />
         </div>
@@ -293,8 +309,13 @@ function GeneralTab({ form, setForm }) {
 
       {/* Database */}
       <div>
-        <Label>Database</Label>
-        <Input value={form.database} onChange={setField('database')} placeholder="(optional)" />
+        <Label>{isRedis ? 'Default DB index (0–15)' : 'Database'}</Label>
+        <Input
+          type={isRedis ? 'number' : 'text'}
+          value={form.database}
+          onChange={setField('database')}
+          placeholder={isRedis ? '0' : '(optional)'}
+        />
       </div>
 
       {/* TLS toggle */}

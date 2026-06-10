@@ -27,6 +27,8 @@ import ResultPanel        from './components/ResultPanel'
 import TableViewer        from './components/TableViewer'
 import DatabaseViewer     from './components/DatabaseViewer'
 import QueryTabView       from './components/QueryTabView'
+import RedisKeyViewer     from './components/RedisKeyViewer'
+import RedisServerView    from './components/RedisServerView'
 import ConnectionDialog   from './components/ConnectionDialog'
 import CopyDataModal      from './components/CopyDataModal'
 import MenuBar            from './components/MenuBar'
@@ -36,6 +38,7 @@ import SettingsModal          from './components/SettingsModal'
 import ErrorBoundary      from './components/ErrorBoundary'
 import { loadTableUsageTopN } from './lib/settings'
 import { Database, Leaf, Zap } from 'lucide-react'
+import { Key, Server } from 'lucide-react'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
 import { runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo, getPlatform, onMenuAction } from './lib/bridge'
@@ -545,6 +548,45 @@ export default function App() {
     setActiveTabId(tabId)
   }, [connectionKindById])
 
+  // ── Redis key open ────────────────────────────────────────────────────────
+  /**
+   * handleRedisKeyOpen — open (or activate) a RedisKeyViewer tab for a single
+   * key.  De-duplicates per (connId, db, key); readOnly is inherited from the
+   * connection's readOnly flag.
+   */
+  const handleRedisKeyOpen = useCallback((connId, dbIndex, key) => {
+    const effectiveConnId = connId ?? connIdRef.current
+    const connectionKind = connectionKindById.get(effectiveConnId) ?? 'redis'
+    const conn = connections.find((c) => c.id === effectiveConnId)
+    const tabId = `rediskey::${effectiveConnId}::${dbIndex}::${key}`
+    setTabs((prev) => {
+      if (prev.some((t) => t.id === tabId)) return prev
+      return [...prev, {
+        id: tabId, type: 'rediskey', label: key,
+        connId: effectiveConnId, connectionKind,
+        dbIndex, redisKey: key, readOnly: !!conn?.readOnly,
+      }]
+    })
+    setActiveTabId(tabId)
+  }, [connectionKindById, connections])
+
+  // ── Redis server view open ────────────────────────────────────────────────
+  const handleRedisServerOpen = useCallback((connId) => {
+    const effectiveConnId = connId ?? connIdRef.current
+    const connectionKind = connectionKindById.get(effectiveConnId) ?? 'redis'
+    const conn = connections.find((c) => c.id === effectiveConnId)
+    const name = conn?.name || conn?.host || effectiveConnId
+    const tabId = `redisserver::${effectiveConnId}`
+    setTabs((prev) => {
+      if (prev.some((t) => t.id === tabId)) return prev
+      return [...prev, {
+        id: tabId, type: 'redisserver', label: `${name} — Server`,
+        connId: effectiveConnId, connectionKind,
+      }]
+    })
+    setActiveTabId(tabId)
+  }, [connectionKindById, connections])
+
   // ── Database viewer open ──────────────────────────────────────────────────
   const handleDatabaseOpen = useCallback(({ dbName, connId }) => {
     const effectiveConnId = connId ?? connIdRef.current
@@ -774,6 +816,8 @@ export default function App() {
               onConsoleOpen={handleNewConsole}
               onPropertiesOpen={handlePropertiesOpen}
               onConnectionsChanged={reloadConnections}
+              onRedisKeyOpen={handleRedisKeyOpen}
+              onRedisServerOpen={handleRedisServerOpen}
               tableUsageTopN={tableUsageTopN}
             />
           </ErrorBoundary>
@@ -923,6 +967,38 @@ export default function App() {
                       connId={tab.connId}
                       onTableOpen={handleTableOpen}
                     />
+                  </ErrorBoundary>
+                </div>
+              ))}
+
+              {/* Redis key viewer tabs — bounded keep-alive, CSS-switched */}
+              {tabs.filter((t) => t.type === 'rediskey' && shouldMountTab(t.id)).map((tab) => (
+                <div
+                  key={tab.id}
+                  className="absolute inset-0"
+                  style={{ display: activeTabId === tab.id ? 'flex' : 'none', flexDirection: 'column' }}
+                >
+                  <ErrorBoundary label={`Redis Key · ${tab.redisKey}`}>
+                    <RedisKeyViewer
+                      connId={tab.connId}
+                      dbIndex={tab.dbIndex}
+                      redisKey={tab.redisKey}
+                      connectionKind={tab.connectionKind}
+                      readOnly={tab.readOnly}
+                    />
+                  </ErrorBoundary>
+                </div>
+              ))}
+
+              {/* Redis server view tabs — bounded keep-alive, CSS-switched */}
+              {tabs.filter((t) => t.type === 'redisserver' && shouldMountTab(t.id)).map((tab) => (
+                <div
+                  key={tab.id}
+                  className="absolute inset-0"
+                  style={{ display: activeTabId === tab.id ? 'flex' : 'none', flexDirection: 'column' }}
+                >
+                  <ErrorBoundary label={`Redis Server · ${tab.connId}`}>
+                    <RedisServerView connId={tab.connId} />
                   </ErrorBoundary>
                 </div>
               ))}
@@ -1080,6 +1156,12 @@ function WelcomePane({ hasConnections, onNewConsole, onNewConnection }) {
 function TabIcon({ tab, connectionKindById }) {
   const kind = tab.connectionKind ?? connectionKindById.get(tab.connId) ?? 'mysql'
   const className = 'flex-shrink-0 opacity-75'
+  if (tab.type === 'redisserver') {
+    return <Server size={12} strokeWidth={1.8} className={className} />
+  }
+  if (tab.type === 'rediskey' || kind === 'redis') {
+    return <Key size={12} strokeWidth={1.8} className={className} />
+  }
   if (kind === 'mongodb' || tab.objectKind === 'collection') {
     return <Leaf size={12} strokeWidth={1.8} className={className} />
   }
@@ -1133,8 +1215,6 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
     <div className="flex items-stretch bg-titlebar border-b border-line-subtle flex-shrink-0 overflow-x-auto min-h-[36px]">
       {tabs.map((tab) => {
         const active     = tab.id === activeTabId
-        const isTable    = tab.type === 'table'
-        const isDbViewer = tab.type === 'dbviewer'
         const isConsole  = tab.type === 'console'
         const data       = consolesData[tab.id]
         const running    = isConsole && data?.isRunning
@@ -1168,7 +1248,7 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
             )}
 
             {/* Close button — all non-console tabs, plus extra consoles */}
-            {(isTable || isDbViewer || tabs.filter((t) => t.type === 'console').length > 1) && (
+            {(tab.type !== 'console' || tabs.filter((t) => t.type === 'console').length > 1) && (
               <button
                 onClick={(e) => onClose(e, tab.id)}
                 className="flex-shrink-0 w-4 h-4 flex items-center justify-center rounded

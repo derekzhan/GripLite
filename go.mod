@@ -4,9 +4,13 @@ go 1.25.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/andybalholm/brotli v1.2.1
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/go-sql-driver/mysql v1.9.3
+	github.com/klauspost/compress v1.17.6
+	github.com/pierrec/lz4/v4 v4.1.27
 	github.com/redis/go-redis/v9 v9.20.0
+	github.com/vmihailenco/msgpack/v5 v5.4.1
 	github.com/wailsapp/wails/v2 v2.12.0
 	github.com/zalando/go-keyring v0.2.8
 	go.mongodb.org/mongo-driver/v2 v2.6.0
@@ -29,7 +33,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
-	github.com/klauspost/compress v1.17.6 // indirect
 	github.com/labstack/echo/v4 v4.13.3 // indirect
 	github.com/labstack/gommon v0.4.2 // indirect
 	github.com/leaanthony/go-ansi-parser v1.6.1 // indirect
@@ -47,6 +50,7 @@ require (
 	github.com/tkrajina/go-reflector v0.5.8 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
+	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect

@@ -1303,6 +1303,188 @@ export namespace main {
 
 }
 
+export namespace redis {
+	
+	export class CommandResult {
+	    ok: boolean;
+	    text: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CommandResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.text = source["text"];
+	        this.error = source["error"];
+	    }
+	}
+	export class DecodeResult {
+	    ok: boolean;
+	    text: string;
+	    note?: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DecodeResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.text = source["text"];
+	        this.note = source["note"];
+	        this.error = source["error"];
+	    }
+	}
+	export class HashField {
+	    field: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HashField(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.field = source["field"];
+	        this.value = source["value"];
+	    }
+	}
+	export class KeyMeta {
+	    key: string;
+	    type: string;
+	    ttl: number;
+	    sizeBytes: number;
+	    encoding: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new KeyMeta(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.type = source["type"];
+	        this.ttl = source["ttl"];
+	        this.sizeBytes = source["sizeBytes"];
+	        this.encoding = source["encoding"];
+	    }
+	}
+	export class StreamEntry {
+	    id: string;
+	    fields: Record<string, string>;
+	
+	    static createFrom(source: any = {}) {
+	        return new StreamEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.fields = source["fields"];
+	    }
+	}
+	export class ZMember {
+	    member: string;
+	    score: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ZMember(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.member = source["member"];
+	        this.score = source["score"];
+	    }
+	}
+	export class KeyValue {
+	    meta: KeyMeta;
+	    str?: string;
+	    hash?: HashField[];
+	    list?: string[];
+	    set?: string[];
+	    zset?: ZMember[];
+	    stream?: StreamEntry[];
+	    truncated?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new KeyValue(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.meta = this.convertValues(source["meta"], KeyMeta);
+	        this.str = source["str"];
+	        this.hash = this.convertValues(source["hash"], HashField);
+	        this.list = source["list"];
+	        this.set = source["set"];
+	        this.zset = this.convertValues(source["zset"], ZMember);
+	        this.stream = this.convertValues(source["stream"], StreamEntry);
+	        this.truncated = source["truncated"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ScanResult {
+	    keys: string[];
+	    nextCursor: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ScanResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.keys = source["keys"];
+	        this.nextCursor = source["nextCursor"];
+	    }
+	}
+	export class SlowLogEntry {
+	    id: number;
+	    time: number;
+	    duration: number;
+	    args: string[];
+	    client: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SlowLogEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.time = source["time"];
+	        this.duration = source["duration"];
+	        this.args = source["args"];
+	        this.client = source["client"];
+	        this.name = source["name"];
+	    }
+	}
+	
+
+}
+
 export namespace store {
 	
 	export class AdvancedParam {

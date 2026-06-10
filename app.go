@@ -23,7 +23,7 @@ import (
 	"GripLite/internal/driver"
 	_ "GripLite/internal/driver/mongodb"      // registers MongoDB driver
 	mysqlpkg "GripLite/internal/driver/mysql" // registers MySQL driver + SSH helpers
-	_ "GripLite/internal/driver/redis"        // registers Redis driver
+	redisdrv "GripLite/internal/driver/redis" // registers Redis driver
 	"GripLite/internal/store"
 )
 
@@ -185,6 +185,12 @@ type App struct {
 	// copyMu protects the currently running copy job cancel function.
 	copyMu     sync.Mutex
 	copyCancel context.CancelFunc
+
+	// redisMu protects redisSubs.
+	redisMu sync.Mutex
+	// redisSubs tracks live Redis pub/sub subscriptions by subscription ID so
+	// RedisUnsubscribe can tear them down.
+	redisSubs map[string]*redisdrv.Subscription
 }
 
 // NewApp creates the App instance. Called once at startup.
@@ -194,6 +200,7 @@ func NewApp() *App {
 		configs:      make(map[string]driver.ConnectionConfig),
 		dbMgr:        database.NewManager(),
 		queryCancels: make(map[string]context.CancelFunc),
+		redisSubs:    make(map[string]*redisdrv.Subscription),
 	}
 }
 

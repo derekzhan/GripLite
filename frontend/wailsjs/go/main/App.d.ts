@@ -5,6 +5,7 @@ import {database} from '../models';
 import {main} from '../models';
 import {store} from '../models';
 import {cache} from '../models';
+import {redis} from '../models';
 
 export function AddConnection(arg1:driver.ConnectionConfig):Promise<string>;
 
@@ -99,6 +100,58 @@ export function PreviewPartitionAlter(arg1:string,arg2:driver.PartitionChangeReq
 export function PreviewTableAlter(arg1:string,arg2:driver.SchemaChangeRequest):Promise<driver.SchemaChangePreview>;
 
 export function RecordTableUsage(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function RedisClientList(arg1:string):Promise<Array<string>>;
+
+export function RedisDBSize(arg1:string,arg2:number):Promise<number>;
+
+export function RedisDatabases(arg1:string):Promise<Array<string>>;
+
+export function RedisDecodeValue(arg1:string,arg2:string):Promise<redis.DecodeResult>;
+
+export function RedisDeleteKey(arg1:string,arg2:number,arg3:string):Promise<void>;
+
+export function RedisExecCommand(arg1:string,arg2:number,arg3:string):Promise<redis.CommandResult>;
+
+export function RedisGetKey(arg1:string,arg2:number,arg3:string):Promise<redis.KeyValue>;
+
+export function RedisHashDelete(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
+
+export function RedisHashSet(arg1:string,arg2:number,arg3:string,arg4:string,arg5:string):Promise<void>;
+
+export function RedisListPush(arg1:string,arg2:number,arg3:string,arg4:string,arg5:boolean):Promise<void>;
+
+export function RedisListRemove(arg1:string,arg2:number,arg3:string,arg4:number,arg5:string):Promise<void>;
+
+export function RedisListSet(arg1:string,arg2:number,arg3:string,arg4:number,arg5:string):Promise<void>;
+
+export function RedisRenameKey(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
+
+export function RedisScanKeys(arg1:string,arg2:number,arg3:string,arg4:number,arg5:number):Promise<redis.ScanResult>;
+
+export function RedisServerInfo(arg1:string):Promise<Record<string, Record<string, string>>>;
+
+export function RedisSetAdd(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
+
+export function RedisSetRemove(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
+
+export function RedisSetString(arg1:string,arg2:number,arg3:string,arg4:string,arg5:number):Promise<void>;
+
+export function RedisSetTTL(arg1:string,arg2:number,arg3:string,arg4:number):Promise<void>;
+
+export function RedisSlowLog(arg1:string,arg2:number):Promise<Array<redis.SlowLogEntry>>;
+
+export function RedisStreamAdd(arg1:string,arg2:number,arg3:string,arg4:string,arg5:Record<string, string>):Promise<string>;
+
+export function RedisStreamDelete(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
+
+export function RedisSubscribe(arg1:string,arg2:Array<string>,arg3:Array<string>):Promise<string>;
+
+export function RedisUnsubscribe(arg1:string):Promise<void>;
+
+export function RedisZAdd(arg1:string,arg2:number,arg3:string,arg4:string,arg5:number):Promise<void>;
+
+export function RedisZRemove(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
 
 export function RefreshTableMetadata(arg1:string,arg2:string,arg3:string):Promise<void>;
 

@@ -23,6 +23,7 @@ import (
 	"GripLite/internal/driver"
 	_ "GripLite/internal/driver/mongodb"      // registers MongoDB driver
 	mysqlpkg "GripLite/internal/driver/mysql" // registers MySQL driver + SSH helpers
+	_ "GripLite/internal/driver/redis"        // registers Redis driver
 	"GripLite/internal/store"
 )
 

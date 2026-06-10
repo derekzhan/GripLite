@@ -30,6 +30,7 @@ type DriverKind string
 const (
 	DriverMySQL   DriverKind = "mysql"
 	DriverMongoDB DriverKind = "mongodb"
+	DriverRedis   DriverKind = "redis"
 )
 
 // SSHTunnelConfig carries the optional SSH jump-host configuration.

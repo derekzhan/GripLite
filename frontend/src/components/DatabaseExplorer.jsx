@@ -51,8 +51,10 @@ import {
   fetchRoutines, fetchTriggers, fetchEvents,
   runQuery, syncMetadata, connect, connectSaved, disconnect, refreshTableMetadata,
   getTableUsage, recordTableUsage, redisScanKeys,
+  redisSetString, redisHashSet, redisListPush, redisSetAdd, redisZAdd, redisStreamAdd,
 } from '../lib/bridge'
 import { buildKeyTree } from '../lib/redisClient'
+import AddRedisKeyModal from './AddRedisKeyModal'
 import { normalizeError } from '../lib/errors'
 import { toast } from '../lib/toast'
 import { buildCreateDatabaseSql, buildDropTableSql, buildRenameTableSql, quoteSqlIdentifier } from '../lib/databaseTemplates'
@@ -100,6 +102,7 @@ function materializeRedisTree(nodes, connId, dbName) {
       type:  'rediskeyfolder',
       label: n.label,
       connId, dbName,
+      redisPath:      n.path,
       connectionKind: 'redis',
       hasChildren:    true,
       redisChildren:  materializeRedisTree(n.children, connId, dbName),
@@ -415,6 +418,9 @@ export default function DatabaseExplorer({
   const [createTableTarget, setCreateTableTarget] = useState(null)
   const [createTableBusy, setCreateTableBusy] = useState(false)
   const [createTableError, setCreateTableError] = useState('')
+  const [addRedisKeyTarget, setAddRedisKeyTarget] = useState(null)
+  const [addRedisKeyBusy, setAddRedisKeyBusy] = useState(false)
+  const [addRedisKeyError, setAddRedisKeyError] = useState('')
   const [tableAction, setTableAction] = useState(null)
   const [tableActionBusy, setTableActionBusy] = useState(false)
   const [tableActionError, setTableActionError] = useState('')
@@ -1059,6 +1065,44 @@ export default function DatabaseExplorer({
     }, null)
   }, [refreshNode])
 
+  // ── Create a new Redis key ────────────────────────────────────────────────
+  //
+  // Redis has no empty keys, so each type materialises a placeholder first
+  // value. Afterwards we refresh the owning db node (the whole key tree is
+  // rebuilt on db expansion) and open the new key in a viewer tab.
+  const handleCreateRedisKey = useCallback(async ({ name, type }) => {
+    if (!addRedisKeyTarget?.connId || !addRedisKeyTarget?.dbName) return
+    const { connId, dbName } = addRedisKeyTarget
+    const dbIndex = dbIndexFromLabel(dbName)
+    setAddRedisKeyBusy(true)
+    setAddRedisKeyError('')
+    try {
+      switch (type) {
+        case 'hash':   await redisHashSet(connId, dbIndex, name, 'field', 'value'); break
+        case 'list':   await redisListPush(connId, dbIndex, name, 'value', false); break
+        case 'set':    await redisSetAdd(connId, dbIndex, name, 'member'); break
+        case 'zset':   await redisZAdd(connId, dbIndex, name, 'member', 0); break
+        case 'stream': await redisStreamAdd(connId, dbIndex, name, '*', { field: 'value' }); break
+        case 'string':
+        default:       await redisSetString(connId, dbIndex, name, '', 0); break
+      }
+      toast.success(`Created key ${name}`)
+      setAddRedisKeyTarget(null)
+      refreshNode({
+        id: dbNodeId(connId, dbName),
+        type: 'database',
+        connectionKind: 'redis',
+        connId, dbName,
+        hasChildren: true,
+      }, null)
+      onRedisKeyOpen?.(connId, dbIndex, name)
+    } catch (err) {
+      setAddRedisKeyError(normalizeError(err))
+    } finally {
+      setAddRedisKeyBusy(false)
+    }
+  }, [addRedisKeyTarget, refreshNode, onRedisKeyOpen])
+
   const handleTableAction = useCallback(async ({ newTableName } = {}) => {
     if (!tableAction?.connId || !tableAction?.dbName || !tableAction?.tableName) return
     setTableActionBusy(true)
@@ -1284,6 +1328,32 @@ export default function DatabaseExplorer({
           x:       e.clientX,
           y:       e.clientY,
           connId:  node.connId,
+          nodeRef: node,
+        })
+      } else if (node.type === 'database' && node.connectionKind === 'redis') {
+        e.preventDefault()
+        e.stopPropagation()
+        setSelected(node.id)
+        setContextMenu({
+          kind:    'redis-db',
+          x:       e.clientX,
+          y:       e.clientY,
+          connId:  node.connId,
+          dbName:  node.dbName,
+          prefix:  '',
+          nodeRef: node,
+        })
+      } else if (node.type === 'rediskeyfolder') {
+        e.preventDefault()
+        e.stopPropagation()
+        setSelected(node.id)
+        setContextMenu({
+          kind:    'redis-db',
+          x:       e.clientX,
+          y:       e.clientY,
+          connId:  node.connId,
+          dbName:  node.dbName,
+          prefix:  node.redisPath ? `${node.redisPath}:` : '',
           nodeRef: node,
         })
       } else if ((node.type === 'database' && node.connectionKind !== 'redis') || (isFolder && node.folderKind === 'tables')) {
@@ -1849,6 +1919,21 @@ export default function DatabaseExplorer({
         onCreate={handleCreateTable}
       />
 
+      <AddRedisKeyModal
+        isOpen={!!addRedisKeyTarget}
+        dbName={addRedisKeyTarget?.dbName ?? ''}
+        prefix={addRedisKeyTarget?.prefix ?? ''}
+        isCreating={addRedisKeyBusy}
+        error={addRedisKeyError}
+        onCancel={() => {
+          if (!addRedisKeyBusy) {
+            setAddRedisKeyTarget(null)
+            setAddRedisKeyError('')
+          }
+        }}
+        onCreate={handleCreateRedisKey}
+      />
+
       <TableActionModal
         action={tableAction?.action}
         target={tableAction}
@@ -1999,6 +2084,29 @@ export default function DatabaseExplorer({
           label:  <MenuLabel icon={Trash2} text="Delete Index..." />,
           key: 'x',
           action: () => setIndexAction({ connId, dbName, tableName, indexName, primary }),
+        },
+      ]
+    }
+
+    if (ctx.kind === 'redis-db') {
+      const { connId, dbName, prefix } = ctx
+      return [
+        {
+          label:    <MenuLabel icon={Plus}     text="New Key…" />,
+          shortcut: 'N', key: 'n',
+          action:   () => { setAddRedisKeyError(''); setAddRedisKeyTarget({ connId, dbName, prefix: prefix ?? '' }) },
+        },
+        { divider: true },
+        {
+          label:    <MenuLabel icon={RotateCw} text="Refresh" />,
+          shortcut: 'F5', key: 'F5',
+          action:   () => refreshNode({
+            id: dbNodeId(connId, dbName),
+            type: 'database',
+            connectionKind: 'redis',
+            connId, dbName,
+            hasChildren: true,
+          }, null),
         },
       ]
     }

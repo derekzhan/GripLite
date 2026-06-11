@@ -13,7 +13,7 @@
  *   └────────────────────────────────────────────────────────┘
  */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { X, Plus, Copy, Trash2, CheckCircle, XCircle, Loader2, FolderOpen, Database, Leaf } from 'lucide-react'
+import { X, Plus, Copy, Trash2, CheckCircle, XCircle, Loader2, FolderOpen, Database, Leaf, KeyRound } from 'lucide-react'
 import {
   listSavedConnections,
   getSavedConnection,
@@ -746,6 +746,22 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onDeleted, 
     setDeleteConfirmId(null)
   }
 
+  const handleNewRedis = () => {
+    selectionRequestRef.current += 1
+    const blank = switchConnectionKind(makeBlankForm(), 'redis')
+    setForm({
+      ...blank,
+      name: 'New Redis Connection',
+      database: '0',
+    })
+    setSelectedId(null)
+    prevFormRef.current = JSON.stringify(blank)
+    setIsDirty(true)
+    setTestResult(null)
+    setActiveTab('General')
+    setDeleteConfirmId(null)
+  }
+
   // ── Duplicate selected connection ───────────────────────────────────────
   // Clones the currently shown connection into a fresh, unsaved entry so the
   // user can spin up a new data source from an existing one (DataGrip-style).
@@ -916,6 +932,13 @@ export default function ConnectionDialog({ isOpen, onClose, onSaved, onDeleted, 
               >
                 <Plus size={12} className="-mr-0.5" />
                 <Leaf size={14} />
+              </ToolbarIconButton>
+              <ToolbarIconButton
+                onClick={handleNewRedis}
+                title="New Redis connection"
+              >
+                <Plus size={12} className="-mr-0.5" />
+                <KeyRound size={14} />
               </ToolbarIconButton>
               <ToolbarIconButton
                 onClick={handleDuplicate}

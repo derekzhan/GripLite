@@ -46,6 +46,10 @@ export function DeleteSavedConnection(arg1) {
   return window['go']['main']['App']['DeleteSavedConnection'](arg1);
 }
 
+export function DeleteSavedConsole(arg1) {
+  return window['go']['main']['App']['DeleteSavedConsole'](arg1);
+}
+
 export function Disconnect(arg1) {
   return window['go']['main']['App']['Disconnect'](arg1);
 }
@@ -160,6 +164,10 @@ export function ListConnections() {
 
 export function ListSavedConnections() {
   return window['go']['main']['App']['ListSavedConnections']();
+}
+
+export function ListSavedConsoles() {
+  return window['go']['main']['App']['ListSavedConsoles']();
 }
 
 export function OpenFileDialog(arg1) {
@@ -294,6 +302,10 @@ export function RedisZRemove(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['RedisZRemove'](arg1, arg2, arg3, arg4);
 }
 
+export function RefreshAppMenu() {
+  return window['go']['main']['App']['RefreshAppMenu']();
+}
+
 export function RefreshTableMetadata(arg1, arg2, arg3) {
   return window['go']['main']['App']['RefreshTableMetadata'](arg1, arg2, arg3);
 }
@@ -320,6 +332,10 @@ export function RunQueryWithID(arg1, arg2, arg3, arg4) {
 
 export function SaveConnection(arg1) {
   return window['go']['main']['App']['SaveConnection'](arg1);
+}
+
+export function SaveConsole(arg1) {
+  return window['go']['main']['App']['SaveConsole'](arg1);
 }
 
 export function SaveTextFile(arg1, arg2) {

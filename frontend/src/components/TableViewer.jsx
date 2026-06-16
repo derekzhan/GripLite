@@ -2919,7 +2919,7 @@ function MongoQueryInput({ label, value, onChange, onKeyDown, placeholder, ariaL
   )
 }
 
-function DataView({ tableName, dbName, connId, schema, objectKind = 'table' }) {
+function DataView({ tableName, dbName, connId, schema, objectKind = 'table', onOpenConsole }) {
   const isCollection = objectKind === 'collection'
   const [dataResult,   setDataResult]   = useState(null)
   const [isLoading,    setIsLoading]    = useState(true)
@@ -3439,8 +3439,14 @@ function DataView({ tableName, dbName, connId, schema, objectKind = 'table' }) {
           <X size={13} />
         </button>
       </div>
-      <div className="flex items-center gap-3 px-3 py-1 bg-elevated border-b border-line-subtle
-                      flex-shrink-0 text-[11px] text-fg-muted">
+      <div
+        className="flex items-center gap-3 px-3 py-1 bg-elevated border-b border-line-subtle
+                   flex-shrink-0 text-[11px] text-fg-muted cursor-pointer select-none hover:bg-hover"
+        onDoubleClick={() =>
+          onOpenConsole?.({ connId, defaultDb: dbName, initialSql: currentSelectSql })
+        }
+        title="Double-click to open this query in a console"
+      >
         <span className="font-medium text-fg-secondary">MongoDB</span>
         <code className="text-syntax-string truncate flex-1">{currentSelectSql}</code>
       </div>
@@ -3472,8 +3478,14 @@ function DataView({ tableName, dbName, connId, schema, objectKind = 'table' }) {
       />
 
       {showSqlBar && (
-        <div className="flex items-center gap-3 px-3 py-1 bg-elevated border-b border-line-subtle
-                        flex-shrink-0 text-[11px] text-fg-muted">
+        <div
+          className="flex items-center gap-3 px-3 py-1 bg-elevated border-b border-line-subtle
+                     flex-shrink-0 text-[11px] text-fg-muted cursor-pointer select-none hover:bg-hover"
+          onDoubleClick={() =>
+            onOpenConsole?.({ connId, defaultDb: dbName, initialSql: selectSql })
+          }
+          title="Double-click to open this query in a console"
+        >
           <code className="text-syntax-string truncate flex-1">{selectSql}</code>
         </div>
       )}
@@ -3708,7 +3720,7 @@ function useTableSchema(connId, dbName, tableName, isActive = true) {
  *   This prop is consumed once on mount; subsequent changes are ignored
  *   because the component owns its own tab state after that.
  */
-export default function TableViewer({ tableName = 'users', dbName = 'db1', connId = 'mock-conn', connectionName = '', defaultView, objectKind = 'table', connectionKind = 'mysql', isActive = true }) {
+export default function TableViewer({ tableName = 'users', dbName = 'db1', connId = 'mock-conn', connectionName = '', defaultView, objectKind = 'table', connectionKind = 'mysql', isActive = true, onOpenConsole }) {
   const isCollection = objectKind === 'collection' || connectionKind === 'mongodb'
   const [mainTab, setMainTab] = useState(defaultView === 'data' || isCollection ? 'data' : 'properties')
   const [hasVisitedData, setHasVisitedData] = useState(defaultView === 'data' || isCollection)
@@ -3782,7 +3794,7 @@ export default function TableViewer({ tableName = 'users', dbName = 'db1', connI
       )}
       {hasVisitedData && (
         <div className="flex-1 overflow-hidden" style={{ display: mainTab === 'data' ? 'flex' : 'none', flexDirection: 'column' }}>
-          <DataView tableName={tableName} dbName={dbName} connId={connId} schema={schema} objectKind={objectKind} />
+          <DataView tableName={tableName} dbName={dbName} connId={connId} schema={schema} objectKind={objectKind} onOpenConsole={onOpenConsole} />
         </div>
       )}
     </div>

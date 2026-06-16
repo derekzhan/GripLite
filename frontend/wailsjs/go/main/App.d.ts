@@ -29,6 +29,8 @@ export function CopyTable(arg1:database.CopyTableConfig):Promise<database.CopyRe
 
 export function DeleteSavedConnection(arg1:string):Promise<void>;
 
+export function DeleteSavedConsole(arg1:string):Promise<void>;
+
 export function Disconnect(arg1:string):Promise<void>;
 
 export function ExecDML(arg1:string,arg2:string):Promise<database.ExecResult>;
@@ -86,6 +88,8 @@ export function KillQuery(arg1:string,arg2:number):Promise<main.QueryResult>;
 export function ListConnections():Promise<Array<main.ConnectionInfo>>;
 
 export function ListSavedConnections():Promise<Array<store.SavedConnection>>;
+
+export function ListSavedConsoles():Promise<Array<main.SavedConsole>>;
 
 export function OpenFileDialog(arg1:string):Promise<string>;
 
@@ -153,6 +157,8 @@ export function RedisZAdd(arg1:string,arg2:number,arg3:string,arg4:string,arg5:n
 
 export function RedisZRemove(arg1:string,arg2:number,arg3:string,arg4:string):Promise<void>;
 
+export function RefreshAppMenu():Promise<void>;
+
 export function RefreshTableMetadata(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function RemoveConnection(arg1:string):Promise<void>;
@@ -166,6 +172,8 @@ export function RunQueryPageWithID(arg1:string,arg2:string,arg3:string,arg4:stri
 export function RunQueryWithID(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.QueryResult>;
 
 export function SaveConnection(arg1:store.SavedConnection):Promise<void>;
+
+export function SaveConsole(arg1:main.SavedConsole):Promise<main.SavedConsole>;
 
 export function SaveTextFile(arg1:string,arg2:string):Promise<string>;
 

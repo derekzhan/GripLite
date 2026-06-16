@@ -211,6 +211,9 @@ func (a *App) startup(ctx context.Context) {
 	if err := a.InitLocalDB(); err != nil {
 		log.Printf("[app] InitLocalDB failed: %v", err)
 	}
+	// The menu built in main.go ran before the DB was open, so rebuild it now
+	// that saved consoles are queryable.
+	a.RefreshAppMenu()
 }
 
 // shutdown is called by Wails just before the window is destroyed.

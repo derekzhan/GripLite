@@ -197,6 +197,78 @@ export async function recordTableUsage(connectionID, dbName, tableName) {
   writeMockTableUsage(m)
 }
 
+// ─── Saved consoles (DBeaver-style named SQL scripts) ─────────────────────────
+const SAVED_CONSOLES_KEY = 'griplite_saved_consoles_v1'
+
+function readMockSavedConsoles() {
+  try { return JSON.parse(localStorage.getItem(SAVED_CONSOLES_KEY) || '[]') } catch { return [] }
+}
+function writeMockSavedConsoles(list) {
+  try { localStorage.setItem(SAVED_CONSOLES_KEY, JSON.stringify(list)) } catch { /* best-effort */ }
+}
+
+/** listSavedConsoles — all saved consoles, most-recently-updated first. */
+export async function listSavedConsoles() {
+  if (isWails()) {
+    const { ListSavedConsoles } = await import('../../wailsjs/go/main/App.js')
+    return (await ListSavedConsoles()) ?? []
+  }
+  await delay(0)
+  return readMockSavedConsoles()
+    .slice()
+    .sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')))
+}
+
+/**
+ * saveConsole — insert (empty id) or update a saved console. Returns the
+ * persisted row (with id + timestamps).
+ */
+export async function saveConsole(payload) {
+  if (isWails()) {
+    const { SaveConsole } = await import('../../wailsjs/go/main/App.js')
+    return SaveConsole({
+      id: payload.id ?? '',
+      name: payload.name ?? '',
+      sql: payload.sql ?? '',
+      connId: payload.connId ?? '',
+      dbName: payload.dbName ?? '',
+      connectionKind: payload.connectionKind ?? '',
+      createdAt: '',
+      updatedAt: '',
+    })
+  }
+  await delay(0)
+  const list = readMockSavedConsoles()
+  const now = new Date().toISOString()
+  const id = payload.id || `console-${Date.now()}`
+  const idx = list.findIndex((c) => c.id === id)
+  const row = {
+    id,
+    name: payload.name ?? '',
+    sql: payload.sql ?? '',
+    connId: payload.connId ?? '',
+    dbName: payload.dbName ?? '',
+    connectionKind: payload.connectionKind ?? '',
+    createdAt: idx >= 0 ? list[idx].createdAt : now,
+    updatedAt: now,
+  }
+  if (idx >= 0) list[idx] = row
+  else list.unshift(row)
+  writeMockSavedConsoles(list)
+  return row
+}
+
+/** deleteSavedConsole — remove a saved console by id. */
+export async function deleteSavedConsole(id) {
+  if (!id) return
+  if (isWails()) {
+    const { DeleteSavedConsole } = await import('../../wailsjs/go/main/App.js')
+    return DeleteSavedConsole(id)
+  }
+  await delay(0)
+  writeMockSavedConsoles(readMockSavedConsoles().filter((c) => c.id !== id))
+}
+
 /**
  * AddConnection — open and register a new database connection.
  *
@@ -1453,9 +1525,11 @@ export async function onMenuAction(handlers = {}) {
   if (!isWails()) return () => {}
   const { EventsOn } = await import('../../wailsjs/runtime/runtime.js')
   const offs = []
-  if (handlers.settings)  offs.push(EventsOn('menu:settings',  handlers.settings))
-  if (handlers.shortcuts) offs.push(EventsOn('menu:shortcuts', handlers.shortcuts))
-  if (handlers.about)     offs.push(EventsOn('menu:about',     handlers.about))
+  if (handlers.settings)     offs.push(EventsOn('menu:settings',      handlers.settings))
+  if (handlers.shortcuts)    offs.push(EventsOn('menu:shortcuts',     handlers.shortcuts))
+  if (handlers.about)        offs.push(EventsOn('menu:about',         handlers.about))
+  if (handlers.consoleSave)  offs.push(EventsOn('menu:console-save',  handlers.consoleSave))
+  if (handlers.consoleOpen)  offs.push(EventsOn('menu:console-open',  (id) => handlers.consoleOpen(id)))
   return () => offs.forEach((off) => { try { off?.() } catch { /* ignore */ } })
 }
 

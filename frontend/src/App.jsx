@@ -32,16 +32,19 @@ import RedisServerView    from './components/RedisServerView'
 import ConnectionDialog   from './components/ConnectionDialog'
 import CopyDataModal      from './components/CopyDataModal'
 import MenuBar            from './components/MenuBar'
+import SavedConsolesMenu  from './components/SavedConsolesMenu'
+import SaveConsoleModal   from './components/SaveConsoleModal'
 import AboutModal              from './components/AboutModal'
 import KeyboardShortcutsModal from './components/KeyboardShortcutsModal'
 import SettingsModal          from './components/SettingsModal'
 import ErrorBoundary      from './components/ErrorBoundary'
 import { loadTableUsageTopN } from './lib/settings'
+import { readConsoleEditorContent, findOpenConsoleForSaved } from './lib/savedConsoles'
 import { Database, Leaf, Zap } from 'lucide-react'
 import { Key, Server } from 'lucide-react'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
-import { runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo, getPlatform, onMenuAction } from './lib/bridge'
+import { runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo, getPlatform, onMenuAction, listSavedConsoles, saveConsole, deleteSavedConsole } from './lib/bridge'
 import { appendResultPage, DEFAULT_PAGE_SIZE, loadPreferredPageSize, savePreferredPageSize } from './lib/queryPaging'
 import { stripLeadingSqlComments } from './lib/sqlText'
 import {
@@ -213,6 +216,12 @@ export default function App() {
   })
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null
+
+  // Always-fresh mirror of `tabs` for callbacks that must dedup against the
+  // latest tab list synchronously (e.g. opening a saved console), without
+  // waiting for a closure to be recreated.
+  const tabsRef = useRef(tabs)
+  tabsRef.current = tabs
 
   useEffect(() => { activeTabIdRef.current = activeTabId }, [activeTabId])
 
@@ -621,11 +630,13 @@ export default function App() {
     const tab = makeConsoleTab()
     if (opts?.initialSql) tab.initialSql = opts.initialSql
     if (opts?.label)      tab.label      = opts.label
+    if (opts?.savedConsoleId)   tab.savedConsoleId   = opts.savedConsoleId
+    if (opts?.savedConsoleName) tab.savedConsoleName = opts.savedConsoleName
     const effectiveConnId = opts?.connId ?? activeTab?.connId ?? connIdRef.current
     const defaultDb = opts?.defaultDb ?? defaultDatabaseForNewConsole(activeTab, connInfo?.database ?? '')
     tab.defaultDb = defaultDb
     tab.connId = effectiveConnId
-    tab.connectionKind = connectionKindById.get(effectiveConnId) ?? 'mysql'
+    tab.connectionKind = opts?.connectionKind ?? connectionKindById.get(effectiveConnId) ?? 'mysql'
     setTabs((prev) => [...prev, tab])
     // NOTE: this seed MUST match the shape expected by the ResultPanel
     // render path (see `activeResult` derivation below).  The old shape
@@ -638,6 +649,164 @@ export default function App() {
     }))
     setActiveTabId(tab.id)
   }, [activeTab, connectionKindById, connInfo?.database])
+
+  // Open the console for a given connection+database, reusing an already-open
+  // console if one matches; otherwise spawn a fresh one (seeded with initialSql).
+  const handleOpenOrFocusConsole = useCallback((opts) => {
+    const targetConnId = opts?.connId ?? activeTab?.connId ?? connIdRef.current
+    const targetDb = opts?.defaultDb ?? ''
+    const existing = tabs.find(
+      (t) => t.type === 'console'
+        && (t.connId ?? connIdRef.current) === targetConnId
+        && (t.defaultDb ?? '') === targetDb,
+    )
+    if (existing) {
+      setActiveTabId(existing.id)
+      return
+    }
+    handleNewConsole(opts)
+  }, [tabs, activeTab, handleNewConsole])
+
+  // Rebind a console tab to a different connection (DataGrip-style). Resets the
+  // default database to the new connection's default; SqlEditor re-fetches its
+  // database list off the changed connectionId prop.
+  const handleConsoleConnectionChange = useCallback((tabId, newConnId) => {
+    if (!newConnId) return
+    const target = connections.find((c) => c.id === newConnId)
+    setTabs((prev) => prev.map((t) => (
+      t.id === tabId
+        ? {
+            ...t,
+            connId: newConnId,
+            connectionKind: connectionKindById.get(newConnId) ?? target?.kind ?? 'mysql',
+            defaultDb: target?.database ?? '',
+          }
+        : t
+    )))
+  }, [connections, connectionKindById])
+
+  // ── Saved consoles (DBeaver-style named SQL scripts) ───────────────────────
+  const [savedConsoles, setSavedConsoles] = useState([])
+  // Save dialog state: { tabId, initialName, busy, error } or null.
+  const [saveConsoleState, setSaveConsoleState] = useState(null)
+
+  const reloadSavedConsoles = useCallback(async () => {
+    try {
+      setSavedConsoles((await listSavedConsoles()) ?? [])
+    } catch (e) {
+      console.warn('[consoles] list failed:', e)
+    }
+  }, [])
+
+  useEffect(() => { reloadSavedConsoles() }, [reloadSavedConsoles])
+
+  // Open the name dialog for the active console tab. The actual SQL is captured
+  // at save time from the editor's persisted state (performSaveConsole).
+  const handleSaveCurrentConsole = useCallback(() => {
+    if (activeTab?.type !== 'console') {
+      // Reachable from the always-enabled native macOS menu item.
+      toast.error('Open a console first, then save it.')
+      return
+    }
+    setSaveConsoleState({
+      tabId: activeTab.id,
+      initialName: activeTab.savedConsoleName ?? activeTab.label ?? '',
+      busy: false,
+      error: '',
+    })
+  }, [activeTab])
+
+  const performSaveConsole = useCallback(async (name) => {
+    const target = saveConsoleState
+    if (!target?.tabId) return
+    const tab = tabs.find((t) => t.id === target.tabId)
+    if (!tab) { setSaveConsoleState(null); return }
+    const { sql, selectedDb } = readConsoleEditorContent(tab.id)
+    setSaveConsoleState((s) => (s ? { ...s, busy: true, error: '' } : s))
+    try {
+      const saved = await saveConsole({
+        id: tab.savedConsoleId ?? '',
+        name,
+        sql,
+        connId: tab.connId ?? '',
+        dbName: selectedDb || tab.defaultDb || '',
+        connectionKind: tab.connectionKind ?? 'mysql',
+      })
+      // Bind the tab to the saved console so re-saving updates in place, and
+      // surface the saved name as the tab label.
+      setTabs((prev) => prev.map((t) => (
+        t.id === tab.id
+          ? { ...t, savedConsoleId: saved.id, savedConsoleName: saved.name, label: saved.name }
+          : t
+      )))
+      setSaveConsoleState(null)
+      toast.success(`Saved console “${saved.name}”`)
+      reloadSavedConsoles()
+    } catch (e) {
+      setSaveConsoleState((s) => (s ? { ...s, busy: false, error: normalizeError(e) } : s))
+    }
+  }, [saveConsoleState, tabs, reloadSavedConsoles])
+
+  // Open a saved console — focus an already-open tab bound to it, else spawn one.
+  // Dedup reads tabsRef (always current) so repeated clicks on the same saved
+  // console never spawn more than one tab.
+  const handleOpenSavedConsole = useCallback((saved) => {
+    if (!saved?.id) return
+    const existing = findOpenConsoleForSaved(tabsRef.current, saved.id)
+    if (existing) { setActiveTabId(existing.id); return }
+    handleNewConsole({
+      initialSql: saved.sql ?? '',
+      label: saved.name,
+      connId: saved.connId || undefined,
+      defaultDb: saved.dbName ?? '',
+      connectionKind: saved.connectionKind || undefined,
+      savedConsoleId: saved.id,
+      savedConsoleName: saved.name,
+    })
+  }, [handleNewConsole])
+
+  const handleDeleteSavedConsole = useCallback(async (saved) => {
+    if (!saved?.id) return
+    try {
+      await deleteSavedConsole(saved.id)
+      // Unbind any open tab that pointed at this saved console.
+      setTabs((prev) => prev.map((t) => (
+        t.savedConsoleId === saved.id
+          ? { ...t, savedConsoleId: undefined, savedConsoleName: undefined }
+          : t
+      )))
+      reloadSavedConsoles()
+    } catch (e) {
+      toast.error(`Delete failed: ${normalizeError(e)}`)
+    }
+  }, [reloadSavedConsoles])
+
+  // Rename a console from its tab's right-click menu. Opens the name dialog for
+  // that specific tab; saving upserts in place when it's already a saved console
+  // (so it renames), or saves it for the first time otherwise.
+  const handleRenameConsole = useCallback((tabId) => {
+    const tab = tabsRef.current.find((t) => t.id === tabId)
+    if (!tab || tab.type !== 'console') return
+    setSaveConsoleState({
+      tabId: tab.id,
+      initialName: tab.savedConsoleName ?? tab.label ?? '',
+      busy: false,
+      error: '',
+    })
+  }, [])
+
+  // Open a saved console by id (used by the native macOS Consoles menu).
+  const openSavedConsoleById = useCallback((id) => {
+    const saved = savedConsoles.find((c) => c.id === id)
+    if (saved) handleOpenSavedConsole(saved)
+  }, [savedConsoles, handleOpenSavedConsole])
+
+  // The native-menu subscription effect runs once with [] deps, so route the
+  // (state-dependent) console actions through a ref kept fresh each render.
+  const consoleMenuActionsRef = useRef({ save: () => {}, openById: () => {} })
+  useEffect(() => {
+    consoleMenuActionsRef.current = { save: handleSaveCurrentConsole, openById: openSavedConsoleById }
+  }, [handleSaveCurrentConsole, openSavedConsoleById])
 
   // ── Tab close ─────────────────────────────────────────────────────────────
   //
@@ -687,6 +856,7 @@ export default function App() {
   const [aboutOpen,    setAboutOpen]    = useState(false)
   const [docsOpen,     setDocsOpen]     = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+
   // On macOS, Tools/Help live in the native top-of-screen menu bar and the
   // window's title bar is hidden, so the in-app strip insets for the traffic
   // lights and skips the MenuBar. Seed from a synchronous platform guess to
@@ -706,14 +876,23 @@ export default function App() {
   // On macOS the native menu bar hosts Tools/Help; subscribe to its clicks and
   // hide the in-app MenuBar there. On Windows/Linux the in-app bar stays.
   useEffect(() => {
-    let unsubscribe = () => {}
+    // onMenuAction is async; if this effect is torn down (e.g. React StrictMode
+    // double-invoke in dev) before the promise resolves, unsubscribe as soon as
+    // it does — otherwise a leaked listener fires menu events twice, opening
+    // duplicate console tabs.
+    let off = null
+    let cancelled = false
     getPlatform().then((platform) => setNativeMenu(platform === 'darwin')).catch(() => {})
     onMenuAction({
-      settings:  () => setSettingsOpen(true),
-      shortcuts: () => setDocsOpen(true),
-      about:     () => setAboutOpen(true),
-    }).then((off) => { unsubscribe = off }).catch(() => {})
-    return () => unsubscribe()
+      settings:     () => setSettingsOpen(true),
+      shortcuts:    () => setDocsOpen(true),
+      about:        () => setAboutOpen(true),
+      consoleSave:  () => consoleMenuActionsRef.current.save(),
+      consoleOpen:  (id) => consoleMenuActionsRef.current.openById(id),
+    }).then((unsub) => {
+      if (cancelled) { try { unsub?.() } catch { /* ignore */ } } else { off = unsub }
+    }).catch(() => {})
+    return () => { cancelled = true; if (off) { try { off() } catch { /* ignore */ } } }
   }, [])
 
   const handleNewConnectionOpen = useCallback(() => {
@@ -775,9 +954,9 @@ export default function App() {
       */}
       <header
         className="flex items-center h-9 gap-3 flex-shrink-0 bg-titlebar border-b border-line-subtle"
-        style={{ WebkitAppRegion: 'drag', paddingLeft: nativeMenu ? 78 : 12, paddingRight: 12 }}
+        style={{ '--wails-draggable': 'drag', WebkitAppRegion: 'drag', paddingLeft: nativeMenu ? 78 : 12, paddingRight: 12 }}
       >
-        <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' }}>
+        <div className="flex items-center gap-2" style={{ '--wails-draggable': 'no-drag', WebkitAppRegion: 'no-drag' }}>
           <span className="text-[13px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
             GripLite
           </span>
@@ -788,8 +967,23 @@ export default function App() {
 
         {/* Tools / Help — only when there's no global menu bar (non-macOS). */}
         {!nativeMenu && (
-          <div className="h-full ml-1" style={{ WebkitAppRegion: 'no-drag' }}>
+          <div className="h-full ml-1" style={{ '--wails-draggable': 'no-drag', WebkitAppRegion: 'no-drag' }}>
             <MenuBar onAbout={() => setAboutOpen(true)} onDocs={() => setDocsOpen(true)} onSettings={() => setSettingsOpen(true)} />
+          </div>
+        )}
+
+        {/* Saved consoles. On macOS this lives in the native menu bar next to
+            Tools (see menu.go); on Windows/Linux it sits here next to the
+            in-app MenuBar. */}
+        {!nativeMenu && (
+          <div className="h-full" style={{ '--wails-draggable': 'no-drag', WebkitAppRegion: 'no-drag' }}>
+            <SavedConsolesMenu
+              consoles={savedConsoles}
+              canSave={activeTab?.type === 'console'}
+              onSaveCurrent={handleSaveCurrentConsole}
+              onOpen={handleOpenSavedConsole}
+              onDelete={handleDeleteSavedConsole}
+            />
           </div>
         )}
 
@@ -835,6 +1029,7 @@ export default function App() {
               onCloseTab={handleCloseTabById}
               onCloseAll={handleCloseAllTabs}
               onNewConsole={handleNewConsole}
+              onRenameConsole={handleRenameConsole}
               connectionKindById={connectionKindById}
             />
 
@@ -891,6 +1086,8 @@ export default function App() {
                             : ''}
                           storageKey={`griplite_sql_editor_${tab.id}_v1`}
                           connectionKind={tab.connectionKind ?? consoleConnInfo?.kind ?? 'mysql'}
+                          connections={connections}
+                          onConnectionChange={(cid) => handleConsoleConnectionChange(tab.id, cid)}
                         />
                         <ResultPanel
                           queryResult={activeResult?.queryResult ?? null}
@@ -931,6 +1128,7 @@ export default function App() {
                         objectKind={tableObjectKind}
                         connectionKind={tableConnectionKind}
                         isActive={activeTabId === tab.id}
+                        onOpenConsole={handleOpenOrFocusConsole}
                       />
                     </ErrorBoundary>
                   </div>
@@ -1071,6 +1269,15 @@ export default function App() {
         onChangeTableUsageTopN={setTableUsageTopN}
       />
 
+      <SaveConsoleModal
+        isOpen={!!saveConsoleState}
+        initialName={saveConsoleState?.initialName ?? ''}
+        isSaving={!!saveConsoleState?.busy}
+        error={saveConsoleState?.error ?? ''}
+        onCancel={() => { if (!saveConsoleState?.busy) setSaveConsoleState(null) }}
+        onSave={performSaveConsole}
+      />
+
       {/* ── Global toast stack (Phase 21) ────────────────────────────
           Mounted once at the root so any component can dispatch via
           `import { toast } from '../lib/toast'` without threading a
@@ -1172,7 +1379,7 @@ function TabIcon({ tab, connectionKindById }) {
   return <Database size={12} strokeWidth={1.8} className={className} />
 }
 
-function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab, onCloseAll, onNewConsole, connectionKindById }) {
+function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab, onCloseAll, onNewConsole, onRenameConsole, connectionKindById }) {
   const [contextMenu, setContextMenu] = useState(null)
   const activeTabRef = useRef(null)
 
@@ -1284,6 +1491,21 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
         >
+          {tabs.find((t) => t.id === contextMenu.tabId)?.type === 'console' && (
+            <>
+              <button
+                type="button"
+                className="w-full px-3 py-1.5 text-left text-fg-secondary hover:bg-hover hover:text-fg-primary"
+                onClick={() => {
+                  onRenameConsole?.(contextMenu.tabId)
+                  closeMenu()
+                }}
+              >
+                Rename…
+              </button>
+              <div className="my-1 border-t border-line-subtle" />
+            </>
+          )}
           <button
             type="button"
             className="w-full px-3 py-1.5 text-left text-fg-secondary hover:bg-hover hover:text-fg-primary"

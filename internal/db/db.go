@@ -220,6 +220,21 @@ var extendedDDL = []string{
 		PRIMARY KEY (conn_id, db_name, table_name)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_tu_conn ON table_usage(conn_id)`,
+
+	// Saved SQL consoles (DBeaver-style named scripts). A saved console keeps
+	// its SQL plus the connection/database it was written against. Identity is
+	// the generated id; names are not unique. Survives app restarts/reinstall.
+	`CREATE TABLE IF NOT EXISTS saved_consoles (
+		id              TEXT    PRIMARY KEY,
+		name            TEXT    NOT NULL,
+		sql             TEXT    NOT NULL,
+		conn_id         TEXT    NOT NULL DEFAULT '',
+		db_name         TEXT    NOT NULL DEFAULT '',
+		connection_kind TEXT    NOT NULL DEFAULT '',
+		created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+		updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_sc_updated ON saved_consoles(updated_at)`,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

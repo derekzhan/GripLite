@@ -39,6 +39,7 @@ func TestOpen_CreatesFileAndTables(t *testing.T) {
 		"metadata_fts",     // extended (FTS5 virtual table)
 		"sync_log",         // extended
 		"table_usage",      // extended (Explorer open-frequency, survives reinstall)
+		"saved_consoles",   // extended (DBeaver-style named SQL scripts)
 	}
 	for _, name := range wantTables {
 		var out string

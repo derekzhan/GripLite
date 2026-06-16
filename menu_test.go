@@ -51,6 +51,17 @@ func TestBuildAppMenu_DarwinHasToolsAndHelp(t *testing.T) {
 		t.Fatal("Tools → Settings… missing or has no click handler")
 	}
 
+	consoles := findSubmenu(m, "Consoles")
+	if consoles == nil {
+		t.Fatal("Consoles submenu missing")
+	}
+	save := hasItem(consoles, "Save current console…")
+	if save == nil || save.Click == nil {
+		t.Fatal("Consoles → Save current console… missing or has no click handler")
+	}
+	// With no DB (a.ctx == nil), clicking must not panic.
+	save.Click(nil)
+
 	help := findSubmenu(m, "Help")
 	if help == nil {
 		t.Fatal("Help submenu missing")

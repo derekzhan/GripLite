@@ -11,9 +11,11 @@ import (
 // Native menu event names. The frontend (App.jsx) subscribes to these and opens
 // the matching modal, so the menu logic stays in one place on the JS side.
 const (
-	menuEventSettings  = "menu:settings"
-	menuEventShortcuts = "menu:shortcuts"
-	menuEventAbout     = "menu:about"
+	menuEventSettings    = "menu:settings"
+	menuEventShortcuts   = "menu:shortcuts"
+	menuEventAbout       = "menu:about"
+	menuEventConsoleSave = "menu:console-save"
+	menuEventConsoleOpen = "menu:console-open"
 )
 
 // buildAppMenu returns the native application menu.
@@ -42,6 +44,26 @@ func (a *App) buildAppMenu() *menu.Menu {
 	appMenu.Append(menu.EditMenu()) // Cut / Copy / Paste / Select-All
 	appMenu.Append(menu.WindowMenu())
 
+	// Consoles — DBeaver-style saved SQL scripts. Lives next to Tools in the
+	// native menu bar. The saved list is dynamic, so RefreshAppMenu rebuilds and
+	// re-applies the whole menu whenever it changes.
+	consoles := appMenu.AddSubmenu("Consoles")
+	consoles.AddText("Save current console…", keys.CmdOrCtrl("s"), emit(menuEventConsoleSave))
+	consoles.AddSeparator()
+	if saved, err := a.ListSavedConsoles(); err == nil && len(saved) > 0 {
+		for _, c := range saved {
+			id := c.ID // capture per-iteration for the closure
+			consoles.AddText(c.Name, nil, func(_ *menu.CallbackData) {
+				if a.ctx != nil {
+					wailsruntime.EventsEmit(a.ctx, menuEventConsoleOpen, id)
+				}
+			})
+		}
+	} else {
+		empty := consoles.AddText("No saved consoles", nil, nil)
+		empty.Disabled = true
+	}
+
 	tools := appMenu.AddSubmenu("Tools")
 	tools.AddText("Settings…", keys.CmdOrCtrl(","), emit(menuEventSettings))
 
@@ -50,4 +72,19 @@ func (a *App) buildAppMenu() *menu.Menu {
 	help.AddText("About GripLite", nil, emit(menuEventAbout))
 
 	return appMenu
+}
+
+// RefreshAppMenu rebuilds the native application menu and re-applies it so the
+// Consoles submenu reflects the current saved-console list. macOS-only; a no-op
+// elsewhere or before startup (when there's no live context to update).
+func (a *App) RefreshAppMenu() {
+	if runtime.GOOS != "darwin" || a.ctx == nil {
+		return
+	}
+	m := a.buildAppMenu()
+	if m == nil {
+		return
+	}
+	wailsruntime.MenuSetApplicationMenu(a.ctx, m)
+	wailsruntime.MenuUpdateApplicationMenu(a.ctx)
 }

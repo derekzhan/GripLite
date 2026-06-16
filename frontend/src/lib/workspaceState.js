@@ -29,6 +29,8 @@ function cleanTab(tab) {
         ...cleanConnectionFields(tab),
         initialSql: tab.initialSql ?? undefined,
         defaultDb: tab.defaultDb ?? undefined,
+        savedConsoleId: tab.savedConsoleId ?? undefined,
+        savedConsoleName: tab.savedConsoleName ?? undefined,
       }
     case 'table':
       if (!tab.connId || !tab.dbName || !tab.tableName) return null

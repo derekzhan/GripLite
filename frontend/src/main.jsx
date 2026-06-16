@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client'
 import './style.css'
 import App from './App'
 import { ThemeProvider } from './theme/ThemeProvider'
+import { FontSettingsProvider } from './settings/FontSettingsProvider'
 import { installAutoCapitalizeShim } from './lib/disableAutoCapitalize'
 
 installAutoCapitalizeShim()
@@ -33,7 +34,9 @@ const root = createRoot(container)
 root.render(
     <React.StrictMode>
         <ThemeProvider defaultTheme="dark">
-            <App/>
+            <FontSettingsProvider>
+                <App/>
+            </FontSettingsProvider>
         </ThemeProvider>
     </React.StrictMode>
 )

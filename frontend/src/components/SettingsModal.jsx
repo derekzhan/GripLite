@@ -14,8 +14,15 @@ import {
   MAX_TABLE_USAGE_TOP_N,
   clampTableUsageTopN,
   saveTableUsageTopN,
+  EDITOR_FONT_OPTIONS,
+  UI_FONT_OPTIONS,
+  MIN_EDITOR_FONT_SIZE,
+  MAX_EDITOR_FONT_SIZE,
+  MIN_UI_FONT_SIZE,
+  MAX_UI_FONT_SIZE,
 } from '../lib/settings'
 import { useTheme } from '../theme/ThemeProvider'
+import { useFontSettings } from '../settings/FontSettingsProvider'
 
 const THEME_OPTIONS = [
   { id: 'light',  label: 'Light',  Icon: Sun },
@@ -23,8 +30,54 @@ const THEME_OPTIONS = [
   { id: 'system', label: 'System', Icon: Monitor },
 ]
 
+/** A labelled font-family select + size stepper, applied live on change. */
+function FontRow({ label, options, family, size, minSize, maxSize, onFamily, onSize }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <label className="text-[12px] font-medium text-[color:var(--fg-primary)] w-24 shrink-0">
+        {label}
+      </label>
+      <div className="flex items-center gap-2 flex-1 justify-end">
+        <select
+          value={family}
+          onChange={(e) => onFamily(e.target.value)}
+          className="min-w-0 flex-1 max-w-[200px] px-2 py-1 rounded text-[12px]
+                     bg-[color:var(--bg-elev-2)] text-[color:var(--fg-primary)]
+                     border border-[color:var(--border-strong)]
+                     outline-none focus:border-[color:var(--accent)]"
+        >
+          {options.map((o) => (
+            <option key={o.label} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        <input
+          type="number"
+          min={minSize}
+          max={maxSize}
+          step={1}
+          value={size}
+          onChange={(e) => {
+            const n = Number(e.target.value)
+            if (Number.isFinite(n)) onSize(n)
+          }}
+          title="Font size (px)"
+          className="shrink-0 w-16 px-2 py-1 rounded text-[12px] text-right tabular-nums
+                     bg-[color:var(--bg-elev-2)] text-[color:var(--fg-primary)]
+                     border border-[color:var(--border-strong)]
+                     outline-none focus:border-[color:var(--accent)]"
+        />
+        <span className="text-[11px] text-[color:var(--fg-muted)] w-3">px</span>
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsModal({ isOpen, onClose, tableUsageTopN, onChangeTableUsageTopN }) {
   const { theme, setTheme } = useTheme()
+  const {
+    editorFontFamily, editorFontSize, uiFontFamily, uiFontSize,
+    setEditorFontFamily, setEditorFontSize, setUiFontFamily, setUiFontSize,
+  } = useFontSettings()
   const [draft, setDraft] = useState(String(tableUsageTopN ?? DEFAULT_TABLE_USAGE_TOP_N))
 
   // Re-sync the input whenever the modal opens or the external value changes.
@@ -113,6 +166,39 @@ export default function SettingsModal({ isOpen, onClose, tableUsageTopN, onChang
                 ))}
               </div>
             </div>
+          </section>
+
+          <section>
+            <h3 className="text-[11px] font-semibold uppercase tracking-wide
+                           text-[color:var(--fg-muted)] mb-2">
+              Fonts
+            </h3>
+            <div className="space-y-2.5">
+              <FontRow
+                label="Console"
+                options={EDITOR_FONT_OPTIONS}
+                family={editorFontFamily}
+                size={editorFontSize}
+                minSize={MIN_EDITOR_FONT_SIZE}
+                maxSize={MAX_EDITOR_FONT_SIZE}
+                onFamily={setEditorFontFamily}
+                onSize={setEditorFontSize}
+              />
+              <FontRow
+                label="Interface"
+                options={UI_FONT_OPTIONS}
+                family={uiFontFamily}
+                size={uiFontSize}
+                minSize={MIN_UI_FONT_SIZE}
+                maxSize={MAX_UI_FONT_SIZE}
+                onFamily={setUiFontFamily}
+                onSize={setUiFontSize}
+              />
+            </div>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-[color:var(--fg-muted)]">
+              Changes apply instantly. Interface size scales the whole app; the
+              console keeps its own size independently.
+            </p>
           </section>
 
           <section>

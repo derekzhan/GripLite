@@ -27,6 +27,17 @@ import { bumpTableUsage, sortTablesByUsage } from '../src/lib/tableUsage.js'
 import { buildKeyTree, classifyRedisCommand, formatTTL, DECODE_FORMATS, REDIS_COMMANDS } from '../src/lib/redisClient.js'
 import { loadTableUsageTopN, saveTableUsageTopN, clampTableUsageTopN } from '../src/lib/settings.js'
 import {
+  loadEditorFontSize, saveEditorFontSize,
+  loadUiFontSize, saveUiFontSize,
+  loadEditorFontFamily, saveEditorFontFamily,
+  loadUiFontFamily, saveUiFontFamily,
+  resolveEditorFontStack, resolveUiFontStack,
+  uiZoomForSize,
+  DEFAULT_EDITOR_FONT_SIZE, DEFAULT_UI_FONT_SIZE,
+  MAX_EDITOR_FONT_SIZE, MIN_UI_FONT_SIZE,
+  DEFAULT_EDITOR_FONT_STACK, DEFAULT_UI_FONT_STACK,
+} from '../src/lib/settings.js'
+import {
   closeAllTabsInWorkspace,
   closeTabInWorkspace,
   getNextConsoleSeqFromTabs,
@@ -35,6 +46,11 @@ import {
   normalizeWorkspaceState,
   saveWorkspaceState,
 } from '../src/lib/workspaceState.js'
+import {
+  consoleEditorStorageKey,
+  readConsoleEditorContent,
+  findOpenConsoleForSaved,
+} from '../src/lib/savedConsoles.js'
 
 class MemoryStorage {
   constructor(seed = {}) {
@@ -1456,5 +1472,195 @@ testRedisBuildKeyTreeIsStableAndSorted()
 testRedisClassifyCommandDetectsWrites()
 testRedisDecodeFormatsCoverAllRequested()
 testRedisFormatTTL()
+
+function testReadConsoleEditorContentReadsActiveSubTab() {
+  const storage = new MemoryStorage()
+  storage.setItem(consoleEditorStorageKey('console-1'), JSON.stringify({
+    tabs: [
+      { id: 't1', label: 'Query 1', content: 'SELECT 1' },
+      { id: 't2', label: 'Query 2', content: 'SELECT 2' },
+    ],
+    activeTab: 't2',
+    selectedDb: 'shop',
+  }))
+  assert.deepEqual(
+    readConsoleEditorContent('console-1', storage),
+    { sql: 'SELECT 2', selectedDb: 'shop' },
+  )
+  // Missing key → empty capture (never throws).
+  assert.deepEqual(readConsoleEditorContent('missing', storage), { sql: '', selectedDb: '' })
+  // Malformed JSON → empty capture.
+  storage.setItem(consoleEditorStorageKey('bad'), '{not json')
+  assert.deepEqual(readConsoleEditorContent('bad', storage), { sql: '', selectedDb: '' })
+  // Falls back to first sub-tab when activeTab is unknown.
+  storage.setItem(consoleEditorStorageKey('console-2'), JSON.stringify({
+    tabs: [{ id: 't1', content: 'SELECT first' }],
+    activeTab: 'gone',
+    selectedDb: '',
+  }))
+  assert.equal(readConsoleEditorContent('console-2', storage).sql, 'SELECT first')
+}
+
+function testFindOpenConsoleForSaved() {
+  const tabs = [
+    { id: 'console-1', type: 'console', savedConsoleId: 'sc-1' },
+    { id: 'table-1', type: 'table' },
+    { id: 'console-2', type: 'console' },
+  ]
+  assert.equal(findOpenConsoleForSaved(tabs, 'sc-1')?.id, 'console-1')
+  assert.equal(findOpenConsoleForSaved(tabs, 'sc-missing'), null)
+  assert.equal(findOpenConsoleForSaved(tabs, ''), null)
+  assert.equal(findOpenConsoleForSaved(null, 'sc-1'), null)
+}
+
+function testWorkspacePersistsSavedConsoleBinding() {
+  const storage = new MemoryStorage()
+  const snapshot = makeWorkspaceSnapshot({
+    tabs: [
+      { id: 'console-3', type: 'console', label: 'orders report', connId: 'conn', connectionKind: 'mysql', savedConsoleId: 'sc-9', savedConsoleName: 'orders report' },
+    ],
+    activeTabId: 'console-3',
+    activeConnId: 'conn',
+  })
+  assert.equal(snapshot.tabs[0].savedConsoleId, 'sc-9')
+  assert.equal(snapshot.tabs[0].savedConsoleName, 'orders report')
+  saveWorkspaceState(storage, snapshot)
+  assert.deepEqual(loadWorkspaceState(storage), snapshot)
+}
+
+function testSavedConsolesFeatureWiredIntoApp() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
+  const menu = readFileSync(new URL('../src/components/SavedConsolesMenu.jsx', import.meta.url), 'utf8')
+
+  // Bridge exposes the three saved-console calls with a localStorage mock.
+  assert.match(bridge, /export async function listSavedConsoles\(\)/)
+  assert.match(bridge, /export async function saveConsole\(payload\)/)
+  assert.match(bridge, /export async function deleteSavedConsole\(id\)/)
+  assert.match(bridge, /const SAVED_CONSOLES_KEY = 'griplite_saved_consoles_v1'/)
+
+  // App imports + renders the menu/modal and wires the handlers.
+  assert.match(app, /import SavedConsolesMenu\s+from '\.\/components\/SavedConsolesMenu'/)
+  assert.match(app, /import SaveConsoleModal\s+from '\.\/components\/SaveConsoleModal'/)
+  assert.match(app, /listSavedConsoles, saveConsole, deleteSavedConsole/)
+  assert.match(app, /const handleSaveCurrentConsole = useCallback/)
+  assert.match(app, /const performSaveConsole = useCallback/)
+  assert.match(app, /const handleOpenSavedConsole = useCallback/)
+  assert.match(app, /<SavedConsolesMenu/)
+  assert.match(app, /canSave=\{activeTab\?\.type === 'console'\}/)
+  // Re-saving binds the tab to the saved console id (upsert in place).
+  assert.match(app, /id: tab\.savedConsoleId \?\? ''/)
+
+  // The menu offers save + per-row delete.
+  assert.match(menu, /Save current console…/)
+  assert.match(menu, /onDelete\?\.\(c\)/)
+}
+
+function testSavedConsolesUseNativeMenuOnMac() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
+
+  // On macOS the in-app dropdown is suppressed (native menu hosts it).
+  assert.match(app, /\{!nativeMenu && \(\s*<div className="h-full"[\s\S]*?<SavedConsolesMenu/m)
+  // Native menu events are wired through a ref to dodge stale [] -dep closures.
+  assert.match(app, /consoleSave:\s*\(\) => consoleMenuActionsRef\.current\.save\(\)/)
+  assert.match(app, /consoleOpen:\s*\(id\) => consoleMenuActionsRef\.current\.openById\(id\)/)
+  assert.match(app, /const openSavedConsoleById = useCallback/)
+  // Bridge subscribes to the new native menu events.
+  assert.match(bridge, /EventsOn\('menu:console-save',\s*handlers\.consoleSave\)/)
+  assert.match(bridge, /EventsOn\('menu:console-open',\s*\(id\) => handlers\.consoleOpen\(id\)\)/)
+}
+
+function testSavedConsoleOpenDedupsAndTabRename() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+
+  // Dedup reads an always-fresh tabsRef (not a stale closure) so repeated opens
+  // focus the single existing tab instead of spawning duplicates.
+  assert.match(app, /const tabsRef = useRef\(tabs\)/)
+  assert.match(app, /tabsRef\.current = tabs/)
+  assert.match(app, /findOpenConsoleForSaved\(tabsRef\.current, saved\.id\)/)
+
+  // The async menu subscription must not leak a listener (the duplicate-tab
+  // root cause): unsubscribe even if torn down before the promise resolves.
+  assert.match(app, /let cancelled = false/)
+  assert.match(app, /if \(cancelled\) \{ try \{ unsub\?\.\(\) \}/)
+
+  // Right-click rename on a console tab opens the name dialog for that tab.
+  assert.match(app, /const handleRenameConsole = useCallback/)
+  assert.match(app, /onRenameConsole=\{handleRenameConsole\}/)
+  assert.match(app, /onRenameConsole\?\.\(contextMenu\.tabId\)/)
+  assert.match(app, />\s*Rename…\s*</)
+}
+
+testReadConsoleEditorContentReadsActiveSubTab()
+testFindOpenConsoleForSaved()
+testWorkspacePersistsSavedConsoleBinding()
+testSavedConsolesFeatureWiredIntoApp()
+testSavedConsolesUseNativeMenuOnMac()
+testSavedConsoleOpenDedupsAndTabRename()
+
+function testFontSettingsRoundTripAndClamp() {
+  const storage = new MemoryStorage()
+  // Defaults when unset.
+  assert.equal(loadEditorFontSize(storage), DEFAULT_EDITOR_FONT_SIZE)
+  assert.equal(loadUiFontSize(storage), DEFAULT_UI_FONT_SIZE)
+  assert.equal(loadEditorFontFamily(storage), '')
+  assert.equal(loadUiFontFamily(storage), '')
+
+  // Sizes clamp to their ranges and persist.
+  assert.equal(saveEditorFontSize(18, storage), 18)
+  assert.equal(loadEditorFontSize(storage), 18)
+  assert.equal(saveEditorFontSize(999, storage), MAX_EDITOR_FONT_SIZE)
+  assert.equal(saveUiFontSize(1, storage), MIN_UI_FONT_SIZE)
+
+  // Families persist as-is.
+  assert.equal(saveEditorFontFamily('Menlo, monospace', storage), 'Menlo, monospace')
+  assert.equal(loadEditorFontFamily(storage), 'Menlo, monospace')
+  assert.equal(saveUiFontFamily('"Inter", sans-serif', storage), '"Inter", sans-serif')
+  assert.equal(loadUiFontFamily(storage), '"Inter", sans-serif')
+
+  // Empty family resolves to the default stack; a set family wins.
+  assert.equal(resolveEditorFontStack(''), DEFAULT_EDITOR_FONT_STACK)
+  assert.equal(resolveUiFontStack(''), DEFAULT_UI_FONT_STACK)
+  assert.equal(resolveEditorFontStack('Menlo, monospace'), 'Menlo, monospace')
+
+  // Interface size maps to a zoom factor relative to the 13px baseline,
+  // clamped to the supported range.
+  assert.equal(uiZoomForSize(13), 1)
+  assert.ok(uiZoomForSize(20) > 1)
+  assert.ok(uiZoomForSize(10) < 1)
+  assert.equal(uiZoomForSize(999), 22 / 13) // clamps to MAX_UI_FONT_SIZE
+}
+
+function testFontSettingsWiredIntoUi() {
+  const provider = readFileSync(new URL('../src/settings/FontSettingsProvider.jsx', import.meta.url), 'utf8')
+  const editor = readFileSync(new URL('../src/components/SqlEditor.jsx', import.meta.url), 'utf8')
+  const modal = readFileSync(new URL('../src/components/SettingsModal.jsx', import.meta.url), 'utf8')
+  const main = readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
+
+  // Provider applies the UI font + zoom and exposes the editor counter-zoom var.
+  assert.match(provider, /root\.style\.setProperty\('--app-font-family'/)
+  assert.match(provider, /root\.style\.zoom = String\(zoom\)/)
+  assert.match(provider, /setProperty\('--editor-unzoom', String\(1 \/ zoom\)\)/)
+
+  // Monaco consumes the editor font live and counter-zooms so it stays independent.
+  assert.match(editor, /const \{ editorFontFamily, editorFontSize \} = useFontSettings\(\)/)
+  assert.match(editor, /fontSize: editorFontSize/)
+  assert.match(editor, /fontFamily: resolveEditorFontStack\(editorFontFamily\)/)
+  assert.match(editor, /zoom: 'var\(--editor-unzoom, 1\)'/)
+
+  // Settings modal hosts both font rows and uses the context setters.
+  assert.match(modal, /const \{[\s\S]*?setEditorFontFamily[\s\S]*?\} = useFontSettings\(\)/)
+  assert.match(modal, /label="Console"/)
+  assert.match(modal, /label="Interface"/)
+
+  // App is wrapped in the provider; #root reads the font-family var.
+  assert.match(main, /<FontSettingsProvider>/)
+  assert.match(css, /font-family: var\(--app-font-family/)
+}
+
+testFontSettingsRoundTripAndClamp()
+testFontSettingsWiredIntoUi()
 
 console.log('unit tests passed')

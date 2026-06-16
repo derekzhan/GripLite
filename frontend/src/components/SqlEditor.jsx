@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import Editor from '@monaco-editor/react'
 import { format as formatSql } from 'sql-formatter'
 import { searchCompletions, getTableSchema, runQuery, fetchDatabases, cancelQuery, getQueryHistory, clearQueryHistory } from '../lib/bridge'
@@ -11,6 +12,8 @@ import {
   MONGO_QUERY_OPERATORS,
 } from '../lib/mongoQuery'
 import { useTheme } from '../theme/ThemeProvider'
+import { useFontSettings } from '../settings/FontSettingsProvider'
+import { resolveEditorFontStack } from '../lib/settings'
 import RedisConsole from './RedisConsole'
 
 const INITIAL_SQL = `-- GripLite SQL Console
@@ -385,16 +388,6 @@ function extractReferencedTables(sql) {
   return extractTableRefs(sql).map((r) => r.table)
 }
 
-// ── Saved SQL Snippets ───────────────────────────────────────────────────────
-const SNIPPETS_KEY = 'griplite_snippets_v1'
-
-function loadSnippets() {
-  try { return JSON.parse(localStorage.getItem(SNIPPETS_KEY) || '[]') } catch { return [] }
-}
-function saveSnippetsToStorage(snips) {
-  try { localStorage.setItem(SNIPPETS_KEY, JSON.stringify(snips)) } catch {}
-}
-
 /**
  * @param {object} props
  * @param {string} [props.initialSql]
@@ -413,8 +406,11 @@ export default function SqlEditor({
   connectionLabel = '',
   storageKey = '',
   connectionKind = 'mysql',
+  connections = [],
+  onConnectionChange,
 }) {
   const { resolvedTheme } = useTheme()
+  const { editorFontFamily, editorFontSize } = useFontSettings()
   const isMongo = connectionKind === 'mongodb'
   const isRedis = connectionKind === 'redis'
   const initialStateRef = useRef(null)
@@ -433,9 +429,6 @@ export default function SqlEditor({
   const [sqlValid, setSqlValid] = useState(null) // null=unknown, true=ok, false=error
   const [runMenuOpen, setRunMenuOpen] = useState(false)  // split-button dropdown
   const runMenuRef = useRef(null)
-  const [snippets, setSnippets] = useState(() => loadSnippets())
-  const [showSnippets,  setShowSnippets]  = useState(false)
-  const snippetsRef = useRef(null)
   const [showHistory,   setShowHistory]   = useState(false)
   const [historyItems,  setHistoryItems]  = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -449,7 +442,10 @@ export default function SqlEditor({
   const [selectedDb,    setSelectedDb]    = useState(() => initialStateRef.current.selectedDb)
   const [dbDropdownOpen, setDbDropdownOpen] = useState(false)
   const dbDropdownRef  = useRef(null)
-  const lastConnectionIdRef = useRef(connectionId)
+  const [connDropdownOpen, setConnDropdownOpen] = useState(false)
+  const connDropdownRef = useRef(null)
+  const connBtnRef = useRef(null)
+  const [connMenuPos, setConnMenuPos] = useState(null)
   // Stable ref so the Monaco completion provider (created once) always reads
   // the latest selected database without being recreated on every change.
   const selectedDbRef  = useRef(defaultDb)
@@ -461,20 +457,34 @@ export default function SqlEditor({
     saveEditorState(storageKey, { tabs, activeTab, selectedDb })
   }, [storageKey, tabs, activeTab, selectedDb])
 
-  // Fetch databases whenever the active connection changes.
+  // Fetch databases whenever the active connection changes, then reconcile the
+  // selected database against the new server's list. We deliberately try to
+  // KEEP the currently-selected db name when switching connections so the same
+  // query can be re-run against another environment (e.g. QA → prod) that
+  // happens to host an identically-named database. Falling back order:
+  //   1. current selection (if the new server has it)
+  //   2. the connection's configured default db
+  //   3. the first database returned
   useEffect(() => {
-    if (lastConnectionIdRef.current !== connectionId) {
-      lastConnectionIdRef.current = connectionId
-      setSelectedDb(defaultDb)
-    } else {
-      setSelectedDb((prev) => prev || defaultDb)
-    }
     if (!connectionId) return
     let cancelled = false
     setDbsLoading(true)
     fetchDatabases(connectionId)
-      .then((dbs) => { if (!cancelled) setDatabases(dbs ?? []) })
-      .catch(() => { if (!cancelled) setDatabases([]) })
+      .then((dbs) => {
+        if (cancelled) return
+        const list = dbs ?? []
+        setDatabases(list)
+        setSelectedDb((prev) => {
+          if (prev && list.includes(prev)) return prev
+          if (defaultDb && (list.length === 0 || list.includes(defaultDb))) return defaultDb
+          return list[0] ?? defaultDb ?? ''
+        })
+      })
+      .catch(() => {
+        if (cancelled) return
+        setDatabases([])
+        setSelectedDb((prev) => prev || defaultDb)
+      })
       .finally(() => { if (!cancelled) setDbsLoading(false) })
     return () => { cancelled = true }
   }, [connectionId, defaultDb])
@@ -495,6 +505,35 @@ export default function SqlEditor({
       document.removeEventListener('keydown',   closeEsc)
     }
   }, [dbDropdownOpen])
+
+  // Close connection dropdown on outside click / Escape. The menu is rendered
+  // in a portal (to escape the editor pane's overflow clipping), so we must
+  // exempt both the menu and the trigger button from the outside-click test.
+  useEffect(() => {
+    if (!connDropdownOpen) return
+    const close = (e) => {
+      if (connDropdownRef.current?.contains(e.target)) return
+      if (connBtnRef.current?.contains(e.target)) return
+      setConnDropdownOpen(false)
+    }
+    const closeEsc = (e) => { if (e.key === 'Escape') setConnDropdownOpen(false) }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown',   closeEsc)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown',   closeEsc)
+    }
+  }, [connDropdownOpen])
+
+  const handleConnSelect = useCallback((connId) => {
+    setConnDropdownOpen(false)
+    if (connId && connId !== connectionId) onConnectionChange?.(connId)
+  }, [connectionId, onConnectionChange])
+
+  // Only offer connections of the same kind as this console.
+  const switchableConnections = connections.filter(
+    (c) => (c.kind ?? 'mysql') === connectionKind,
+  )
 
   // Switch active database: update UI state only.
   // The selected db is forwarded with every query via meta.dbName, so the
@@ -1211,48 +1250,18 @@ export default function SqlEditor({
     onRunQuery?.(stmts.map((s) => s.sql), { multi: true, dbName: db })
   }, [isMongo, onRunQuery])
 
-  const handleTxn = useCallback((sql) => {
-    if (!connectionId || isRunning) return
-    onRunQuery?.(sql, { dbName: selectedDbRef.current })
-  }, [connectionId, isRunning, onRunQuery])
-
-  const insertSnippet = useCallback((sql) => {
+  // Insert text at the editor's current selection (used by History recall).
+  const insertIntoEditor = useCallback((sql) => {
     const editor = editorRef.current
     if (!editor) return
     const selection = editor.getSelection()
-    editor.executeEdits('snippet', [{
+    editor.executeEdits('insert', [{
       range: selection,
       text: sql,
       forceMoveMarkers: true,
     }])
     editor.focus()
-    setShowSnippets(false)
   }, [])
-
-  const saveSnippet = useCallback(() => {
-    const editor = editorRef.current
-    if (!editor) return
-    const sql = editor.getValue()
-    if (!sql.trim()) return
-    const name = window.prompt('Snippet name:')
-    if (!name) return
-    const newSnip = { id: Date.now().toString(), name, sql, createdAt: new Date().toISOString() }
-    const updated = [newSnip, ...snippets]
-    setSnippets(updated)
-    saveSnippetsToStorage(updated)
-  }, [snippets])
-
-  // Close snippets dropdown on outside click.
-  useEffect(() => {
-    if (!showSnippets) return
-    const handle = (e) => {
-      if (snippetsRef.current && !snippetsRef.current.contains(e.target)) {
-        setShowSnippets(false)
-      }
-    }
-    document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
-  }, [showSnippets])
 
   // ── Query History ────────────────────────────────────────────────────────
   const openHistory = useCallback(async () => {
@@ -1401,86 +1410,76 @@ export default function SqlEditor({
         </div>
         <div className="h-4 w-px bg-line" />
 
-        {/* Transaction buttons */}
-        {connectionId && (
-          <div className="flex items-stretch rounded border border-line overflow-hidden text-[11px] ml-1">
-            {[
-              { label: 'BEGIN',    sql: 'BEGIN',    title: 'Begin transaction' },
-              { label: 'COMMIT',   sql: 'COMMIT',   title: 'Commit transaction' },
-              { label: 'ROLLBACK', sql: 'ROLLBACK', title: 'Rollback transaction' },
-            ].map((btn, i) => (
-              <button
-                key={btn.label}
-                onClick={() => handleTxn(btn.sql)}
-                disabled={isRunning}
-                title={btn.title}
-                className={[
-                  'px-2 py-1 transition-colors select-none',
-                  i > 0 ? 'border-l border-line' : '',
-                  'text-fg-secondary hover:text-fg-primary hover:bg-hover disabled:opacity-40',
-                ].join(' ')}
+        {/* Connection selector — click to switch the console's connection.
+            Only connections of the same kind as this console are offered
+            (switching a MySQL console to a Mongo/Redis one makes no sense). */}
+        {(connectionLabel || switchableConnections.length > 0) && (
+          <div className="relative">
+            <button
+              ref={connBtnRef}
+              onClick={() => {
+                if (switchableConnections.length === 0) return
+                setConnDropdownOpen((o) => {
+                  const next = !o
+                  if (next && connBtnRef.current) {
+                    const r = connBtnRef.current.getBoundingClientRect()
+                    setConnMenuPos({ top: r.bottom + 4, left: r.left })
+                  }
+                  return next
+                })
+              }}
+              title={switchableConnections.length > 0 ? 'Switch connection' : connectionLabel}
+              disabled={switchableConnections.length === 0}
+              className={[
+                'flex items-center gap-1 px-2 py-0.5 rounded border transition-colors text-[11px]',
+                'bg-sunken hover:bg-hover border-line text-fg-secondary',
+                switchableConnections.length === 0 ? 'cursor-default opacity-80' : '',
+                connDropdownOpen ? 'border-accent' : '',
+              ].join(' ')}
+              style={{ maxWidth: 200 }}
+            >
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" className="flex-shrink-0 opacity-60">
+                <path d="M6 1.2 1.2 3.4 6 5.6l4.8-2.2L6 1.2Z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round"/>
+                <path d="M1.2 6 6 8.2 10.8 6M1.2 8.6 6 10.8l4.8-2.2" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round"/>
+              </svg>
+              <span className="truncate" style={{ maxWidth: 140 }}>
+                {connectionLabel || 'No connection'}
+              </span>
+              {switchableConnections.length > 0 && (
+                <span className="text-fg-muted flex-shrink-0 text-[9px]">▾</span>
+              )}
+            </button>
+
+            {connDropdownOpen && connMenuPos && createPortal(
+              <div
+                ref={connDropdownRef}
+                className="bg-panel border border-line rounded shadow-xl py-1
+                           text-[12px] overflow-y-auto"
+                style={{ position: 'fixed', top: connMenuPos.top, left: connMenuPos.left, minWidth: 200, maxHeight: 280, zIndex: 1000 }}
               >
-                {btn.label}
-              </button>
-            ))}
+                {switchableConnections.map((c) => {
+                  const label = c.name || `${c.host}:${c.port}`
+                  const active = c.id === connectionId
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => handleConnSelect(c.id)}
+                      className={[
+                        'w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors',
+                        active ? 'text-white bg-selected' : 'text-fg-secondary hover:bg-hover',
+                      ].join(' ')}
+                    >
+                      {active
+                        ? <span className="text-[8px] flex-shrink-0">●</span>
+                        : <span className="w-2 flex-shrink-0" />}
+                      <span className="truncate">{label}</span>
+                    </button>
+                  )
+                })}
+              </div>,
+              document.body,
+            )}
           </div>
-        )}
-
-        {/* Snippets button + dropdown */}
-        <div ref={snippetsRef} className="relative ml-1">
-          <button
-            onClick={() => setShowSnippets(p => !p)}
-            title="SQL Snippets"
-            className={[
-              'text-[11px] px-2 py-1 rounded border transition-colors select-none',
-              showSnippets
-                ? 'border-accent text-accent'
-                : 'border-line text-fg-secondary hover:border-accent hover:text-fg-primary',
-            ].join(' ')}
-          >
-            Snippets{snippets.length > 0 ? ` (${snippets.length})` : ''}
-          </button>
-          {showSnippets && (
-            <div className="absolute top-full left-0 mt-1 z-50 bg-panel border border-line rounded
-                            min-w-[300px] max-h-[400px] overflow-y-auto py-1">
-              <div className="flex items-center justify-between px-3 py-1.5 border-b border-line-subtle">
-                <span className="text-[10px] uppercase tracking-wider text-fg-muted">SQL Snippets</span>
-                <button onClick={saveSnippet} className="text-[10px] text-accent hover:underline select-none">
-                  + Save current
-                </button>
-              </div>
-              {snippets.length === 0 ? (
-                <div className="px-3 py-4 text-[12px] text-fg-muted text-center">No snippets yet</div>
-              ) : snippets.map(snip => (
-                <div key={snip.id} className="group flex items-start gap-2 px-3 py-2 hover:bg-hover border-b border-line-subtle">
-                  <button
-                    onClick={() => insertSnippet(snip.sql)}
-                    className="flex-1 text-left min-w-0"
-                    title={snip.sql}
-                  >
-                    <div className="text-[12px] text-fg-primary font-medium truncate">{snip.name}</div>
-                    <div className="text-[10px] text-fg-muted font-mono truncate">{snip.sql.slice(0, 60)}{snip.sql.length > 60 ? '…' : ''}</div>
-                  </button>
-                  <button
-                    onClick={() => {
-                      const updated = snippets.filter(s => s.id !== snip.id)
-                      setSnippets(updated)
-                      saveSnippetsToStorage(updated)
-                    }}
-                    className="opacity-0 group-hover:opacity-100 text-fg-muted hover:text-danger text-[10px] select-none mt-0.5"
-                    title="Delete snippet"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Connection label */}
-        {connectionLabel && (
-          <span className="text-[11px] text-fg-muted select-none">{connectionLabel}</span>
         )}
 
         {/* Database selector ─────────────────────────────────────────────
@@ -1532,7 +1531,7 @@ export default function SqlEditor({
                     className={[
                       'w-full text-left px-3 py-1.5 flex items-center gap-2 transition-colors',
                       db === selectedDb
-                        ? 'text-accent bg-selected'
+                        ? 'text-white bg-selected'
                         : 'text-fg-secondary hover:bg-hover',
                     ].join(' ')}
                   >
@@ -1607,7 +1606,7 @@ export default function SqlEditor({
                     key={item.id}
                     className="group flex items-start gap-2 px-3 py-2 hover:bg-hover border-b border-line-subtle cursor-pointer"
                     onClick={() => {
-                      insertSnippet(item.sql)
+                      insertIntoEditor(item.sql)
                       setShowHistory(false)
                     }}
                     title="Click to insert into editor"
@@ -1633,8 +1632,10 @@ export default function SqlEditor({
         </div>
       </div>
 
-      {/* Monaco Editor */}
-      <div className="flex-1 overflow-hidden">
+      {/* Monaco Editor.
+          The wrapper counter-zooms (--editor-unzoom = 1 / interface-zoom) so the
+          console font size stays independent of the interface scale. */}
+      <div className="flex-1 overflow-hidden" style={{ zoom: 'var(--editor-unzoom, 1)' }}>
         <Editor
           key={activeTab}
           height="100%"
@@ -1644,9 +1645,9 @@ export default function SqlEditor({
           onMount={handleEditorMount}
           theme={resolvedTheme === 'dark' ? 'vs-dark' : 'vs'}
           options={{
-            fontSize: 14,
-            lineHeight: 22,
-            fontFamily: '"JetBrains Mono", "Fira Code", Consolas, "Courier New", monospace',
+            fontSize: editorFontSize,
+            lineHeight: Math.round(editorFontSize * 1.55),
+            fontFamily: resolveEditorFontStack(editorFontFamily),
             fontLigatures: true,
             minimap: { enabled: true },
             scrollBeyondLastLine: false,

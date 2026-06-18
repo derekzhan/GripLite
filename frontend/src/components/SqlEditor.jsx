@@ -14,6 +14,7 @@ import {
 import { useTheme } from '../theme/ThemeProvider'
 import { useFontSettings } from '../settings/FontSettingsProvider'
 import { resolveEditorFontStack } from '../lib/settings'
+import ZoomGuard from './ZoomGuard'
 import RedisConsole from './RedisConsole'
 
 const INITIAL_SQL = `-- GripLite SQL Console
@@ -1632,37 +1633,39 @@ export default function SqlEditor({
         </div>
       </div>
 
-      {/* Monaco Editor.
-          The wrapper counter-zooms (--editor-unzoom = 1 / interface-zoom) so the
-          console font size stays independent of the interface scale. */}
-      <div className="flex-1 overflow-hidden" style={{ zoom: 'var(--editor-unzoom, 1)' }}>
-        <Editor
-          key={activeTab}
-          height="100%"
-          defaultLanguage={isMongo ? 'javascript' : 'sql'}
-          value={activeContent}
-          onChange={handleEditorChange}
-          onMount={handleEditorMount}
-          theme={resolvedTheme === 'dark' ? 'vs-dark' : 'vs'}
-          options={{
-            fontSize: editorFontSize,
-            lineHeight: Math.round(editorFontSize * 1.55),
-            fontFamily: resolveEditorFontStack(editorFontFamily),
-            fontLigatures: true,
-            minimap: { enabled: true },
-            scrollBeyondLastLine: false,
-            wordWrap: 'off',
-            tabSize: 2,
-            renderLineHighlight: 'line',
-            smoothScrolling: true,
-            cursorBlinking: 'smooth',
-            padding: { top: 12 },
-            // Render suggestion/hover popups in a fixed overflow guard so they
-            // are not clipped by the editor's overflow-hidden container or the
-            // result panel below.
-            fixedOverflowWidgets: true,
-          }}
-        />
+      {/* Monaco Editor — wrapped in ZoomGuard so it renders at true pixels even
+          when the interface is scaled (CSS zoom otherwise double-scales Monaco). */}
+      <div className="flex-1 overflow-hidden">
+        <ZoomGuard>
+          <Editor
+            key={activeTab}
+            height="100%"
+            defaultLanguage={isMongo ? 'javascript' : 'sql'}
+            value={activeContent}
+            onChange={handleEditorChange}
+            onMount={handleEditorMount}
+            theme={resolvedTheme === 'dark' ? 'vs-dark' : 'vs'}
+            options={{
+              fontSize: editorFontSize,
+              lineHeight: Math.round(editorFontSize * 1.55),
+              fontFamily: resolveEditorFontStack(editorFontFamily),
+              fontLigatures: true,
+              automaticLayout: true,
+              minimap: { enabled: true },
+              scrollBeyondLastLine: false,
+              wordWrap: 'off',
+              tabSize: 2,
+              renderLineHighlight: 'line',
+              smoothScrolling: true,
+              cursorBlinking: 'smooth',
+              padding: { top: 12 },
+              // Render suggestion/hover popups in a fixed overflow guard so they
+              // are not clipped by the editor's overflow-hidden container or the
+              // result panel below.
+              fixedOverflowWidgets: true,
+            }}
+          />
+        </ZoomGuard>
       </div>
     </div>
   )

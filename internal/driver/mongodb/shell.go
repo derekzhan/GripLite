@@ -32,22 +32,14 @@ func ParseMongoOperation(dbName, input string) (*mongoOperation, error) {
 	if err := installBSONHelpers(vm); err != nil {
 		return nil, err
 	}
-	db := vm.NewObject()
-	if err := db.Set("getCollection", func(name string) *goja.Object {
-		return collectionObject(vm, dbName, name, capture)
-	}); err != nil {
-		return nil, fmt.Errorf("mongodb: install getCollection: %w", err)
+	if err := installShardingHelpers(vm, capture); err != nil {
+		return nil, err
 	}
-	if err := db.Set("runCommand", func(call goja.FunctionCall) goja.Value {
-		op := &mongoOperation{Kind: opCommand, Database: dbName, Command: exportDocument(vm, call.Argument(0))}
-		capture(op)
-		return vm.ToValue(op)
-	}); err != nil {
-		return nil, fmt.Errorf("mongodb: install runCommand: %w", err)
+	if err := vm.Set("db", databaseObject(vm, dbName, capture)); err != nil {
+		return nil, fmt.Errorf("mongodb: install db: %w", err)
 	}
-	vm.Set("db", db)
 
-	if _, err := vm.RunString(rewriteDotCollectionAccess(text)); err != nil {
+	if _, err := vm.RunString(text); err != nil {
 		return nil, fmt.Errorf("mongodb: parse shell input: %w", err)
 	}
 	if captured == nil {
@@ -80,15 +72,252 @@ func installBSONHelpers(vm *goja.Runtime) error {
 	return nil
 }
 
-func rewriteDotCollectionAccess(input string) string {
-	re := regexp.MustCompile(`\bdb\.([A-Za-z_][A-Za-z0-9_]*)\b`)
-	return re.ReplaceAllStringFunc(input, func(match string) string {
-		name := strings.TrimPrefix(match, "db.")
-		if name == "getCollection" || name == "runCommand" {
-			return match
+// installShardingHelpers exposes the `sh` global from the mongo shell. Each
+// helper lowers to a single admin-database runCommand, matching what the real
+// shell does (e.g. sh.shardCollection(ns, key) → admin { shardCollection, key }).
+func installShardingHelpers(vm *goja.Runtime, capture func(*mongoOperation) *mongoOperation) error {
+	sh := vm.NewObject()
+
+	adminCommand := func(cmd bson.D) goja.Value {
+		op := &mongoOperation{Kind: opCommand, Database: "admin", Command: cmd}
+		capture(op)
+		return commandResultValue(vm, op)
+	}
+	// argString returns the i-th argument as a string when present, else "".
+	argString := func(call goja.FunctionCall, i int) string {
+		v := call.Argument(i)
+		if goja.IsUndefined(v) || goja.IsNull(v) {
+			return ""
 		}
-		return `db.getCollection("` + name + `")`
+		return v.String()
+	}
+
+	methods := map[string]func(goja.FunctionCall) goja.Value{
+		// sh.shardCollection(namespace, key, unique?, options?)
+		"shardCollection": func(call goja.FunctionCall) goja.Value {
+			cmd := bson.D{{Key: "shardCollection", Value: argString(call, 0)}}
+			if key := call.Argument(1); !goja.IsUndefined(key) && !goja.IsNull(key) {
+				cmd = append(cmd, bson.E{Key: "key", Value: exportDocument(vm, key)})
+			}
+			if unique := call.Argument(2); !goja.IsUndefined(unique) && !goja.IsNull(unique) {
+				cmd = append(cmd, bson.E{Key: "unique", Value: unique.ToBoolean()})
+			}
+			if opts := call.Argument(3); !goja.IsUndefined(opts) && !goja.IsNull(opts) {
+				cmd = append(cmd, exportDocument(vm, opts)...)
+			}
+			return adminCommand(cmd)
+		},
+		// sh.enableSharding(database, primaryShard?)
+		"enableSharding": func(call goja.FunctionCall) goja.Value {
+			cmd := bson.D{{Key: "enableSharding", Value: argString(call, 0)}}
+			if primary := argString(call, 1); primary != "" {
+				cmd = append(cmd, bson.E{Key: "primaryShard", Value: primary})
+			}
+			return adminCommand(cmd)
+		},
+		// sh.addShard(uri, name?)
+		"addShard": func(call goja.FunctionCall) goja.Value {
+			cmd := bson.D{{Key: "addShard", Value: argString(call, 0)}}
+			if name := argString(call, 1); name != "" {
+				cmd = append(cmd, bson.E{Key: "name", Value: name})
+			}
+			return adminCommand(cmd)
+		},
+		// sh.removeShard(name)
+		"removeShard": func(call goja.FunctionCall) goja.Value {
+			return adminCommand(bson.D{{Key: "removeShard", Value: argString(call, 0)}})
+		},
+		// sh.moveChunk(namespace, query, destination)
+		"moveChunk": func(call goja.FunctionCall) goja.Value {
+			cmd := bson.D{{Key: "moveChunk", Value: argString(call, 0)}}
+			if q := call.Argument(1); !goja.IsUndefined(q) && !goja.IsNull(q) {
+				cmd = append(cmd, bson.E{Key: "find", Value: exportDocument(vm, q)})
+			}
+			cmd = append(cmd, bson.E{Key: "to", Value: argString(call, 2)})
+			return adminCommand(cmd)
+		},
+		// sh.splitAt(namespace, middle)
+		"splitAt": func(call goja.FunctionCall) goja.Value {
+			cmd := bson.D{{Key: "split", Value: argString(call, 0)}}
+			if mid := call.Argument(1); !goja.IsUndefined(mid) && !goja.IsNull(mid) {
+				cmd = append(cmd, bson.E{Key: "middle", Value: exportDocument(vm, mid)})
+			}
+			return adminCommand(cmd)
+		},
+		// sh.splitFind(namespace, query)
+		"splitFind": func(call goja.FunctionCall) goja.Value {
+			cmd := bson.D{{Key: "split", Value: argString(call, 0)}}
+			if q := call.Argument(1); !goja.IsUndefined(q) && !goja.IsNull(q) {
+				cmd = append(cmd, bson.E{Key: "find", Value: exportDocument(vm, q)})
+			}
+			return adminCommand(cmd)
+		},
+		// sh.startBalancer() / sh.stopBalancer() / sh.getBalancerState()
+		"startBalancer": func(goja.FunctionCall) goja.Value {
+			return adminCommand(bson.D{{Key: "balancerStart", Value: 1}})
+		},
+		"stopBalancer": func(goja.FunctionCall) goja.Value {
+			return adminCommand(bson.D{{Key: "balancerStop", Value: 1}})
+		},
+		"getBalancerState": func(goja.FunctionCall) goja.Value {
+			return adminCommand(bson.D{{Key: "balancerStatus", Value: 1}})
+		},
+		"isBalancerRunning": func(goja.FunctionCall) goja.Value {
+			return adminCommand(bson.D{{Key: "balancerStatus", Value: 1}})
+		},
+		// sh.status() — surface the cluster's sharding status document.
+		"status": func(goja.FunctionCall) goja.Value {
+			return adminCommand(bson.D{{Key: "listShards", Value: 1}})
+		},
+	}
+
+	for name, fn := range methods {
+		if err := sh.Set(name, fn); err != nil {
+			return fmt.Errorf("mongodb: install sh.%s: %w", name, err)
+		}
+	}
+	if err := vm.Set("sh", sh); err != nil {
+		return fmt.Errorf("mongodb: install sh helper: %w", err)
+	}
+	return nil
+}
+
+// identifierRe matches a bare JS identifier — used to decide whether an unknown
+// property on `db` should resolve to a collection (db.my_collection) or be
+// ignored (engine internals like Symbol-ish or non-identifier keys).
+var identifierRe = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+
+// commandResultValue wraps a captured command operation so that trailing field
+// access in the shell (e.g. db.coll.stats().sharded) is recorded as a
+// projection path on the operation instead of being silently dropped. Each
+// property read appends to op.ResultPath and returns a fresh accessor so deeper
+// chains keep working (e.g. db.coll.stats().shards.shard0001).
+func commandResultValue(vm *goja.Runtime, op *mongoOperation) goja.Value {
+	return vm.NewDynamicObject(&resultAccessor{vm: vm, op: op})
+}
+
+type resultAccessor struct {
+	vm *goja.Runtime
+	op *mongoOperation
+}
+
+func (r *resultAccessor) Get(key string) goja.Value {
+	if !identifierRe.MatchString(key) {
+		return goja.Undefined()
+	}
+	r.op.ResultPath = append(r.op.ResultPath, key)
+	return r.vm.NewDynamicObject(&resultAccessor{vm: r.vm, op: r.op})
+}
+
+func (r *resultAccessor) Set(string, goja.Value) bool { return false }
+func (r *resultAccessor) Delete(string) bool          { return false }
+func (r *resultAccessor) Keys() []string              { return nil }
+func (r *resultAccessor) Has(key string) bool         { return identifierRe.MatchString(key) }
+
+// databaseObject models the mongo shell's `db` handle as a dynamic object so
+// that property-style collection access (db.my_collection), getSiblingDB("x"),
+// runCommand, adminCommand and db.stats() all work — including chains such as
+// db.getSiblingDB("prm").prm_tracking_path.stats().
+func databaseObject(vm *goja.Runtime, dbName string, capture func(*mongoOperation) *mongoOperation) *goja.Object {
+	return vm.NewDynamicObject(&shellDB{vm: vm, dbName: dbName, capture: capture, members: map[string]goja.Value{}})
+}
+
+type shellDB struct {
+	vm      *goja.Runtime
+	dbName  string
+	capture func(*mongoOperation) *mongoOperation
+	members map[string]goja.Value // cache so member identity is stable
+}
+
+// dbMembers are the explicit (non-collection) members of a `db` handle.
+var dbMembers = map[string]bool{
+	"getCollection": true, "getSiblingDB": true, "getSisterDB": true,
+	"runCommand": true, "adminCommand": true, "getName": true, "stats": true,
+	"getCollectionNames": true, "getCollectionInfos": true, "createCollection": true,
+	"dropDatabase": true, "version": true, "serverStatus": true, "hostInfo": true,
+	"currentOp": true,
+}
+
+// command returns a JS function that, when called, captures a runCommand
+// operation against `database` and returns it (so db.stats(), db.version() etc.
+// all share one code path).
+func (d *shellDB) command(cmd bson.D, database string) goja.Value {
+	return d.vm.ToValue(func(goja.FunctionCall) goja.Value {
+		op := &mongoOperation{Kind: opCommand, Database: database, Command: cmd}
+		d.capture(op)
+		return commandResultValue(d.vm, op)
 	})
+}
+
+func (d *shellDB) Get(key string) goja.Value {
+	if v, ok := d.members[key]; ok {
+		return v
+	}
+	var v goja.Value
+	switch key {
+	case "getCollection":
+		v = d.vm.ToValue(func(name string) goja.Value {
+			return collectionObject(d.vm, d.dbName, name, d.capture)
+		})
+	case "getSiblingDB", "getSisterDB":
+		v = d.vm.ToValue(func(name string) goja.Value {
+			return databaseObject(d.vm, name, d.capture)
+		})
+	case "runCommand", "adminCommand":
+		cmdDB := d.dbName
+		if key == "adminCommand" {
+			cmdDB = "admin"
+		}
+		v = d.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			op := &mongoOperation{Kind: opCommand, Database: cmdDB, Command: exportDocument(d.vm, call.Argument(0))}
+			d.capture(op)
+			return commandResultValue(d.vm, op)
+		})
+	case "getName":
+		name := d.dbName
+		v = d.vm.ToValue(func() string { return name })
+	case "stats":
+		v = d.command(bson.D{{Key: "dbStats", Value: 1}}, d.dbName)
+	case "getCollectionNames":
+		v = d.command(bson.D{{Key: "listCollections", Value: 1}, {Key: "nameOnly", Value: true}}, d.dbName)
+	case "getCollectionInfos":
+		v = d.command(bson.D{{Key: "listCollections", Value: 1}}, d.dbName)
+	case "createCollection":
+		v = d.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			cmd := bson.D{{Key: "create", Value: call.Argument(0).String()}}
+			if opts := call.Argument(1); !goja.IsUndefined(opts) && !goja.IsNull(opts) {
+				cmd = append(cmd, exportDocument(d.vm, opts)...)
+			}
+			op := &mongoOperation{Kind: opCommand, Database: d.dbName, Command: cmd}
+			d.capture(op)
+			return commandResultValue(d.vm, op)
+		})
+	case "dropDatabase":
+		v = d.command(bson.D{{Key: "dropDatabase", Value: 1}}, d.dbName)
+	case "version":
+		v = d.command(bson.D{{Key: "buildInfo", Value: 1}}, d.dbName)
+	case "serverStatus":
+		v = d.command(bson.D{{Key: "serverStatus", Value: 1}}, d.dbName)
+	case "hostInfo":
+		v = d.command(bson.D{{Key: "hostInfo", Value: 1}}, d.dbName)
+	case "currentOp":
+		v = d.command(bson.D{{Key: "currentOp", Value: 1}}, "admin")
+	default:
+		if !identifierRe.MatchString(key) {
+			return goja.Undefined()
+		}
+		v = collectionObject(d.vm, d.dbName, key, d.capture)
+	}
+	d.members[key] = v
+	return v
+}
+
+func (d *shellDB) Set(string, goja.Value) bool { return false }
+func (d *shellDB) Delete(string) bool          { return false }
+func (d *shellDB) Keys() []string              { return nil }
+
+func (d *shellDB) Has(key string) bool {
+	return dbMembers[key] || identifierRe.MatchString(key)
 }
 
 func collectionObject(vm *goja.Runtime, dbName, coll string, capture func(*mongoOperation) *mongoOperation) *goja.Object {
@@ -107,6 +336,24 @@ func collectionObject(vm *goja.Runtime, dbName, coll string, capture func(*mongo
 	})
 	_ = obj.Set("distinct", func(field string, filter map[string]any) *mongoOperation {
 		return capture(&mongoOperation{Kind: opDistinct, Database: dbName, Collection: coll, DistinctField: field, Filter: filter})
+	})
+	_ = obj.Set("findOne", func(call goja.FunctionCall) goja.Value {
+		op := &mongoOperation{
+			Kind:       opFind,
+			Database:   dbName,
+			Collection: coll,
+			Filter:     normalizeMap(argMap(vm, call.Argument(0))),
+			Limit:      1,
+		}
+		if proj := argMap(vm, call.Argument(1)); proj != nil {
+			op.Projection = normalizeMap(proj)
+		}
+		capture(op)
+		return commandResultValue(vm, op)
+	})
+	// count() is deprecated in favour of countDocuments() but still widely used.
+	_ = obj.Set("count", func(call goja.FunctionCall) *mongoOperation {
+		return capture(&mongoOperation{Kind: opCountDocuments, Database: dbName, Collection: coll, Filter: normalizeMap(argMap(vm, call.Argument(0)))})
 	})
 	_ = obj.Set("insertOne", func(doc map[string]any) *mongoOperation {
 		return capture(&mongoOperation{Kind: opInsertOne, Database: dbName, Collection: coll, Documents: []any{doc}})
@@ -151,7 +398,7 @@ func collectionObject(vm *goja.Runtime, dbName, coll string, capture func(*mongo
 			}
 		}
 		capture(op)
-		return vm.ToValue(op)
+		return commandResultValue(vm, op)
 	})
 	_ = obj.Set("getIndexes", func() *mongoOperation {
 		return capture(&mongoOperation{Kind: opListIndexes, Database: dbName, Collection: coll})
@@ -165,6 +412,41 @@ func collectionObject(vm *goja.Runtime, dbName, coll string, capture func(*mongo
 	_ = obj.Set("drop", func() *mongoOperation {
 		return capture(&mongoOperation{Kind: opDrop, Database: dbName, Collection: coll})
 	})
+	// dropIndexes() drops every (non-_id) index via the canonical command.
+	_ = obj.Set("dropIndexes", func(goja.FunctionCall) goja.Value {
+		op := &mongoOperation{Kind: opCommand, Database: dbName, Command: bson.D{{Key: "dropIndexes", Value: coll}, {Key: "index", Value: "*"}}}
+		capture(op)
+		return commandResultValue(vm, op)
+	})
+	// renameCollection(target, dropTarget?) → admin renameCollection command.
+	_ = obj.Set("renameCollection", func(call goja.FunctionCall) goja.Value {
+		target := call.Argument(0).String()
+		// A bare name keeps the same database; a "db.coll" name is used verbatim.
+		if !strings.Contains(target, ".") {
+			target = dbName + "." + target
+		}
+		cmd := bson.D{
+			{Key: "renameCollection", Value: dbName + "." + coll},
+			{Key: "to", Value: target},
+		}
+		if drop := call.Argument(1); !goja.IsUndefined(drop) && !goja.IsNull(drop) {
+			cmd = append(cmd, bson.E{Key: "dropTarget", Value: drop.ToBoolean()})
+		}
+		op := &mongoOperation{Kind: opCommand, Database: "admin", Command: cmd}
+		capture(op)
+		return commandResultValue(vm, op)
+	})
+	// collection.stats() → collStats command (includes sharding info such as the
+	// `sharded` flag and per-shard breakdown). Trailing field access in the shell
+	// (e.g. .stats().sharded) is captured as a projection path so only that
+	// nested value is surfaced instead of the full stats document.
+	stats := func(goja.FunctionCall) goja.Value {
+		op := &mongoOperation{Kind: opCommand, Database: dbName, Command: bson.D{{Key: "collStats", Value: coll}}}
+		capture(op)
+		return commandResultValue(vm, op)
+	}
+	_ = obj.Set("stats", stats)
+	_ = obj.Set("getShardDistribution", stats)
 	return obj
 }
 
@@ -189,7 +471,38 @@ func cursorObject(vm *goja.Runtime, op *mongoOperation) *goja.Object {
 	_ = cur.Set("toArray", func() *mongoOperation {
 		return op
 	})
+	// count()/size()/itcount() turn the cursor into a count of the matched docs.
+	countFn := func() *mongoOperation {
+		op.Kind = opCountDocuments
+		return op
+	}
+	_ = cur.Set("count", countFn)
+	_ = cur.Set("size", countFn)
+	_ = cur.Set("itcount", countFn)
+	// Chainable cursor modifiers we don't model — accept and ignore them so a
+	// chain like find().pretty() or find().hint({...}).batchSize(100) still runs
+	// instead of throwing "not a function".
+	passthrough := func(goja.FunctionCall) goja.Value { return cur }
+	for _, name := range []string{
+		"pretty", "hint", "collation", "comment", "batchSize", "maxTimeMS",
+		"allowDiskUse", "readPref", "readConcern", "noCursorTimeout", "min", "max",
+		"returnKey", "showRecordId", "tailable", "addOption", "maxAwaitTimeMS",
+	} {
+		_ = cur.Set(name, passthrough)
+	}
 	return cur
+}
+
+// argMap exports a goja value to a Go map, or nil when absent / not an object.
+// Used by helpers with optional document arguments (findOne, count, …).
+func argMap(vm *goja.Runtime, v goja.Value) map[string]any {
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return nil
+	}
+	if m, ok := v.Export().(map[string]any); ok {
+		return m
+	}
+	return nil
 }
 
 func exportArray(v goja.Value) []any {

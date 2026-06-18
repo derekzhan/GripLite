@@ -432,7 +432,7 @@ func (d *mongoDriver) executeOperation(ctx context.Context, op mongoOperation) (
 		if err := db.RunCommand(ctx, op.Command).Decode(&doc); err != nil {
 			return nil, fmt.Errorf("mongodb: runCommand: %w", err)
 		}
-		return documentsToResultSet([]bson.M{doc}, 0), nil
+		return commandResultSet(doc, op.ResultPath, 0), nil
 	case opInsertOne:
 		res, err := coll.InsertOne(ctx, normalizeBSONValue(op.Documents[0]))
 		if err != nil {

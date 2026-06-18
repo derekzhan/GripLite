@@ -46,6 +46,10 @@ type mongoOperation struct {
 	IndexName        string
 	Skip             int64
 	Limit            int64
+	// ResultPath records trailing field access on a command result in the shell
+	// (e.g. db.coll.stats().sharded → ["sharded"]). When set, only that nested
+	// value is surfaced instead of the full command document.
+	ResultPath []string
 }
 
 func (op mongoOperation) IsWrite() bool {

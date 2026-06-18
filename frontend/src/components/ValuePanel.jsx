@@ -25,6 +25,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
 import { AlignJustify, Copy, Check, CornerDownLeft, X } from 'lucide-react'
 import { useTheme } from '../theme/ThemeProvider'
+import ZoomGuard from './ZoomGuard'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // formatCellData
@@ -385,6 +386,7 @@ export default function ValuePanel({ value, columnName, rowIndex, onClose, editS
             <span className="text-fg-faint text-[11px]">— no value</span>
           </div>
         ) : (
+          <ZoomGuard>
           <Editor
             height="100%"
             language={language}
@@ -425,6 +427,7 @@ export default function ValuePanel({ value, columnName, rowIndex, onClose, editS
               automaticLayout:           true,
             }}
           />
+          </ZoomGuard>
         )}
       </div>
     </div>

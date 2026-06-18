@@ -1639,16 +1639,29 @@ function testFontSettingsWiredIntoUi() {
   const main = readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8')
   const css = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
 
-  // Provider applies the UI font + zoom and exposes the editor counter-zoom var.
+  // Provider applies the UI font + zoom (no counter-zoom var — that clipped the editor).
   assert.match(provider, /root\.style\.setProperty\('--app-font-family'/)
   assert.match(provider, /root\.style\.zoom = String\(zoom\)/)
-  assert.match(provider, /setProperty\('--editor-unzoom', String\(1 \/ zoom\)\)/)
+  assert.doesNotMatch(provider, /--editor-unzoom/)
 
-  // Monaco consumes the editor font live and counter-zooms so it stays independent.
+  // Monaco consumes the editor font live and is wrapped in ZoomGuard so the
+  // interface `zoom` doesn't double-scale it (the white-overflow bug).
   assert.match(editor, /const \{ editorFontFamily, editorFontSize \} = useFontSettings\(\)/)
   assert.match(editor, /fontSize: editorFontSize/)
   assert.match(editor, /fontFamily: resolveEditorFontStack\(editorFontFamily\)/)
-  assert.match(editor, /zoom: 'var\(--editor-unzoom, 1\)'/)
+  assert.match(editor, /<ZoomGuard>[\s\S]*<Editor/)
+
+  // ZoomGuard neutralises the interface zoom (net zoom 1) for its subtree.
+  const guard = readFileSync(new URL('../src/components/ZoomGuard.jsx', import.meta.url), 'utf8')
+  assert.match(guard, /zoom: 1 \/ uiZoom/)
+  assert.match(guard, /calc\(100% \* \$\{uiZoom\}\)/)
+
+  // Every Monaco editor in the app is guarded, not just the console.
+  for (const f of ['ValuePanel.jsx', 'TableViewer.jsx', 'ReviewSqlModal.jsx']) {
+    const src = readFileSync(new URL(`../src/components/${f}`, import.meta.url), 'utf8')
+    assert.match(src, /import ZoomGuard from '\.\/ZoomGuard'/, `${f} imports ZoomGuard`)
+    assert.match(src, /<ZoomGuard>[\s\S]*<Editor/, `${f} wraps its Editor`)
+  }
 
   // Settings modal hosts both font rows and uses the context setters.
   assert.match(modal, /const \{[\s\S]*?setEditorFontFamily[\s\S]*?\} = useFontSettings\(\)/)

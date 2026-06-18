@@ -29,6 +29,7 @@ import {
 } from 'lucide-react'
 import PagedResultViewer from './PagedResultViewer'
 import ReviewSqlModal from './ReviewSqlModal'
+import ZoomGuard from './ZoomGuard'
 import { useTheme } from '../theme/ThemeProvider'
 import {
   runQuery, getTableSchema, getTableAdvancedProperties,
@@ -1767,6 +1768,7 @@ function DDLView({ ddl, loading, error, onRetry }) {
         </button>
       </div>
       <div className="flex-1 min-h-0">
+        <ZoomGuard>
         <Editor
           value={ddl}
           language="sql"
@@ -1785,6 +1787,7 @@ function DDLView({ ddl, loading, error, onRetry }) {
             automaticLayout: true,
           }}
         />
+        </ZoomGuard>
       </div>
     </div>
   )

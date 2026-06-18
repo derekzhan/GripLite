@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Editor from '@monaco-editor/react'
 import { X, AlertTriangle, Play, Copy, CheckCircle2 } from 'lucide-react'
 import { normalizeError } from '../lib/errors'
+import ZoomGuard from './ZoomGuard'
 import { useTheme } from '../theme/ThemeProvider'
 
 export default function ReviewSqlModal({
@@ -115,6 +116,7 @@ export default function ReviewSqlModal({
             vertical space inside the outer flex column.  Monaco's
             `automaticLayout` then picks up real pixel dimensions. */}
         <div className="flex-1 min-h-0 relative">
+          <ZoomGuard>
           <Editor
             height="100%"
             value={sqlText}
@@ -135,6 +137,7 @@ export default function ReviewSqlModal({
               padding: { top: 8, bottom: 8 },
             }}
           />
+          </ZoomGuard>
         </div>
 
         {/* Execute result strip */}

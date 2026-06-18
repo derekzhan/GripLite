@@ -10,9 +10,10 @@
  *   } = useFontSettings()
  *
  * Interface size scales the whole UI via `zoom` on #root (the app uses many
- * fixed-px sizes that a root font-size alone wouldn't affect). The console
- * editor counter-zooms (--editor-unzoom = 1/uiZoom) so its font size stays
- * independent of the interface scale. All four values persist to localStorage.
+ * fixed-px sizes that a root font-size alone wouldn't affect). The SQL console
+ * divides its Monaco font size by `uiZoom` so its text keeps its configured
+ * pixel size without a counter-zoom (which clipped the editor). All four values
+ * persist to localStorage.
  */
 import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useState } from 'react'
 import {
@@ -35,9 +36,9 @@ function applyInterfaceFont(uiFontFamily, uiFontSize) {
   const root = document.getElementById('root') ?? document.documentElement
   root.style.setProperty('--app-font-family', resolveUiFontStack(uiFontFamily))
   // #root style reads --app-font-family (see style.css); zoom scales everything.
+  // The SQL console divides its Monaco font size by this zoom so it keeps its
+  // own configured pixel size without a counter-zoom that would clip the editor.
   root.style.zoom = String(zoom)
-  // Editors counter-zoom so their configured px size is honoured 1:1.
-  document.documentElement.style.setProperty('--editor-unzoom', String(1 / zoom))
 }
 
 export function FontSettingsProvider({ children }) {

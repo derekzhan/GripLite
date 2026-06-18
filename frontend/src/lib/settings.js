@@ -71,12 +71,33 @@ export const EDITOR_FONT_OPTIONS = [
 
 export const UI_FONT_OPTIONS = [
   { label: 'System Default', value: '' },
+  // Sans-serif
   { label: 'Inter', value: '"Inter", sans-serif' },
   { label: 'San Francisco', value: '-apple-system, BlinkMacSystemFont, sans-serif' },
   { label: 'Helvetica Neue', value: '"Helvetica Neue", Helvetica, Arial, sans-serif' },
   { label: 'Segoe UI', value: '"Segoe UI", sans-serif' },
   { label: 'Roboto', value: '"Roboto", sans-serif' },
+  { label: 'Open Sans', value: '"Open Sans", sans-serif' },
+  { label: 'Lato', value: '"Lato", sans-serif' },
+  { label: 'Noto Sans', value: '"Noto Sans", sans-serif' },
+  { label: 'Source Sans 3', value: '"Source Sans 3", "Source Sans Pro", sans-serif' },
+  { label: 'Nunito', value: '"Nunito", sans-serif' },
   { label: 'Arial', value: 'Arial, sans-serif' },
+  { label: 'Verdana', value: 'Verdana, Geneva, sans-serif' },
+  { label: 'Tahoma', value: 'Tahoma, Geneva, sans-serif' },
+  { label: 'Trebuchet MS', value: '"Trebuchet MS", sans-serif' },
+  { label: 'system-ui', value: 'system-ui, sans-serif' },
+  // Serif
+  { label: 'Georgia', value: 'Georgia, "Times New Roman", serif' },
+  { label: 'Times New Roman', value: '"Times New Roman", Times, serif' },
+  { label: 'Merriweather', value: '"Merriweather", Georgia, serif' },
+  // Monospace (some people prefer a mono UI too)
+  { label: 'JetBrains Mono', value: '"JetBrains Mono", monospace' },
+  // CJK (中文)
+  { label: 'PingFang SC (苹方)', value: '"PingFang SC", -apple-system, sans-serif' },
+  { label: 'Microsoft YaHei (微软雅黑)', value: '"Microsoft YaHei", "微软雅黑", sans-serif' },
+  { label: 'Hiragino Sans GB (冬青黑)', value: '"Hiragino Sans GB", sans-serif' },
+  { label: 'Noto Sans SC (思源黑体)', value: '"Noto Sans SC", "Source Han Sans SC", sans-serif' },
 ]
 
 export const DEFAULT_EDITOR_FONT_SIZE = 14

@@ -26,16 +26,19 @@ import { stripLeadingSqlComments } from '../src/lib/sqlText.js'
 import { bumpTableUsage, sortTablesByUsage } from '../src/lib/tableUsage.js'
 import { buildKeyTree, classifyRedisCommand, formatTTL, DECODE_FORMATS, REDIS_COMMANDS } from '../src/lib/redisClient.js'
 import { loadTableUsageTopN, saveTableUsageTopN, clampTableUsageTopN } from '../src/lib/settings.js'
+import { rippleGeometry } from '../src/lib/ripple.js'
 import {
   loadEditorFontSize, saveEditorFontSize,
   loadUiFontSize, saveUiFontSize,
   loadEditorFontFamily, saveEditorFontFamily,
   loadUiFontFamily, saveUiFontFamily,
-  resolveEditorFontStack, resolveUiFontStack,
+  loadGridFontSize, saveGridFontSize,
+  loadGridFontFamily, saveGridFontFamily,
+  resolveEditorFontStack, resolveUiFontStack, resolveGridFontStack,
   uiZoomForSize,
-  DEFAULT_EDITOR_FONT_SIZE, DEFAULT_UI_FONT_SIZE,
-  MAX_EDITOR_FONT_SIZE, MIN_UI_FONT_SIZE,
-  DEFAULT_EDITOR_FONT_STACK, DEFAULT_UI_FONT_STACK,
+  DEFAULT_EDITOR_FONT_SIZE, DEFAULT_UI_FONT_SIZE, DEFAULT_GRID_FONT_SIZE,
+  MAX_EDITOR_FONT_SIZE, MIN_UI_FONT_SIZE, MAX_GRID_FONT_SIZE, MIN_GRID_FONT_SIZE,
+  DEFAULT_EDITOR_FONT_STACK, DEFAULT_UI_FONT_STACK, DEFAULT_GRID_FONT_STACK,
 } from '../src/lib/settings.js'
 import {
   closeAllTabsInWorkspace,
@@ -1604,25 +1607,35 @@ function testFontSettingsRoundTripAndClamp() {
   // Defaults when unset.
   assert.equal(loadEditorFontSize(storage), DEFAULT_EDITOR_FONT_SIZE)
   assert.equal(loadUiFontSize(storage), DEFAULT_UI_FONT_SIZE)
+  assert.equal(loadGridFontSize(storage), DEFAULT_GRID_FONT_SIZE)
   assert.equal(loadEditorFontFamily(storage), '')
   assert.equal(loadUiFontFamily(storage), '')
+  assert.equal(loadGridFontFamily(storage), '')
 
   // Sizes clamp to their ranges and persist.
   assert.equal(saveEditorFontSize(18, storage), 18)
   assert.equal(loadEditorFontSize(storage), 18)
   assert.equal(saveEditorFontSize(999, storage), MAX_EDITOR_FONT_SIZE)
   assert.equal(saveUiFontSize(1, storage), MIN_UI_FONT_SIZE)
+  assert.equal(saveGridFontSize(17, storage), 17)
+  assert.equal(loadGridFontSize(storage), 17)
+  assert.equal(saveGridFontSize(999, storage), MAX_GRID_FONT_SIZE)
+  assert.equal(saveGridFontSize(1, storage), MIN_GRID_FONT_SIZE)
 
   // Families persist as-is.
   assert.equal(saveEditorFontFamily('Menlo, monospace', storage), 'Menlo, monospace')
   assert.equal(loadEditorFontFamily(storage), 'Menlo, monospace')
   assert.equal(saveUiFontFamily('"Inter", sans-serif', storage), '"Inter", sans-serif')
   assert.equal(loadUiFontFamily(storage), '"Inter", sans-serif')
+  assert.equal(saveGridFontFamily('"Inter", sans-serif', storage), '"Inter", sans-serif')
+  assert.equal(loadGridFontFamily(storage), '"Inter", sans-serif')
 
   // Empty family resolves to the default stack; a set family wins.
   assert.equal(resolveEditorFontStack(''), DEFAULT_EDITOR_FONT_STACK)
   assert.equal(resolveUiFontStack(''), DEFAULT_UI_FONT_STACK)
+  assert.equal(resolveGridFontStack(''), DEFAULT_GRID_FONT_STACK)
   assert.equal(resolveEditorFontStack('Menlo, monospace'), 'Menlo, monospace')
+  assert.equal(resolveGridFontStack('"Inter", sans-serif'), '"Inter", sans-serif')
 
   // Interface size maps to a zoom factor relative to the 13px baseline,
   // clamped to the supported range.
@@ -1663,10 +1676,28 @@ function testFontSettingsWiredIntoUi() {
     assert.match(src, /<ZoomGuard>[\s\S]*<Editor/, `${f} wraps its Editor`)
   }
 
-  // Settings modal hosts both font rows and uses the context setters.
+  // Settings modal hosts all three font rows and uses the context setters.
   assert.match(modal, /const \{[\s\S]*?setEditorFontFamily[\s\S]*?\} = useFontSettings\(\)/)
   assert.match(modal, /label="Console"/)
   assert.match(modal, /label="Interface"/)
+  assert.match(modal, /label="Result grid"/)
+  assert.match(modal, /setGridFontFamily/)
+  assert.match(modal, /setGridFontSize/)
+
+  // The canvas data grid consumes the grid font live (family + size) and
+  // derives row/header heights from the size so larger fonts don't clip.
+  const grid = readFileSync(new URL('../src/components/DataGrid.jsx', import.meta.url), 'utf8')
+  assert.match(grid, /const \{ gridFontFamily, gridFontSize \} = useFontSettings\(\)/)
+  assert.match(grid, /resolveGridFontStack\(font\.family\)/)
+  assert.match(grid, /gridMetricsForFontSize/)
+  assert.match(grid, /rowHeight=\{rest\.rowHeight \?\? metrics\.rowHeight\}/)
+
+  // The cell value inspector follows the same "Result grid" font (it's part of
+  // viewing a result), not the SQL console font.
+  const valuePanel = readFileSync(new URL('../src/components/ValuePanel.jsx', import.meta.url), 'utf8')
+  assert.match(valuePanel, /const \{ gridFontFamily, gridFontSize \} = useFontSettings\(\)/)
+  assert.match(valuePanel, /fontSize:\s+gridFontSize/)
+  assert.match(valuePanel, /fontFamily:\s+resolveGridFontStack\(gridFontFamily\)/)
 
   // App is wrapped in the provider; #root reads the font-family var.
   assert.match(main, /<FontSettingsProvider>/)
@@ -1675,5 +1706,53 @@ function testFontSettingsWiredIntoUi() {
 
 testFontSettingsRoundTripAndClamp()
 testFontSettingsWiredIntoUi()
+
+function testRippleGeometryCoversAndCentersOnPointer() {
+  // 200×40 host, click at its center (100, 20) within the rect at origin.
+  const rect = { left: 0, top: 0, width: 200, height: 40 }
+  const g = rippleGeometry(rect, 100, 20)
+  // Diameter = 2 × longest side so the circle always blankets the host.
+  assert.equal(g.size, 400)
+  // Centered on the pointer: offset back by half the diameter.
+  assert.equal(g.x, 100 - 200)
+  assert.equal(g.y, 20 - 200)
+
+  // Honors the host's page offset (rect not at origin).
+  const offset = rippleGeometry({ left: 50, top: 10, width: 80, height: 80 }, 90, 50)
+  assert.equal(offset.size, 160)
+  assert.equal(offset.x, 90 - 50 - 80)
+  assert.equal(offset.y, 50 - 10 - 80)
+}
+
+function testAquaRefreshTokensAndPrimitivesWired() {
+  const css = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
+  // Apple system blue accent in both themes.
+  assert.match(css, /--accent:\s*#007aff/i)
+  assert.match(css, /--accent:\s*#0a84ff/i)
+  // New scales + materials + ripple primitive exist.
+  assert.match(css, /--radius-lg:/)
+  assert.match(css, /--shadow-2:/)
+  assert.match(css, /\.material-bar\s*\{/)
+  assert.match(css, /@keyframes aquaRipple/)
+  assert.match(css, /\.press:active/)
+  // Reduced-motion is respected.
+  assert.match(css, /prefers-reduced-motion: reduce/)
+
+  // Tailwind exposes the new radius/shadow tokens.
+  const tw = readFileSync(new URL('../tailwind.config.js', import.meta.url), 'utf8')
+  assert.match(tw, /borderRadius:/)
+  assert.match(tw, /boxShadow:/)
+
+  // Ripple is wired into the key surfaces.
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  assert.match(app, /import Ripple\s+from '\.\/components\/Ripple'/)
+  assert.match(app, /material-bar/)
+  const explorer = readFileSync(new URL('../src/components/DatabaseExplorer.jsx', import.meta.url), 'utf8')
+  assert.match(explorer, /import Ripple from '\.\/Ripple'/)
+  assert.match(explorer, /<Ripple \/>/)
+}
+
+testRippleGeometryCoversAndCentersOnPointer()
+testAquaRefreshTokensAndPrimitivesWired()
 
 console.log('unit tests passed')

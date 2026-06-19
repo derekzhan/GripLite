@@ -61,6 +61,19 @@ export default {
         'syntax-user':    'var(--syntax-user)',
         'syntax-pk':      'var(--syntax-pk)',
       },
+      // Corner-radius scale (maps to the --radius-* tokens in style.css).
+      borderRadius: {
+        sm: 'var(--radius-sm)',
+        md: 'var(--radius-md)',
+        lg: 'var(--radius-lg)',
+        xl: 'var(--radius-xl)',
+      },
+      // Elevation scale (ambient + key light) — see --shadow-* tokens.
+      boxShadow: {
+        1: 'var(--shadow-1)',
+        2: 'var(--shadow-2)',
+        3: 'var(--shadow-3)',
+      },
     },
   },
   plugins: [],

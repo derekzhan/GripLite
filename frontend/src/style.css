@@ -41,54 +41,73 @@
  *   syntax-user    (user / role tokens)
  * ────────────────────────────────────────────────────────────────────────── */
 :root {
-  /* ── Light theme (default when .dark class is absent) ──────────────── */
-  --bg-app:        #f5f6f8;
-  --bg-sunken:     #eef0f3;
+  /* ── Light theme — Apple "Aqua" palette ───────────────────────────── */
+  --bg-app:        #ececee;  /* window gray */
+  --bg-sunken:     #e6e6e9;  /* recessed sidebar / sunken areas */
   --bg-panel:      #ffffff;
-  --bg-elevated:   #fafbfc;
-  --bg-titlebar:   #f2f3f5;
-  --bg-statusbar:  #0969da;
-  --bg-hover:      #eef0f3;
-  --bg-active:     #dde6f3;
-  --bg-selected:   #0969da;
-  --bg-overlay:    rgba(31, 35, 40, 0.45);
+  --bg-elevated:   #fbfbfd;
+  --bg-titlebar:   #f6f6f8;
+  --bg-statusbar:  #007aff;
+  --bg-hover:      rgba(120, 120, 128, 0.12);
+  --bg-active:     rgba(0, 122, 255, 0.12);
+  --bg-selected:   #007aff;
+  --bg-overlay:    rgba(0, 0, 0, 0.28);
 
-  --fg-primary:    #1f2328;
-  --fg-secondary:  #57606a;
-  --fg-muted:      #8c959f;
-  --fg-faint:      #afb8c1;
+  --fg-primary:    #1d1d1f;
+  --fg-secondary:  #55555c;
+  --fg-muted:      #8e8e93;
+  --fg-faint:      #aeaeb2;
   --fg-on-accent:  #ffffff;
 
-  --border:         #d0d7de;
-  --border-subtle:  #e4e7eb;
+  --border:         #d6d6db;
+  --border-subtle:  #e7e7ec;
 
-  --accent:         #0969da;
-  --accent-hover:   #0a5fc7;
-  --accent-subtle:  rgba(9, 105, 218, 0.10);
-  --accent-text:    #0550ae;
+  --accent:         #007aff;  /* Apple system blue */
+  --accent-hover:   #0a6ce0;
+  --accent-subtle:  rgba(0, 122, 255, 0.12);
+  --accent-text:    #0062cc;
 
-  --success:        #1a7f37;
-  --warn:           #9a6700;
-  --warn-bg:        #fff8c5;
-  --danger:         #cf222e;
-  --danger-bg:      #ffeef0;
+  --success:        #248a3d;
+  --warn:           #aa5b00;
+  --warn-bg:        #fff4e5;
+  --danger:         #d70015;
+  --danger-bg:      #ffeceb;
 
-  --syntax-keyword: #cf222e;  /* table-headers in light mode pop nicely red */
-  --syntax-type:    #8250df;
-  --syntax-string:  #0a3069;
-  --syntax-user:    #8250df;
-  --syntax-pk:      #9a6700;
+  /* Xcode-light inspired syntax colours */
+  --syntax-keyword: #9b2393;  /* keywords / table headers — magenta */
+  --syntax-type:    #3900a0;  /* types / primary keys — purple */
+  --syntax-string:  #c41a16;  /* string literals — red */
+  --syntax-user:    #6c36a9;
+  --syntax-pk:      #815f03;
 
   /* Glide DataGrid accents that need explicit values in JS  */
   --grid-bg:           #ffffff;
   --grid-bg-alt:       #ffffff;
-  --grid-bg-header:    #f6f8fa;
-  --grid-bg-header-h:  #eef0f3;
-  --grid-border:       #d0d7de;
-  --grid-border-h:     #e4e7eb;
+  --grid-bg-header:    #f5f5f7;
+  --grid-bg-header-h:  #ececee;
+  --grid-border:       #e7e7ec;
+  --grid-border-h:     #d6d6db;
 
   --card-bg:        #ffffff;
-  --card-shadow:    0 10px 40px -8px rgba(15, 23, 42, 0.20);
+  --card-shadow:    0 12px 32px -8px rgba(0, 0, 0, 0.18), 0 2px 8px -2px rgba(0, 0, 0, 0.10);
+
+  /* ── Elevation scale (ambient + key light) ───────────────────────── */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 1px rgba(0, 0, 0, 0.04);
+  --shadow-2: 0 4px 12px -2px rgba(0, 0, 0, 0.12), 0 2px 4px -2px rgba(0, 0, 0, 0.08);
+  --shadow-3: 0 16px 40px -8px rgba(0, 0, 0, 0.22), 0 4px 12px -4px rgba(0, 0, 0, 0.12);
+
+  /* ── Corner radius scale ─────────────────────────────────────────── */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  /* ── Translucent "vibrancy" materials (paired with backdrop-blur) ── */
+  --material-bar:      rgba(246, 246, 248, 0.72);
+  --material-sidebar:  rgba(236, 236, 238, 0.70);
+  --material-menu:     rgba(255, 255, 255, 0.80);
+  --material-overlay:  rgba(255, 255, 255, 0.86);
+  --material-blur:     20px;
 
   /* Back-compat aliases — older components still reference these names. */
   --bg-elev-1:     var(--bg-elevated);
@@ -100,53 +119,69 @@
 }
 
 :root.dark {
-  /* ── Dark theme — VS Code-style palette (largely untouched) ───────── */
-  --bg-app:        #1e1e1e;
-  --bg-sunken:     #1a1a1a;
-  --bg-panel:      #252526;
-  --bg-elevated:   #2d2d2d;
-  --bg-titlebar:   #252526;
-  --bg-statusbar:  #007acc;
-  --bg-hover:      #2a2d2e;
-  --bg-active:     #094771;
-  --bg-selected:   #094771;
-  --bg-overlay:    rgba(0, 0, 0, 0.55);
+  /* ── Dark theme — Apple graphite palette ──────────────────────────── */
+  --bg-app:        #1c1c1e;
+  --bg-sunken:     #161618;
+  --bg-panel:      #1e1e20;
+  --bg-elevated:   #2c2c2e;
+  --bg-titlebar:   #2a2a2c;
+  --bg-statusbar:  #0a84ff;
+  --bg-hover:      rgba(255, 255, 255, 0.07);
+  --bg-active:     rgba(10, 132, 255, 0.22);
+  --bg-selected:   #0a84ff;
+  --bg-overlay:    rgba(0, 0, 0, 0.50);
 
-  --fg-primary:    #d4d4d4;
-  --fg-secondary:  #cccccc;
-  --fg-muted:      #858585;
-  --fg-faint:      #555555;
+  --fg-primary:    #f5f5f7;
+  --fg-secondary:  #c7c7cc;
+  --fg-muted:      #8e8e93;
+  --fg-faint:      #5a5a5e;
   --fg-on-accent:  #ffffff;
 
-  --border:         #3c3c3c;
-  --border-subtle:  #2d2d2d;
+  --border:         #3a3a3c;
+  --border-subtle:  #2c2c2e;
 
-  --accent:         #007acc;
-  --accent-hover:   #1177bb;
-  --accent-subtle:  rgba(0, 122, 204, 0.18);
-  --accent-text:    #9cdcfe;
+  --accent:         #0a84ff;  /* Apple system blue (dark) */
+  --accent-hover:   #3b9bff;
+  --accent-subtle:  rgba(10, 132, 255, 0.24);
+  --accent-text:    #6cb6ff;
 
-  --success:        #4ec9b0;
-  --warn:           #f0a500;
-  --warn-bg:        #3a3a1a;
-  --danger:         #f48771;
-  --danger-bg:      #2d1010;
+  --success:        #30d158;
+  --warn:           #ff9f0a;
+  --warn-bg:        #3a2e12;
+  --danger:         #ff453a;
+  --danger-bg:      #3a1715;
 
-  --syntax-keyword: #9cdcfe;
-  --syntax-type:    #dcdcaa;
-  --syntax-string:  #ce9178;
-  --syntax-user:    #c586c0;
-  --syntax-pk:      #dcdcaa;
+  /* Xcode-dark inspired syntax colours */
+  --syntax-keyword: #ff7ab2;
+  --syntax-type:    #dabaff;
+  --syntax-string:  #fc6a5d;
+  --syntax-user:    #b281eb;
+  --syntax-pk:      #d9c97c;
 
-  --grid-bg:           #1e1e1e;
-  --grid-bg-alt:       #1e1e1e;
-  --grid-bg-header:    #252526;
-  --grid-bg-header-h:  #2a2d2e;
-  --grid-border:       #3c3c3c;
-  --grid-border-h:     #2d2d2d;
+  --grid-bg:           #1c1c1e;
+  --grid-bg-alt:       #1c1c1e;
+  --grid-bg-header:    #2a2a2c;
+  --grid-bg-header-h:  #3a3a3c;
+  --grid-border:       #2c2c2e;
+  --grid-border-h:     #3a3a3c;
 
-  --card-bg:        #252526;
-  --card-shadow:    0 20px 60px -10px rgba(0, 0, 0, 0.65);
+  --card-bg:        #2c2c2e;
+  --card-shadow:    0 24px 64px -12px rgba(0, 0, 0, 0.70), 0 6px 16px -6px rgba(0, 0, 0, 0.50);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-2: 0 6px 16px -4px rgba(0, 0, 0, 0.55), 0 2px 6px -2px rgba(0, 0, 0, 0.40);
+  --shadow-3: 0 24px 56px -12px rgba(0, 0, 0, 0.70), 0 6px 16px -6px rgba(0, 0, 0, 0.50);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  --material-bar:      rgba(42, 42, 44, 0.72);
+  --material-sidebar:  rgba(28, 28, 30, 0.70);
+  --material-menu:     rgba(44, 44, 46, 0.82);
+  --material-overlay:  rgba(30, 30, 32, 0.86);
+  --material-blur:     24px;
 
   --bg-elev-1:     var(--bg-elevated);
   --bg-elev-2:     var(--bg-titlebar);
@@ -180,17 +215,82 @@ body,
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
- * Scrollbars — token-driven so they stay sane in light mode.
+ * Scrollbars — thin, rounded, overlay-style (macOS-like).
  * ────────────────────────────────────────────────────────────────────────── */
-::-webkit-scrollbar       { width: 9px; height: 9px; }
-::-webkit-scrollbar-track { background: var(--bg-sunken); }
+::-webkit-scrollbar       { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
-  border: 2px solid var(--bg-sunken); /* hairline gap so the thumb floats */
+  background: var(--fg-faint);
+  border-radius: 9999px;
+  border: 3px solid transparent;  /* inset so the thumb reads as a floating pill */
+  background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
-::-webkit-scrollbar-corner      { background: var(--bg-sunken); }
+::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); background-clip: padding-box; }
+::-webkit-scrollbar-corner      { background: transparent; }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Vibrancy materials — translucent surfaces with a backdrop blur, like the
+ * macOS sidebar / toolbar / menu materials. Each token has a solid-ish fallback
+ * baked into its rgba so it still looks right where backdrop-filter is absent.
+ * ────────────────────────────────────────────────────────────────────────── */
+.material-bar {
+  background: var(--material-bar);
+  -webkit-backdrop-filter: saturate(180%) blur(var(--material-blur));
+  backdrop-filter: saturate(180%) blur(var(--material-blur));
+}
+.material-sidebar {
+  background: var(--material-sidebar);
+  -webkit-backdrop-filter: saturate(180%) blur(var(--material-blur));
+  backdrop-filter: saturate(180%) blur(var(--material-blur));
+}
+.material-menu {
+  background: var(--material-menu);
+  -webkit-backdrop-filter: saturate(180%) blur(var(--material-blur));
+  backdrop-filter: saturate(180%) blur(var(--material-blur));
+}
+.material-overlay {
+  background: var(--material-overlay);
+  -webkit-backdrop-filter: saturate(180%) blur(var(--material-blur));
+  backdrop-filter: saturate(180%) blur(var(--material-blur));
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Interaction primitives
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/* Spring press feedback: a gentle scale-down while held. */
+.press {
+  transition: transform 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.press:active {
+  transform: scale(0.97);
+}
+
+/* Apple-style focus glow. Apply `.focus-ring` to inputs/buttons. */
+.focus-ring:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+  border-color: var(--accent);
+}
+
+/* Water ripple — the host clips the expanding circle; the span is spawned by
+ * the Ripple component at the pointer location. */
+.aqua-ripple-host {
+  position: relative;
+  overflow: hidden;
+}
+.aqua-ripple {
+  position: absolute;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.28;
+  pointer-events: none;
+  transform: scale(0);
+  animation: aquaRipple 480ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+}
+@keyframes aquaRipple {
+  to { transform: scale(1); opacity: 0; }
+}
 
 /* SplitPane resize handle */
 .split-pane-resizer {
@@ -211,13 +311,29 @@ body,
  * Modal fade / scale animation
  * ────────────────────────────────────────────────────────────────────────── */
 @keyframes modalFadeIn {
-  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
   to   { opacity: 1; transform: translateY(0)    scale(1);    }
 }
-.modal-enter { animation: modalFadeIn 0.18s ease-out both; }
+.modal-enter { animation: modalFadeIn 0.26s cubic-bezier(0.2, 0.9, 0.25, 1) both; }
 
 @keyframes overlayFadeIn {
   from { opacity: 0; }
   to   { opacity: 1; }
 }
-.overlay-enter { animation: overlayFadeIn 0.15s ease-out both; }
+.overlay-enter {
+  animation: overlayFadeIn 0.18s ease-out both;
+  /* Frost whatever is behind the modal for an Apple-style focus effect. */
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Respect reduced-motion: drop the spring/ripple/fade flourishes.
+ * ────────────────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .modal-enter,
+  .overlay-enter,
+  .aqua-ripple { animation: none; }
+  .press { transition: none; }
+  .aqua-ripple { display: none; }
+}

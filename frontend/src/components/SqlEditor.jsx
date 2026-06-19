@@ -15,6 +15,7 @@ import { useTheme } from '../theme/ThemeProvider'
 import { useFontSettings } from '../settings/FontSettingsProvider'
 import { resolveEditorFontStack } from '../lib/settings'
 import ZoomGuard from './ZoomGuard'
+import Ripple from './Ripple'
 import RedisConsole from './RedisConsole'
 
 const INITIAL_SQL = `-- GripLite SQL Console
@@ -1365,14 +1366,15 @@ export default function SqlEditor({
             onClick={() => { setRunMenuOpen(false); runCurrent() }}
             disabled={isRunning}
             className={[
-              'flex items-center gap-1.5 pl-3 pr-2 py-1 text-fg-on-accent text-[12px] rounded-l transition-colors font-medium',
+              'relative overflow-hidden flex items-center gap-1.5 pl-3 pr-2 py-1 text-fg-on-accent text-[12px] rounded-l transition-colors font-medium',
               isRunning
                 ? 'bg-accent-hover cursor-not-allowed opacity-60'
-                : 'bg-accent hover:bg-accent-hover',
+                : 'bg-accent hover:bg-accent-hover press',
             ].join(' ')}
             title="Run current statement (Ctrl/Cmd+Enter)"
           >
             {isRunning ? '⏳ Running…' : '▶ Run'}
+            {!isRunning && <Ripple color="#ffffff" />}
           </button>
           <button
             onClick={() => setRunMenuOpen((o) => !o)}

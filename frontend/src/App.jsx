@@ -37,6 +37,7 @@ import SaveConsoleModal   from './components/SaveConsoleModal'
 import AboutModal              from './components/AboutModal'
 import KeyboardShortcutsModal from './components/KeyboardShortcutsModal'
 import SettingsModal          from './components/SettingsModal'
+import Ripple             from './components/Ripple'
 import ErrorBoundary      from './components/ErrorBoundary'
 import { loadTableUsageTopN } from './lib/settings'
 import { readConsoleEditorContent, findOpenConsoleForSaved } from './lib/savedConsoles'
@@ -953,7 +954,7 @@ export default function App() {
           Windows/Linux the in-app MenuBar hosts them here instead.
       */}
       <header
-        className="flex items-center h-9 gap-3 flex-shrink-0 bg-titlebar border-b border-line-subtle"
+        className="flex items-center h-9 gap-3 flex-shrink-0 material-bar border-b border-line-subtle"
         style={{ '--wails-draggable': 'drag', WebkitAppRegion: 'drag', paddingLeft: nativeMenu ? 78 : 12, paddingRight: 12 }}
       >
         <div className="flex items-center gap-2" style={{ '--wails-draggable': 'no-drag', WebkitAppRegion: 'no-drag' }}>
@@ -1419,7 +1420,7 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
   const closeMenu = () => setContextMenu(null)
 
   return (
-    <div className="flex items-stretch bg-titlebar border-b border-line-subtle flex-shrink-0 overflow-x-auto min-h-[36px]">
+    <div className="flex items-stretch material-bar border-b border-line-subtle flex-shrink-0 overflow-x-auto min-h-[36px]">
       {tabs.map((tab) => {
         const active     = tab.id === activeTabId
         const isConsole  = tab.type === 'console'
@@ -1437,9 +1438,9 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
             className={[
               'flex items-center gap-1.5 px-3 py-0 text-[13px] cursor-pointer select-none',
               'border-r border-line-subtle flex-shrink-0 min-w-[100px] max-w-[240px]',
-              'transition-colors group relative',
+              'transition-all duration-200 group relative overflow-hidden',
               active
-                ? 'bg-panel text-fg-primary border-t-2 border-t-accent'
+                ? 'bg-panel text-fg-primary shadow-1 border-t-2 border-t-accent'
                 : 'text-fg-muted hover:text-fg-secondary hover:bg-hover',
             ].join(' ')}
           >
@@ -1458,7 +1459,7 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
             {(tab.type !== 'console' || tabs.filter((t) => t.type === 'console').length > 1) && (
               <button
                 onClick={(e) => onClose(e, tab.id)}
-                className="flex-shrink-0 w-4 h-4 flex items-center justify-center rounded
+                className="flex-shrink-0 w-4 h-4 flex items-center justify-center rounded-md
                            text-fg-faint hover:text-fg-secondary hover:bg-line transition-colors
                            opacity-0 group-hover:opacity-100"
                 title="Close tab"
@@ -1466,6 +1467,7 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
                 ×
               </button>
             )}
+            <Ripple />
           </div>
         )
       })}
@@ -1476,9 +1478,10 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
         title="Open new SQL console"
         className="flex items-center justify-center w-8 px-0 text-[16px] text-fg-faint
                    hover:text-fg-secondary hover:bg-hover transition-colors flex-shrink-0
-                   border-r border-line-subtle select-none"
+                   border-r border-line-subtle select-none relative overflow-hidden press"
       >
         +
+        <Ripple />
       </button>
 
       {/* Spacer */}
@@ -1486,7 +1489,7 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
 
       {contextMenu && (
         <div
-          className="fixed z-50 min-w-[140px] py-1 rounded-md border border-line bg-panel shadow-xl text-[12px]"
+          className="fixed z-50 min-w-[140px] py-1 rounded-lg border border-line-subtle material-menu shadow-3 text-[12px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}

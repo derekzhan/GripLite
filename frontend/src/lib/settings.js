@@ -100,6 +100,22 @@ export const UI_FONT_OPTIONS = [
   { label: 'Noto Sans SC (思源黑体)', value: '"Noto Sans SC", "Source Han Sans SC", sans-serif' },
 ]
 
+// Result grid (Glide DataEditor) font. Default is the same mono stack the grid
+// has always used; '' means "use that default".
+export const DEFAULT_GRID_FONT_STACK = '"JetBrains Mono", "Fira Code", Consolas, "Courier New", monospace'
+
+export const GRID_FONT_OPTIONS = [
+  { label: 'Default (JetBrains Mono)', value: '' },
+  { label: 'System Sans', value: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' },
+  { label: 'Inter', value: '"Inter", sans-serif' },
+  { label: 'SF Mono', value: '"SF Mono", ui-monospace, monospace' },
+  { label: 'Menlo', value: 'Menlo, monospace' },
+  { label: 'Monaco', value: 'Monaco, monospace' },
+  { label: 'Consolas', value: 'Consolas, monospace' },
+  { label: 'Source Code Pro', value: '"Source Code Pro", monospace' },
+  { label: 'Helvetica Neue', value: '"Helvetica Neue", Helvetica, Arial, sans-serif' },
+]
+
 export const DEFAULT_EDITOR_FONT_SIZE = 14
 export const MIN_EDITOR_FONT_SIZE = 8
 export const MAX_EDITOR_FONT_SIZE = 40
@@ -110,10 +126,16 @@ export const MAX_UI_FONT_SIZE = 22
 // Baseline the rest of the UI is designed around; interface zoom = size / base.
 export const UI_FONT_SIZE_BASE = 13
 
+export const DEFAULT_GRID_FONT_SIZE = 13
+export const MIN_GRID_FONT_SIZE = 9
+export const MAX_GRID_FONT_SIZE = 24
+
 const EDITOR_FONT_FAMILY_KEY = 'griplite_editor_font_family_v1'
 const EDITOR_FONT_SIZE_KEY = 'griplite_editor_font_size_v1'
 const UI_FONT_FAMILY_KEY = 'griplite_ui_font_family_v1'
 const UI_FONT_SIZE_KEY = 'griplite_ui_font_size_v1'
+const GRID_FONT_FAMILY_KEY = 'griplite_grid_font_family_v1'
+const GRID_FONT_SIZE_KEY = 'griplite_grid_font_size_v1'
 
 /** Coerce to an integer within [min, max], else `fallback`. */
 export function clampFontSize(value, min, max, fallback) {
@@ -167,9 +189,18 @@ export const loadUiFontSize = (storage = globalThis.localStorage) =>
 export const saveUiFontSize = (v, storage = globalThis.localStorage) =>
   saveInt(UI_FONT_SIZE_KEY, v, MIN_UI_FONT_SIZE, MAX_UI_FONT_SIZE, DEFAULT_UI_FONT_SIZE, storage)
 
+export const loadGridFontFamily = (storage = globalThis.localStorage) => loadStr(GRID_FONT_FAMILY_KEY, '', storage)
+export const saveGridFontFamily = (v, storage = globalThis.localStorage) => saveStr(GRID_FONT_FAMILY_KEY, v, storage)
+export const loadGridFontSize = (storage = globalThis.localStorage) =>
+  loadInt(GRID_FONT_SIZE_KEY, DEFAULT_GRID_FONT_SIZE, MIN_GRID_FONT_SIZE, MAX_GRID_FONT_SIZE, storage)
+export const saveGridFontSize = (v, storage = globalThis.localStorage) =>
+  saveInt(GRID_FONT_SIZE_KEY, v, MIN_GRID_FONT_SIZE, MAX_GRID_FONT_SIZE, DEFAULT_GRID_FONT_SIZE, storage)
+
 /** Resolve the effective UI font stack (the chosen value, or the default). */
 export const resolveUiFontStack = (family) => (family && family.trim() ? family : DEFAULT_UI_FONT_STACK)
 /** Resolve the effective editor font stack (the chosen value, or the default). */
 export const resolveEditorFontStack = (family) => (family && family.trim() ? family : DEFAULT_EDITOR_FONT_STACK)
+/** Resolve the effective result-grid font stack (the chosen value, or the default). */
+export const resolveGridFontStack = (family) => (family && family.trim() ? family : DEFAULT_GRID_FONT_STACK)
 /** Interface zoom factor for a given UI font size. */
 export const uiZoomForSize = (size) => clampFontSize(size, MIN_UI_FONT_SIZE, MAX_UI_FONT_SIZE, DEFAULT_UI_FONT_SIZE) / UI_FONT_SIZE_BASE

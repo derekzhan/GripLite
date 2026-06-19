@@ -25,6 +25,8 @@ import { useState, useCallback, useRef, useEffect, useMemo, forwardRef } from 'r
 import { DataEditor, GridCellKind } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
 import { useTheme } from '../theme/ThemeProvider'
+import { useFontSettings } from '../settings/FontSettingsProvider'
+import { resolveGridFontStack, DEFAULT_GRID_FONT_SIZE } from '../lib/settings'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CSS-var → Glide theme bridge
@@ -43,42 +45,44 @@ import { useTheme } from '../theme/ThemeProvider'
 // you change one side, update the other so the Tailwind utilities and
 // the canvas grid stay visually consistent.
 const LIGHT_PALETTE = {
-  accent:        '#0969da',
-  accentSubtle:  'rgba(9,105,218,0.10)',
-  fgPrimary:     '#1f2328',
-  fgSecondary:   '#57606a',
-  fgMuted:       '#8c959f',
-  fgFaint:       '#afb8c1',
-  bgElevated:    '#fafbfc',
-  syntaxKeyword: '#cf222e',
-  success:       '#1a7f37',
+  accent:        '#007aff',
+  accentSubtle:  'rgba(0,122,255,0.12)',
+  fgPrimary:     '#1d1d1f',
+  fgSecondary:   '#55555c',
+  fgMuted:       '#8e8e93',
+  fgFaint:       '#b8b8be',
+  bgElevated:    '#fbfbfd',
+  syntaxKeyword: '#9b2393',
+  success:       '#248a3d',
   gridBg:        '#ffffff',
   gridBgAlt:     '#ffffff',
-  gridBgHeader:  '#f6f8fa',
-  gridBgHeaderH: '#eef0f3',
-  gridBorder:    '#d0d7de',
-  gridBorderH:   '#e4e7eb',
+  gridBgHeader:  '#f5f5f7',
+  gridBgHeaderH: '#ececee',
+  gridBorder:    '#e7e7ec',
+  gridBorderH:   '#d6d6db',
 }
 
 const DARK_PALETTE = {
-  accent:        '#007acc',
-  accentSubtle:  'rgba(0,122,204,0.18)',
-  fgPrimary:     '#d4d4d4',
-  fgSecondary:   '#cccccc',
-  fgMuted:       '#858585',
-  fgFaint:       '#6e6e6e',
-  bgElevated:    '#2d2d2d',
-  syntaxKeyword: '#569cd6',
-  success:       '#4ec9b0',
-  gridBg:        '#1e1e1e',
-  gridBgAlt:     '#1e1e1e',
-  gridBgHeader:  '#252526',
-  gridBgHeaderH: '#2a2d2e',
-  gridBorder:    '#3c3c3c',
-  gridBorderH:   '#2d2d2d',
+  accent:        '#0a84ff',
+  accentSubtle:  'rgba(10,132,255,0.24)',
+  fgPrimary:     '#f5f5f7',
+  fgSecondary:   '#c7c7cc',
+  fgMuted:       '#8e8e93',
+  fgFaint:       '#636366',
+  bgElevated:    '#2c2c2e',
+  syntaxKeyword: '#ff7ab2',
+  success:       '#30d158',
+  gridBg:        '#1c1c1e',
+  gridBgAlt:     '#1c1c1e',
+  gridBgHeader:  '#2a2a2c',
+  gridBgHeaderH: '#3a3a3c',
+  gridBorder:    '#2c2c2e',
+  gridBorderH:   '#3a3a3c',
 }
 
-function buildThemeFromPalette(p) {
+function buildThemeFromPalette(p, font = {}) {
+  const fontSize = font.size || DEFAULT_GRID_FONT_SIZE
+  const fontFamily = resolveGridFontStack(font.family)
   return {
     accentColor:           p.accent,
     accentLight:           p.accentSubtle,
@@ -104,11 +108,20 @@ function buildThemeFromPalette(p) {
     linkColor:             p.success,
     cellHorizontalPadding: 10,
     cellVerticalPadding:   4,
-    headerFontStyle:       '600 13px',
-    baseFontStyle:         '13px',
-    fontFamily:            '"JetBrains Mono","Fira Code",Consolas,"Courier New",monospace',
-    editorFontSize:        '13px',
+    headerFontStyle:       `600 ${fontSize}px`,
+    baseFontStyle:         `${fontSize}px`,
+    fontFamily:            fontFamily,
+    editorFontSize:        `${fontSize}px`,
     lineHeight:            1.6,
+  }
+}
+
+/** Glide row/header heights that comfortably fit the configured grid font. */
+export function gridMetricsForFontSize(size = DEFAULT_GRID_FONT_SIZE) {
+  const fontSize = Number(size) || DEFAULT_GRID_FONT_SIZE
+  return {
+    rowHeight:    Math.round(fontSize * 2) + 8,
+    headerHeight: Math.round(fontSize * 2) + 10,
   }
 }
 
@@ -121,9 +134,13 @@ function buildThemeFromPalette(p) {
  */
 export function useGlideTheme() {
   const { resolvedTheme } = useTheme()
+  const { gridFontFamily, gridFontSize } = useFontSettings()
   return useMemo(
-    () => buildThemeFromPalette(resolvedTheme === 'dark' ? DARK_PALETTE : LIGHT_PALETTE),
-    [resolvedTheme],
+    () => buildThemeFromPalette(
+      resolvedTheme === 'dark' ? DARK_PALETTE : LIGHT_PALETTE,
+      { family: gridFontFamily, size: gridFontSize },
+    ),
+    [resolvedTheme, gridFontFamily, gridFontSize],
   )
 }
 
@@ -200,6 +217,8 @@ export const AutoSizedGrid = forwardRef(function AutoSizedGrid({
   const containerRef = useRef(null)
   const [dims, setDims] = useState({ width: 0, height: 0 })
   const theme = useGlideTheme()
+  const { gridFontSize } = useFontSettings()
+  const metrics = useMemo(() => gridMetricsForFontSize(gridFontSize), [gridFontSize])
 
   useEffect(() => {
     const el = containerRef.current
@@ -252,6 +271,8 @@ export const AutoSizedGrid = forwardRef(function AutoSizedGrid({
           smoothScrollX={smoothScrollX}
           smoothScrollY={smoothScrollY}
           theme={theme}
+          rowHeight={rest.rowHeight ?? metrics.rowHeight}
+          headerHeight={rest.headerHeight ?? metrics.headerHeight}
           rowMarkers={rowMarkers}
           rowMarkerWidth={rowMarkerWidth}
           onColumnResize={handleColumnResize}

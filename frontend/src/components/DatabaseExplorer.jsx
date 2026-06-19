@@ -33,6 +33,7 @@ import CreateTableModal from './CreateTableModal'
 import TableActionModal from './TableActionModal'
 import IndexActionModal from './IndexActionModal'
 import CreateIndexModal from './CreateIndexModal'
+import Ripple from './Ripple'
 import {
   LayoutGrid, Plus, Search, X,
   // Tree-node glyphs.  All of these are thin-stroke Lucide icons (strokeWidth
@@ -1255,7 +1256,8 @@ export default function DatabaseExplorer({
 
   /** Row background + hover style based on selection */
   const rowCls = (nodeId) => [
-    'flex items-center gap-1 px-2 py-[3px] rounded-sm cursor-pointer select-none group transition-colors',
+    'flex items-center gap-1 px-2 py-[3px] mx-1 rounded-md cursor-pointer select-none group transition-colors',
+    'relative overflow-hidden',
     nodeId === selected
       ? 'bg-active text-fg-primary'
       : 'hover:bg-hover text-fg-secondary',
@@ -1578,6 +1580,7 @@ export default function DatabaseExplorer({
             <AlertCircle size={STATUS_INDICATOR_SIZE} strokeWidth={2} />
           </span>
         )}
+        <Ripple />
       </div>
     )
   }

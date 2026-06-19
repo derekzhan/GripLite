@@ -19,10 +19,13 @@ import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useSt
 import {
   DEFAULT_EDITOR_FONT_SIZE,
   DEFAULT_UI_FONT_SIZE,
+  DEFAULT_GRID_FONT_SIZE,
   loadEditorFontFamily, saveEditorFontFamily,
   loadEditorFontSize, saveEditorFontSize,
   loadUiFontFamily, saveUiFontFamily,
   loadUiFontSize, saveUiFontSize,
+  loadGridFontFamily, saveGridFontFamily,
+  loadGridFontSize, saveGridFontSize,
   resolveUiFontStack,
   uiZoomForSize,
 } from '../lib/settings'
@@ -46,6 +49,8 @@ export function FontSettingsProvider({ children }) {
   const [editorFontSize, setEditorFontSizeState]     = useState(() => loadEditorFontSize())
   const [uiFontFamily, setUiFontFamilyState]         = useState(() => loadUiFontFamily())
   const [uiFontSize, setUiFontSizeState]             = useState(() => loadUiFontSize())
+  const [gridFontFamily, setGridFontFamilyState]     = useState(() => loadGridFontFamily())
+  const [gridFontSize, setGridFontSizeState]         = useState(() => loadGridFontSize())
 
   // Apply interface font/zoom before paint so the first frame is correct.
   useLayoutEffect(() => { applyInterfaceFont(uiFontFamily, uiFontSize) }, [uiFontFamily, uiFontSize])
@@ -54,14 +59,18 @@ export function FontSettingsProvider({ children }) {
   const setEditorFontSize   = useCallback((v) => setEditorFontSizeState(saveEditorFontSize(v)), [])
   const setUiFontFamily     = useCallback((v) => setUiFontFamilyState(saveUiFontFamily(v)), [])
   const setUiFontSize       = useCallback((v) => setUiFontSizeState(saveUiFontSize(v)), [])
+  const setGridFontFamily   = useCallback((v) => setGridFontFamilyState(saveGridFontFamily(v)), [])
+  const setGridFontSize     = useCallback((v) => setGridFontSizeState(saveGridFontSize(v)), [])
 
   const value = useMemo(() => ({
-    editorFontFamily, editorFontSize, uiFontFamily, uiFontSize,
+    editorFontFamily, editorFontSize, uiFontFamily, uiFontSize, gridFontFamily, gridFontSize,
     uiZoom: uiZoomForSize(uiFontSize),
     setEditorFontFamily, setEditorFontSize, setUiFontFamily, setUiFontSize,
+    setGridFontFamily, setGridFontSize,
   }), [
-    editorFontFamily, editorFontSize, uiFontFamily, uiFontSize,
+    editorFontFamily, editorFontSize, uiFontFamily, uiFontSize, gridFontFamily, gridFontSize,
     setEditorFontFamily, setEditorFontSize, setUiFontFamily, setUiFontSize,
+    setGridFontFamily, setGridFontSize,
   ])
 
   return <FontSettingsContext.Provider value={value}>{children}</FontSettingsContext.Provider>
@@ -75,8 +84,10 @@ export function useFontSettings() {
     return {
       editorFontFamily: '', editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
       uiFontFamily: '', uiFontSize: DEFAULT_UI_FONT_SIZE, uiZoom: 1,
+      gridFontFamily: '', gridFontSize: DEFAULT_GRID_FONT_SIZE,
       setEditorFontFamily: () => {}, setEditorFontSize: () => {},
       setUiFontFamily: () => {}, setUiFontSize: () => {},
+      setGridFontFamily: () => {}, setGridFontSize: () => {},
     }
   }
   return ctx

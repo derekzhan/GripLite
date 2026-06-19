@@ -25,6 +25,8 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import Editor from '@monaco-editor/react'
 import { AlignJustify, Copy, Check, CornerDownLeft, X } from 'lucide-react'
 import { useTheme } from '../theme/ThemeProvider'
+import { useFontSettings } from '../settings/FontSettingsProvider'
+import { resolveGridFontStack } from '../lib/settings'
 import ZoomGuard from './ZoomGuard'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -146,6 +148,9 @@ export default function ValuePanel({ value, columnName, rowIndex, onClose, editS
   const editorRef = useRef(null)
   const monacoRef = useRef(null)
   const { resolvedTheme } = useTheme()
+  // The value inspector belongs to the result-viewing experience, so it follows
+  // the "Result grid" font setting rather than the SQL console font.
+  const { gridFontFamily, gridFontSize } = useFontSettings()
 
   // Editing is available only when the caller wired up editState + (col,row).
   // When the selected row is marked for deletion we stay read-only and hint
@@ -409,10 +414,10 @@ export default function ValuePanel({ value, columnName, rowIndex, onClose, editS
               lineNumbers:           'off',
               folding:               true,
               foldingHighlight:      true,
-              fontSize:              12,
-              lineHeight:            20,
+              fontSize:              gridFontSize,
+              lineHeight:            Math.round(gridFontSize * 1.6),
               padding:               { top: 10, bottom: 10 },
-              fontFamily:            '"JetBrains Mono","Fira Code",Consolas,"Courier New",monospace',
+              fontFamily:            resolveGridFontStack(gridFontFamily),
               renderLineHighlight:   editable ? 'line' : 'none',
               occurrencesHighlight:  false,
               selectionHighlight:    false,

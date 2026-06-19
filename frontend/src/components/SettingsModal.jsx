@@ -16,10 +16,13 @@ import {
   saveTableUsageTopN,
   EDITOR_FONT_OPTIONS,
   UI_FONT_OPTIONS,
+  GRID_FONT_OPTIONS,
   MIN_EDITOR_FONT_SIZE,
   MAX_EDITOR_FONT_SIZE,
   MIN_UI_FONT_SIZE,
   MAX_UI_FONT_SIZE,
+  MIN_GRID_FONT_SIZE,
+  MAX_GRID_FONT_SIZE,
 } from '../lib/settings'
 import { useTheme } from '../theme/ThemeProvider'
 import { useFontSettings } from '../settings/FontSettingsProvider'
@@ -75,8 +78,9 @@ function FontRow({ label, options, family, size, minSize, maxSize, onFamily, onS
 export default function SettingsModal({ isOpen, onClose, tableUsageTopN, onChangeTableUsageTopN }) {
   const { theme, setTheme } = useTheme()
   const {
-    editorFontFamily, editorFontSize, uiFontFamily, uiFontSize,
+    editorFontFamily, editorFontSize, uiFontFamily, uiFontSize, gridFontFamily, gridFontSize,
     setEditorFontFamily, setEditorFontSize, setUiFontFamily, setUiFontSize,
+    setGridFontFamily, setGridFontSize,
   } = useFontSettings()
   const [draft, setDraft] = useState(String(tableUsageTopN ?? DEFAULT_TABLE_USAGE_TOP_N))
 
@@ -194,10 +198,20 @@ export default function SettingsModal({ isOpen, onClose, tableUsageTopN, onChang
                 onFamily={setUiFontFamily}
                 onSize={setUiFontSize}
               />
+              <FontRow
+                label="Result grid"
+                options={GRID_FONT_OPTIONS}
+                family={gridFontFamily}
+                size={gridFontSize}
+                minSize={MIN_GRID_FONT_SIZE}
+                maxSize={MAX_GRID_FONT_SIZE}
+                onFamily={setGridFontFamily}
+                onSize={setGridFontSize}
+              />
             </div>
             <p className="mt-1.5 text-[11px] leading-relaxed text-[color:var(--fg-muted)]">
               Changes apply instantly. Interface size scales the whole app; the
-              console keeps its own size independently.
+              console and result grid keep their own sizes independently.
             </p>
           </section>
 

@@ -20,6 +20,7 @@
  * tabs are unmounted to keep Monaco/DataGrid memory bounded.
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import SplitPane          from './components/SplitPane'
 import DatabaseExplorer   from './components/DatabaseExplorer'
 import SqlEditor          from './components/SqlEditor'
@@ -45,12 +46,14 @@ import { Database, Leaf, Zap } from 'lucide-react'
 import { Key, Server } from 'lucide-react'
 import { Toaster, toast } from './lib/toast'
 import { normalizeError } from './lib/errors'
-import { runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo, getPlatform, onMenuAction, listSavedConsoles, saveConsole, deleteSavedConsole } from './lib/bridge'
+import { runQuery, runQueryPage, cancelQuery, listConnections, getBuildInfo, getPlatform, onMenuAction, listSavedConsoles, saveConsole, deleteSavedConsole, toggleMaximiseWindow } from './lib/bridge'
 import { appendResultPage, DEFAULT_PAGE_SIZE, loadPreferredPageSize, savePreferredPageSize } from './lib/queryPaging'
 import { stripLeadingSqlComments } from './lib/sqlText'
 import {
   closeAllTabsInWorkspace,
+  closeOtherTabsInWorkspace,
   closeTabInWorkspace,
+  closeTabsToSideInWorkspace,
   getNextConsoleSeqFromTabs,
   loadWorkspaceState,
   makeWorkspaceSnapshot,
@@ -849,6 +852,35 @@ export default function App() {
     setConsolesData({})
   }, [removePersistedTabState])
 
+  // Apply a multi-tab close result: drop per-tab persisted state + console data
+  // for every removed tab, then commit the surviving tabs / active id.
+  const applyTabCloseResult = useCallback((next) => {
+    const removed = next.removedIds ?? []
+    removed.forEach(removePersistedTabState)
+    if (removed.length > 0) {
+      setConsolesData((prev) => {
+        const copy = { ...prev }
+        for (const id of removed) delete copy[id]
+        return copy
+      })
+    }
+    activeTabIdRef.current = next.activeTabId
+    setActiveTabId(next.activeTabId)
+    setTabs(next.tabs)
+  }, [removePersistedTabState])
+
+  const handleCloseOtherTabs = useCallback((tabId) => {
+    applyTabCloseResult(closeOtherTabsInWorkspace(tabsRef.current, tabId))
+  }, [applyTabCloseResult])
+
+  const handleCloseTabsToLeft = useCallback((tabId) => {
+    applyTabCloseResult(closeTabsToSideInWorkspace(tabsRef.current, activeTabIdRef.current, tabId, 'left'))
+  }, [applyTabCloseResult])
+
+  const handleCloseTabsToRight = useCallback((tabId) => {
+    applyTabCloseResult(closeTabsToSideInWorkspace(tabsRef.current, activeTabIdRef.current, tabId, 'right'))
+  }, [applyTabCloseResult])
+
   // ── Connection dialog state ────────────────────────────────────────────────
   const [connDialogOpen,  setConnDialogOpen]  = useState(false)
   const [connDialogInitId, setConnDialogInitId] = useState(null)
@@ -956,6 +988,13 @@ export default function App() {
       <header
         className="flex items-center h-9 gap-3 flex-shrink-0 material-bar border-b border-line-subtle"
         style={{ '--wails-draggable': 'drag', WebkitAppRegion: 'drag', paddingLeft: nativeMenu ? 78 : 12, paddingRight: 12 }}
+        onDoubleClick={(e) => {
+          // Mirror the native title-bar double-click → zoom. Ignore double-clicks
+          // landing on interactive controls (menus, buttons, inputs) so those
+          // keep their own behaviour.
+          if (e.target.closest('button, input, select, a, [role="menu"], [role="menuitem"]')) return
+          toggleMaximiseWindow()
+        }}
       >
         <div className="flex items-center gap-2" style={{ '--wails-draggable': 'no-drag', WebkitAppRegion: 'no-drag' }}>
           <span className="text-[13px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
@@ -1029,6 +1068,9 @@ export default function App() {
               onClose={handleTabClose}
               onCloseTab={handleCloseTabById}
               onCloseAll={handleCloseAllTabs}
+              onCloseOthers={handleCloseOtherTabs}
+              onCloseLeft={handleCloseTabsToLeft}
+              onCloseRight={handleCloseTabsToRight}
               onNewConsole={handleNewConsole}
               onRenameConsole={handleRenameConsole}
               connectionKindById={connectionKindById}
@@ -1380,7 +1422,7 @@ function TabIcon({ tab, connectionKindById }) {
   return <Database size={12} strokeWidth={1.8} className={className} />
 }
 
-function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab, onCloseAll, onNewConsole, onRenameConsole, connectionKindById }) {
+function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab, onCloseAll, onCloseOthers, onCloseLeft, onCloseRight, onNewConsole, onRenameConsole, connectionKindById }) {
   const [contextMenu, setContextMenu] = useState(null)
   const activeTabRef = useRef(null)
 
@@ -1487,50 +1529,78 @@ function TabBar({ tabs, activeTabId, consolesData, onSwitch, onClose, onCloseTab
       {/* Spacer */}
       <div className="flex-1" />
 
-      {contextMenu && (
-        <div
-          className="fixed z-50 min-w-[140px] py-1 rounded-lg border border-line-subtle material-menu shadow-3 text-[12px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
-          {tabs.find((t) => t.id === contextMenu.tabId)?.type === 'console' && (
-            <>
-              <button
-                type="button"
-                className="w-full px-3 py-1.5 text-left text-fg-secondary hover:bg-hover hover:text-fg-primary"
-                onClick={() => {
-                  onRenameConsole?.(contextMenu.tabId)
-                  closeMenu()
-                }}
-              >
-                Rename…
-              </button>
-              <div className="my-1 border-t border-line-subtle" />
-            </>
-          )}
-          <button
-            type="button"
-            className="w-full px-3 py-1.5 text-left text-fg-secondary hover:bg-hover hover:text-fg-primary"
-            onClick={() => {
-              onCloseTab(contextMenu.tabId)
-              closeMenu()
-            }}
+      {contextMenu && (() => {
+        const ctxIdx = tabs.findIndex((t) => t.id === contextMenu.tabId)
+        const isConsole = tabs[ctxIdx]?.type === 'console'
+        const hasLeft = ctxIdx > 0
+        const hasRight = ctxIdx >= 0 && ctxIdx < tabs.length - 1
+        const hasOthers = tabs.length > 1
+        const run = (fn) => { fn?.(contextMenu.tabId); closeMenu() }
+        const itemCls = (enabled) => [
+          'w-full px-3 py-1.5 text-left',
+          enabled
+            ? 'text-fg-secondary hover:bg-hover hover:text-fg-primary'
+            : 'text-fg-faint cursor-not-allowed',
+        ].join(' ')
+
+        // Portal to <body>: the tab bar uses `backdrop-filter` (material-bar),
+        // which makes it the containing block for position:fixed descendants and,
+        // combined with its `overflow-x-auto`, would clip this menu to the ~36px
+        // bar. Rendering on body escapes that so the menu shows at the cursor.
+        return createPortal(
+          <div
+            className="fixed z-50 min-w-[180px] py-1 rounded-lg border border-line-subtle material-menu shadow-3 text-[12px]"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onClick={(e) => e.stopPropagation()}
+            onContextMenu={(e) => e.preventDefault()}
           >
-            Close Current Tab
-          </button>
-          <button
-            type="button"
-            className="w-full px-3 py-1.5 text-left text-fg-secondary hover:bg-hover hover:text-fg-primary"
-            onClick={() => {
-              onCloseAll()
-              closeMenu()
-            }}
-          >
-            Close All Tabs
-          </button>
-        </div>
-      )}
+            {isConsole && (
+              <>
+                <button
+                  type="button"
+                  className={itemCls(true)}
+                  onClick={() => run(onRenameConsole)}
+                >
+                  Rename…
+                </button>
+                <div className="my-1 border-t border-line-subtle" />
+              </>
+            )}
+            <button type="button" className={itemCls(true)} onClick={() => run(onCloseTab)}>
+              Close Current Tab
+            </button>
+            <button
+              type="button"
+              disabled={!hasLeft}
+              className={itemCls(hasLeft)}
+              onClick={() => hasLeft && run(onCloseLeft)}
+            >
+              Close Tabs to the Left
+            </button>
+            <button
+              type="button"
+              disabled={!hasRight}
+              className={itemCls(hasRight)}
+              onClick={() => hasRight && run(onCloseRight)}
+            >
+              Close Tabs to the Right
+            </button>
+            <button
+              type="button"
+              disabled={!hasOthers}
+              className={itemCls(hasOthers)}
+              onClick={() => hasOthers && run(onCloseOthers)}
+            >
+              Close Other Tabs
+            </button>
+            <div className="my-1 border-t border-line-subtle" />
+            <button type="button" className={itemCls(true)} onClick={() => run(() => onCloseAll())}>
+              Close All Tabs
+            </button>
+          </div>,
+          document.body,
+        )
+      })()}
     </div>
   )
 }

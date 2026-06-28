@@ -1515,6 +1515,24 @@ export async function getPlatform() {
 }
 
 /**
+ * toggleMaximiseWindow — zoom/un-zoom the window, mirroring the macOS title-bar
+ * double-click behaviour. The themed strip is a custom (frameless) title bar, so
+ * the OS doesn't handle double-click-to-zoom for us — we wire it explicitly.
+ * No-op (and harmless) outside the Wails runtime.
+ *
+ * @returns {Promise<void>}
+ */
+export async function toggleMaximiseWindow() {
+  if (!isWails()) return
+  try {
+    const { WindowToggleMaximise } = await import('../../wailsjs/runtime/runtime.js')
+    WindowToggleMaximise()
+  } catch {
+    /* ignore — window controls are best-effort */
+  }
+}
+
+/**
  * onMenuAction — subscribe to native menu clicks emitted by the Go side. Each
  * handler is optional. No-op outside the Wails runtime.
  *

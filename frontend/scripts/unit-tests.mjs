@@ -42,7 +42,9 @@ import {
 } from '../src/lib/settings.js'
 import {
   closeAllTabsInWorkspace,
+  closeOtherTabsInWorkspace,
   closeTabInWorkspace,
+  closeTabsToSideInWorkspace,
   getNextConsoleSeqFromTabs,
   loadWorkspaceState,
   makeWorkspaceSnapshot,
@@ -207,6 +209,53 @@ function testCloseAllWorkspaceTabsClearsActiveTab() {
 
   assert.deepEqual(next.tabs, [])
   assert.equal(next.activeTabId, '')
+  assert.deepEqual(next.removedIds, [])
+}
+
+function testCloseOtherWorkspaceTabsKeepsOnlyAnchor() {
+  const tabs = [
+    { id: 'console-1', type: 'console', label: 'SQL Console' },
+    { id: 'table-1', type: 'table', label: 'users' },
+    { id: 'query-1', type: 'query', label: 'Status' },
+  ]
+
+  const next = closeOtherTabsInWorkspace(tabs, 'table-1')
+
+  assert.deepEqual(next.tabs.map((t) => t.id), ['table-1'])
+  assert.equal(next.activeTabId, 'table-1')
+  assert.deepEqual(next.removedIds.sort(), ['console-1', 'query-1'])
+
+  // Unknown anchor is a no-op (nothing removed).
+  const noop = closeOtherTabsInWorkspace(tabs, 'nope')
+  assert.deepEqual(noop.tabs.map((t) => t.id), ['console-1', 'table-1', 'query-1'])
+  assert.deepEqual(noop.removedIds, [])
+}
+
+function testCloseTabsToSideRemovesCorrectSide() {
+  const tabs = [
+    { id: 'a', type: 'console', label: 'A' },
+    { id: 'b', type: 'table', label: 'B' },
+    { id: 'c', type: 'query', label: 'C' },
+    { id: 'd', type: 'table', label: 'D' },
+  ]
+
+  // Left of 'c' → removes a, b; keeps c, d.
+  const left = closeTabsToSideInWorkspace(tabs, 'a', 'c', 'left')
+  assert.deepEqual(left.tabs.map((t) => t.id), ['c', 'd'])
+  assert.deepEqual(left.removedIds.sort(), ['a', 'b'])
+  // Active 'a' was removed → falls back to the anchor 'c'.
+  assert.equal(left.activeTabId, 'c')
+
+  // Right of 'b' → removes c, d; keeps a, b. Active 'a' survives.
+  const right = closeTabsToSideInWorkspace(tabs, 'a', 'b', 'right')
+  assert.deepEqual(right.tabs.map((t) => t.id), ['a', 'b'])
+  assert.deepEqual(right.removedIds.sort(), ['c', 'd'])
+  assert.equal(right.activeTabId, 'a')
+
+  // No tabs on the requested side → no-op.
+  const none = closeTabsToSideInWorkspace(tabs, 'a', 'a', 'left')
+  assert.deepEqual(none.tabs.map((t) => t.id), ['a', 'b', 'c', 'd'])
+  assert.deepEqual(none.removedIds, [])
 }
 
 function testPageSliceKeepsLocalPaginationOnly() {
@@ -1358,6 +1407,8 @@ testExplorerSearchScopeFallsBackToConnectionDatabase()
 testCloseCurrentWorkspaceTabActivatesNeighbor()
 testCloseInactiveWorkspaceTabKeepsActiveTab()
 testCloseAllWorkspaceTabsClearsActiveTab()
+testCloseOtherWorkspaceTabsKeepsOnlyAnchor()
+testCloseTabsToSideRemovesCorrectSide()
 testPageSliceKeepsLocalPaginationOnly()
 testAppendResultPagePreservesMetadata()
 testAppendResultPageKeepsFirstPageColumns()
@@ -1591,8 +1642,57 @@ function testSavedConsoleOpenDedupsAndTabRename() {
   // Right-click rename on a console tab opens the name dialog for that tab.
   assert.match(app, /const handleRenameConsole = useCallback/)
   assert.match(app, /onRenameConsole=\{handleRenameConsole\}/)
-  assert.match(app, /onRenameConsole\?\.\(contextMenu\.tabId\)/)
+  // The menu routes every action through run(fn), which calls fn(contextMenu.tabId).
+  assert.match(app, /const run = \(fn\) => \{ fn\?\.\(contextMenu\.tabId\); closeMenu\(\) \}/)
+  assert.match(app, /run\(onRenameConsole\)/)
   assert.match(app, />\s*Rename…\s*</)
+}
+
+function testTabContextMenuCloseOthersAndSides() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+
+  // Handlers exist and route to the workspace helpers via an always-fresh ref.
+  assert.match(app, /const handleCloseOtherTabs = useCallback/)
+  assert.match(app, /closeOtherTabsInWorkspace\(tabsRef\.current, tabId\)/)
+  assert.match(app, /const handleCloseTabsToLeft = useCallback/)
+  assert.match(app, /closeTabsToSideInWorkspace\(tabsRef\.current, activeTabIdRef\.current, tabId, 'left'\)/)
+  assert.match(app, /const handleCloseTabsToRight = useCallback/)
+  assert.match(app, /closeTabsToSideInWorkspace\(tabsRef\.current, activeTabIdRef\.current, tabId, 'right'\)/)
+
+  // Wired into the TabBar.
+  assert.match(app, /onCloseOthers=\{handleCloseOtherTabs\}/)
+  assert.match(app, /onCloseLeft=\{handleCloseTabsToLeft\}/)
+  assert.match(app, /onCloseRight=\{handleCloseTabsToRight\}/)
+
+  // Menu renders all of the new items, with left/right/others disabled when N/A.
+  assert.match(app, />\s*Close Tabs to the Left\s*</)
+  assert.match(app, />\s*Close Tabs to the Right\s*</)
+  assert.match(app, />\s*Close Other Tabs\s*</)
+  assert.match(app, /const hasLeft = ctxIdx > 0/)
+  assert.match(app, /const hasRight = ctxIdx >= 0 && ctxIdx < tabs\.length - 1/)
+  assert.match(app, /const hasOthers = tabs\.length > 1/)
+
+  // The tab context menu is portaled to <body> so the tab bar's backdrop-filter
+  // (material-bar) + overflow doesn't clip the fixed-position menu (the
+  // "menu opens but is invisible" bug).
+  assert.match(app, /import \{ createPortal \} from 'react-dom'/)
+  assert.match(app, /return createPortal\(/)
+  assert.match(app, /document\.body,\s*\)/)
+}
+
+function testTitleBarDoubleClickMaximises() {
+  const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
+  const bridge = readFileSync(new URL('../src/lib/bridge.js', import.meta.url), 'utf8')
+
+  // Double-clicking the custom title bar zooms the window (the OS can't do it
+  // for a frameless/full-size-content title bar), ignoring interactive controls.
+  assert.match(app, /onDoubleClick=\{\(e\) => \{/)
+  assert.match(app, /e\.target\.closest\('button, input, select, a, \[role="menu"\], \[role="menuitem"\]'\)/)
+  assert.match(app, /toggleMaximiseWindow\(\)/)
+
+  // Bridge helper calls the Wails runtime and is a no-op in the browser.
+  assert.match(bridge, /export async function toggleMaximiseWindow\(\)/)
+  assert.match(bridge, /WindowToggleMaximise\(\)/)
 }
 
 testReadConsoleEditorContentReadsActiveSubTab()
@@ -1601,6 +1701,8 @@ testWorkspacePersistsSavedConsoleBinding()
 testSavedConsolesFeatureWiredIntoApp()
 testSavedConsolesUseNativeMenuOnMac()
 testSavedConsoleOpenDedupsAndTabRename()
+testTabContextMenuCloseOthersAndSides()
+testTitleBarDoubleClickMaximises()
 
 function testFontSettingsRoundTripAndClamp() {
   const storage = new MemoryStorage()

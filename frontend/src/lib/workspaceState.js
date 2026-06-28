@@ -144,5 +144,35 @@ export function closeTabInWorkspace(tabs, activeTabId, tabId) {
 }
 
 export function closeAllTabsInWorkspace() {
-  return { tabs: [], activeTabId: '' }
+  return { tabs: [], activeTabId: '', removedIds: [] }
+}
+
+/**
+ * Close every tab except `tabId`. The kept tab becomes active.
+ * Returns the surviving tabs, the next active id, and the ids that were removed
+ * (so callers can dispose any per-tab state they hold).
+ */
+export function closeOtherTabsInWorkspace(tabs, tabId) {
+  const list = Array.isArray(tabs) ? tabs : []
+  const keep = list.find((tab) => tab.id === tabId)
+  if (!keep) return { tabs: list, activeTabId: tabId, removedIds: [] }
+  const removedIds = list.filter((tab) => tab.id !== tabId).map((tab) => tab.id)
+  return { tabs: [keep], activeTabId: tabId, removedIds }
+}
+
+/**
+ * Close every tab on one side of `tabId` (`side` = 'left' | 'right'); the anchor
+ * tab itself is kept. If the active tab was removed, the anchor becomes active.
+ */
+export function closeTabsToSideInWorkspace(tabs, activeTabId, tabId, side) {
+  const list = Array.isArray(tabs) ? tabs : []
+  const idx = list.findIndex((tab) => tab.id === tabId)
+  if (idx < 0) return { tabs: list, activeTabId, removedIds: [] }
+
+  const removed = side === 'left' ? list.slice(0, idx) : list.slice(idx + 1)
+  const removedSet = new Set(removed.map((tab) => tab.id))
+  const nextTabs = list.filter((tab) => !removedSet.has(tab.id))
+  const nextActiveTabId = removedSet.has(activeTabId) ? tabId : activeTabId
+
+  return { tabs: nextTabs, activeTabId: nextActiveTabId, removedIds: [...removedSet] }
 }
